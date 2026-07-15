@@ -1,0 +1,36 @@
+name: ci
+
+# Lightweight checks that need neither StarCraft II nor the compiled ares dependency:
+# syntax-compile our own code, and exercise the pure-Python steer CLI / vocab.
+# (Full bot runs require the game client and can't run on GitHub's runners.)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Syntax-compile our code (excluding vendored ares-sc2)
+        run: |
+          git ls-files '*.py' | grep -v '^ares-bot/ares-sc2/' \
+            | tee /dev/stderr | xargs python -m py_compile
+
+      - name: Steer vocabulary is a single source of truth and imports cleanly
+        working-directory: ares-bot
+        run: |
+          python -c "import bot.steer_vocab as v; assert len(v.FIELDS) >= 10; assert v.enemy_slot_index('E3') == 2; print('steer_vocab OK')"
+
+      - name: Steer CLI runs without a game (pure Python, no ares needed)
+        working-directory: ares-bot
+        run: |
+          python steer_cli.py vocab
+          python steer_cli.py show

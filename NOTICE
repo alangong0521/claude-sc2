@@ -1,0 +1,43 @@
+code-agent-sc2
+==============
+
+This project builds on open-source work by the StarCraft II AI community.
+The steer layer (LLM chief-of-staff bridge) is original to this project and
+licensed under the MIT License (see LICENSE). It is layered on top of, and
+bundles, the following upstream components — each under its own license, which
+is preserved in-tree.
+
+Bundled / derived from
+----------------------
+
+1. ares-random-example  (MIT)
+   https://github.com/AresSC2/ares-random-example
+   `ares-bot/` was forked from this template. Its original README, LICENSE,
+   `ladder.py`, `scripts/`, and build-order `*.yml` files are retained.
+   Copyright (c) 2023 AresSC2. See `ares-bot/LICENSE`.
+
+2. ares-sc2  (MIT)  — vendored under `ares-bot/ares-sc2/`
+   https://github.com/AresSC2/ares-sc2
+   A full copy is bundled (its LICENSE and CHANGELOG are kept alongside) so the
+   bot is self-contained and ladder-uploadable, per AiArena's requirement that
+   ladder bots ship their dependencies. Copyright (c) AresSC2.
+   See `ares-bot/ares-sc2/LICENSE`.
+
+3. python-sc2 / burnysc2  (MIT)
+   https://github.com/BurnySc2/python-sc2
+   Pulled as a dependency (not vendored); used by `smoke.py` and via ares.
+
+Not distributed
+---------------
+
+Reference bots studied during development (12PoolBot, Aristaeus, QueenBot,
+BruceBot, and others) are NOT included in this repository. They remain the
+property of their respective authors. See the Acknowledgements section of the
+README for links.
+
+StarCraft II
+------------
+
+StarCraft II is a product of Blizzard Entertainment. This project is not
+affiliated with or endorsed by Blizzard. You must own/install the game (the
+free Starter Edition works) and accept Blizzard's EULA to run any bot here.

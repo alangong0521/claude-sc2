@@ -1,0 +1,85 @@
+# Save the game opening and result to disk?
+# Setting to `True` allows Ares to select a new opening after defeat
+UseData: True
+# How should we choose a build? Cycle is the only option for now
+BuildSelection: Cycle
+# For each Race / Opponent ID choose a build selection
+BuildChoices:
+    # test_123 is active if Debug: True (set via a `config.yml` file)
+    test_123:
+        BotName: Test
+        Cycle:
+            - Standard
+
+    Protoss:
+        BotName: ProtossRace
+        Cycle:
+            - Standard
+
+    Random:
+        BotName: RandomRace
+        Cycle:
+            - Standard
+
+    Terran:
+        BotName: TerranRace
+        Cycle:
+            - Standard
+
+    Zerg:
+        BotName: ZergRace
+        Cycle:
+            - Standard
+
+Builds:
+    Standard:
+        # ConstantWorkerProductionTill 必须 >0（我们 vendored ares 3.9.6 不像 QueenBot fork 的
+        # ares 那样自动造 drone，设 0 会 supply 死卡）；overlord_scout 的自定义侦察点 token
+        # （enemy_nat_vision / enemy_nat_hg_spot）我们 ares 不认 → 删，否则整个 build 死锁。
+        ConstantWorkerProductionTill: 20
+        OpeningBuildOrder:
+            - 12 drone
+            - 13 drone
+            - 14 gas
+            - 13 drone
+            - 14 cancel_gas
+            - 15 expand
+            - 14 overlord
+            - 14 gas
+            - 13 drone
+            - 13 cancel_gas
+            - 13 drone
+            - 13 spawningpool
+            - 13 drone *5
+            - 13 overlord
+            - 13 queen *2
+            - 13 gas
+            - 13 drone *4
+            - 13 overlord
+            - 13 queen *2
+            - 13 drone *4
+            - 13 expand
+
+    Greed:
+        # Build constant workers till x supply
+        ConstantWorkerProductionTill: 0
+        ShouldHandleGasSteal: False
+        OpeningBuildOrder:
+            - 12 drone
+            - 12 overlord_scout:
+                [ enemy_nat_vision, enemy_nat_hg_spot ]
+            - 13 overlord
+            - 13 drone
+            - 14 drone
+            - 15 drone
+            - 16 drone
+            - 17 expand
+            - 16 drone
+            - 17 drone
+            - 18 expand
+            - 17 drone
+            - 18 drone
+            - 19 expand
+            - 18 drone
+            - 16 spawningpool
+

@@ -1,0 +1,86 @@
+# This file is optional and here as an example of how to activate the build runner
+# FEEL FREE TO DELETE!!
+
+# Save the game opening and result to disk?
+# Setting to `True` allows Ares to select a new opening after defeat
+UseData: True
+# How should we choose a build? Cycle is the only option for now
+BuildSelection: Cycle
+# For each Race / Opponent ID choose a build selection
+BuildChoices:
+    # test_123 is active if Debug: True (set via a `config.yml` file)
+    test_123:
+        BotName: Test
+        Cycle:
+            - OneBaseMarines
+
+    Protoss:
+        BotName: ProtossRace
+        Cycle:
+            - OneBaseMarines
+
+    Random:
+        BotName: RandomRace
+        Cycle:
+            - OneBaseMarines
+
+    Terran:
+        BotName: TerranRace
+        Cycle:
+            - OneBaseMarines
+
+    Zerg:
+        BotName: ZergRace
+        Cycle:
+            - OneBaseMarines
+
+    # Can also use specific opponent ids (overrides race options above)
+    a_bot_opponent_id_from_aiarena:
+        BotName: QueenBot
+        Cycle:
+            - DummyOpening
+
+Builds:
+    OneBaseMarines:
+        # Build constant workers till x supply
+        ConstantWorkerProductionTill: 18
+        PersistentWorker: False
+        OpeningBuildOrder:
+            - 13 supply
+            - 15 barracks
+            - 16 barracks
+            - 17 barracks
+            - 18 orbital
+            - 19 supply
+            - 19 barracks
+            - 20 barracks
+            - 21 barracks
+
+    # 生化 MMM 流派（bio_mmm）：只造核心建筑，addon(techlab)/扩产交 ProductionController。
+    # marine=barracks, marauder=barracks+techlab(自动补), medivac=starport(factory 是前置)。
+    BioMMM:
+        ConstantWorkerProductionTill: 20
+        OpeningBuildOrder:
+            - 13 supply
+            - 15 barracks
+            - 16 gas
+            - 16 orbital
+            - 17 supply
+            - 18 factory
+            - 20 starport
+            - 20 supply
+
+    # 机械坦克流派（mech_tank）：factory 出坦克/地狱火，barracks 出枪兵；techlab 自动补。
+    # 坦克吃气，开双 gas。
+    MechTank:
+        ConstantWorkerProductionTill: 20
+        OpeningBuildOrder:
+            - 13 supply
+            - 15 barracks
+            - 16 gas
+            - 16 orbital
+            - 17 factory
+            - 18 supply
+            - 19 gas
+            - 20 factory
+

@@ -1,0 +1,49 @@
+# 军队组成配置 —— 兵种单一真相源
+#
+# ProductionManager 的 SpawnController(造什么兵)和 CombatManager(指挥哪些兵进攻)
+# 都从本文件读,改这里就能调整 bot 支持的兵种,不用动 Python。
+#
+# 结构:
+#   units: 兵种列表,每个兵种:
+#     id:       引擎枚举名(sc2 UnitTypeId),全大写,如 TEMPEST
+#     proportion: 造该兵种的目标占比(0~1),所有 units 的 proportion 之和应≈1.0
+#     priority:   造兵优先级(整数,越小越优先;0=最高)
+#     role:       ares 的 UnitRole 名(ATTACKING/HARASSING/SCOUTING),默认 ATTACKING
+#     combat:     指挥方式,决定 CombatManager 用哪个 combat class 控它:
+#       tempest_offensive = 暴风舰风筝(射程远,主动追击/埋伏)
+#       oracle_harass     = 先知骚扰(由 OracleManager 单独管,这里仅登记)
+#       default           = 通用近战/地面兵,跟随 attack_target 压上(待实现)
+#     notes:    人话备注(给读配置的人/参谋长看)
+#
+# 想加兵种:在 units 下加一项即可。想换主力流派:改 proportion/priority。
+# 注意:combat=default 的兵种目前 CombatManager 还没实现通用指挥(见 main.py TODO),
+#       配了会造但不会主动指挥进攻 —— 加之前确认 combat class 已支持。
+
+units:
+  - id: TEMPEST
+    proportion: 1.0
+    priority: 0
+    role: ATTACKING
+    combat: tempest_offensive
+    notes: 主力天空体,射程极远,地面兵够不着。死穴=凤凰。
+
+  - id: ORACLE
+    proportion: 0.0
+    priority: 9
+    role: HARASSING
+    combat: oracle_harass
+    notes: 顺路骚扰对面农民。由 OracleManager 单独管(一次性造一个),不进主力编队。
+
+# ── 示例:想支持多兵种混编,取消注释改 proportion 即可 ──────────────────
+#   - id: STALKER
+#     proportion: 0.4
+#     priority: 1
+#     role: ATTACKING
+#     combat: default
+#     notes: 追猎者,通用地面/对空,填补暴风舰被凤凰克时的对空火力。
+#   - id: VOIDRAY
+#     proportion: 0.3
+#     priority: 2
+#     role: ATTACKING
+#     combat: default
+#     notes: 虚空舰,对重甲/巨像好用。

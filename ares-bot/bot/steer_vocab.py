@@ -1,0 +1,150 @@
+"""Shared steer vocabulary — single source of truth.
+
+参谋长(LLM)能用的命令词都在这里。bot 侧(`steer.py`)和指挥 CLI(`steer_cli.py`)
+都从本模块导入,避免两处各抄一份、改一处忘另一处。
+
+纯字符串常量,不 import ares / sc2,所以 `steer_cli.py` 不用起游戏也能轻量导入。
+
+The full set of high-level levers the LLM chief-of-staff can pull. Both the bot side
+(`steer.py`) and the command CLI (`steer_cli.py`) import from here so the vocabulary
+lives in exactly one place. Pure string constants — no ares/sc2 imports.
+"""
+from __future__ import annotations
+
+STANCES: tuple[str, ...] = ("attack", "defend", "hold", "retreat")  # ①姿态 / posture
+TARGETS: tuple[str, ...] = (  # ②语义目标 / where to push (bot resolves to a Point2)
+    "enemy_main", "enemy_natural", "enemy_third", "enemy_fourth",
+    "enemy_backdoor",   # 绕后/偷家点(离敌军重心最远的敌方分矿)/ backdoor expansion
+    "map_center", "home",
+)
+FOCUS: tuple[str, ...] = ("weakest", "closest", "workers")  # ③焦点 / focus fire
+# ④机动 / maneuver:只有 ambush / hold_position 会改变行为(令部队原地蹲守待机);
+# 其余情况(不设)= 正常压上。别加没有实现的词,免得 CLI 广告空操作。
+MANEUVERS: tuple[str, ...] = ("ambush", "hold_position")
+HARASS: tuple[str, ...] = ("on", "off")          # ⑤持续 / oracle harass toggle
+TRIGGERS: tuple[str, ...] = ("now", "when_enemy_away", "when_maxed")  # ⑥择时 / timing
+EXPAND: tuple[str, ...] = ("yes", "no")           # 运营 / take an expansion
+# 焦点敌人(多人混战用;1v1 只有 E1):所有"敌人相关"目标都相对它解析。
+# Focus enemy (FFA); every enemy_* target resolves relative to it. E1 = nearest.
+ENEMY_SLOTS: tuple[str, ...] = ("E1", "E2", "E3", "E4")
+# 通用建筑杠杆 build=<结构>:一次性造一个,微操(选农民/选位置)全在 bot 层。
+# Generic build lever: queue one structure; worker/placement micro stays in the bot.
+# BUILD_ALIASES 是用户友好别名(如 gas=assimilator),bot 侧 _resolve_buildable 先查它。
+# BUILDABLE 是 CLI `vocab` 展示的"规范名"集合;别名通过 BUILD_ALIASES 暴露,二者保持一致。
+BUILDABLE: tuple[str, ...] = (
+    "nexus", "assimilator", "stargate", "gateway",
+    "cyberneticscore", "forge", "robo", "fleetbeacon", "twilight",
+)
+# build=<名> 的别名 → 规范名(指向 BUILDABLE 里的词)。CLI 校验/vocab 都认这些别名。
+# 与 production_manager.BUILD_ALIASES 的"别名→UnitID"是两套:那套映射到引擎枚举,
+# 这套映射到本词表的规范名。两边别名键应保持一致,避免"CLI 认但 bot 不认"。
+BUILD_ALIASES: dict[str, str] = {
+    "base": "nexus", "expand": "nexus", "nexus": "nexus",
+    "gas": "assimilator", "geyser": "assimilator", "assimilator": "assimilator",
+    "stargate": "stargate", "gateway": "gateway",
+    "cyber": "cyberneticscore", "cyberneticscore": "cyberneticscore",
+    "forge": "forge",
+    "robo": "roboticsfacility", "roboticsfacility": "roboticsfacility",
+    "fleetbeacon": "fleetbeacon",
+    "twilight": "twilight",
+    "pylon": "pylon",  # pylon 不在 BUILDABLE(非核心),但 bot 能造,CLI 也放行
+}
+# orders.json 里所有可写字段(bot 读取时按此列表取)/ every field the bot reads back.
+FIELDS: tuple[str, ...] = (
+    "stance", "target", "focus", "maneuver", "harass", "trigger",
+    "expand", "build", "scout", "enemy", "note",
+)
+# 每个字段的合法取值(用于 CLI 校验)。note/enemy 之外都是受限枚举。
+# None 表示"自由取值/不校验":note=自由文本;build=BUILDABLE+别名+任意引擎结构名(运行时再判);
+# focus 除 weakest/closest/workers 外还接受任意兵种名(如 SIEGETANK),故不封死。
+_FIELD_VALUES: dict[str, tuple[str, ...] | None] = {
+    "stance": STANCES,
+    "target": TARGETS,
+    "maneuver": MANEUVERS,
+    "harass": HARASS,
+    "trigger": TRIGGERS,
+    "expand": EXPAND,
+    "scout": ("on", "off"),
+    "enemy": ENEMY_SLOTS,
+    "focus": None,    # weakest/closest/workers + 任意兵种名
+    "build": None,    # BUILDABLE + 别名 + 任意引擎结构名
+    "note": None,     # 自由文本
+}
+
+
+def enemy_slot_index(sel: str | None) -> int | None:
+    """焦点敌人槽位字符串 → 0 基索引:'E2' → 1。认不出 → None(调用方回退到最近 E1)。
+
+    Focus-enemy slot string → 0-based index ('E2' → 1); None if unparseable.
+    """
+    if not sel:
+        return None
+    s = sel.strip().upper()
+    if s.startswith("E") and s[1:].isdigit() and int(s[1:]) >= 1:
+        return int(s[1:]) - 1
+    return None
+
+
+def canonical_build(name: str) -> str:
+    """build=<名> → 规范名(走别名表)。原样返回未知名(交给 bot 运行时再判能不能造)。
+
+    Canonicalize a build lever name via BUILD_ALIASES. Unknown names pass through
+    so bot-side `_resolve_buildable` can still try `UnitID[name.upper()]`.
+    """
+    if not name:
+        return name
+    key = name.strip().lower()
+    return BUILD_ALIASES.get(key, key)
+
+
+def validate_field(field: str, value: str) -> list[str]:
+    """校验单个 key=value,返回错误信息列表(空=合法)。
+
+    规则:
+      - field 必须在 FIELDS 内;
+      - 受限枚举字段(stance/target/maneuver/harass/trigger/expand/scout/enemy)
+        值必须在对应元组里;
+      - focus 接受 weakest/closest/workers 或任意大写兵种名(只做形式校验);
+      - build 走 canonical_build,接受 BUILDABLE/别名/任意结构名(形式校验);
+      - note 自由,不校验。
+
+    Validate one key=value; return list of human-readable error strings (empty=ok).
+    Pure logic — no ares/sc2 import, safe to run headless.
+    """
+    errs: list[str] = []
+    if field not in FIELDS:
+        errs.append(f"未知命令字段 '{field}'(可用: {' '.join(FIELDS)})")
+        return errs
+    allowed = _FIELD_VALUES.get(field)
+    if allowed is None:
+        # 自由取值字段,只做轻形式校验
+        if field == "focus" and value:
+            v = value.strip()
+            # 兵种名通常全大写;weakest/closest/workers 小写。空串无意义。
+            if v.lower() not in ("weakest", "closest", "workers") and not v.isupper():
+                errs.append(
+                    f"focus 值 '{value}' 看着不像兵种名(应全大写如 SIEGETANK)"
+                    f"或关键字 weakest/closest/workers"
+                )
+        return errs
+    v = value.strip()
+    # build 的别名归一后再比对
+    if field == "build":
+        canon = canonical_build(v)
+        if canon in BUILDABLE or v in BUILDABLE or v in BUILD_ALIASES:
+            return errs
+        # 不在规范表里 → 放行(可能是 pylon/roboticsfacility 等引擎能造的结构)
+        return errs
+    if v not in allowed:
+        errs.append(f"{field} 值 '{value}' 不合法(可用: {' '.join(allowed)})")
+    return errs
+
+
+def validate_order(order: dict) -> list[str]:
+    """校验整份 order dict,返回所有错误信息(空=全合法)。纯逻辑,不起游戏。"""
+    errs: list[str] = []
+    for k, v in order.items():
+        if v is None:
+            continue
+        errs.extend(validate_field(k, str(v)))
+    return errs

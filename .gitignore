@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境(106M,可重建)
+.venv/
+env/
+venv/
+ENV/
+
+# ares build 学习参数(UseData:False 用不上,可再生)
+ares-bot/data/
+
+# 参考 bot 库 / 废弃归档 —— 本地留存学习用,不随开源仓库分发
+# (这些是别人的作品,不能再分发;见 README 的 Acknowledgements)
+# Reference bots & dead archives — kept locally for study, NOT redistributed.
+refs/
+_archive_*/
+
+# macOS
+.DS_Store
+
+# SC2 回放/日志
+*.SC2Replay
+*.log

@@ -1,0 +1,4 @@
+# The bot runs inside the ares-sc2-bot-template (git submodule + Poetry, Python 3.11/3.12);
+# ares pulls burnysc2 itself. These are for the advisor/steer side and a standalone bot.
+burnysc2>=7.3.0      # python-sc2 (import name: sc2). Needed if you run a non-ares bot.
+anthropic>=0.40      # only for advisor.py (the autonomous LLM loop). Claude-in-the-loop needs nothing.
