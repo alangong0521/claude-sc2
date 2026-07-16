@@ -79,9 +79,23 @@
 |---|---|---|---|
 | M1 | Terran 生产层:用 `ProductionController` 替代 Protoss 专属建筑逻辑 | **🚧 开了头(骨架落地,待跑局)** | 跑局 |
 | M2 | Zerg 生产层:build order + larva/morph 自定义(ProductionController 不支持) | 未开始(当前 stub:只维农民+补给) | 跑局 |
-| M3 | 升级配置化:`UpgradeController` + army_composition 里加 `upgrades:` 字段(解 B7,种族无关) | 未开始 | 跑局 |
-| M4 | 专属 combat class:SIEGETANK 架起 / MEDIVAC 治疗运兵 / 高模 storm(用 ares 原语) | 未开始 | 跑局 |
+| M3 | 升级配置化:`UpgradeController` + army_composition 里加 `upgrades:` 字段(解 B7,种族无关) | **✅ 落地(骨架)** | 跑局验时机 |
+| M4 | 专属 combat class:SIEGETANK 架起 / MEDIVAC 治疗(用 ares 原语) | **🚧 开了头(坦克+医疗落地;storm/运兵待做)** | 跑局 |
 | M5 | generic_offensive 升级到 group 行为(队级) | 未开始 | 跑局调手感 |
+
+#### M3 已落地(升级配置化,解 B7)
+army_composition.yml 每种族块加 `upgrades:` 列表(引擎 UpgradeId 名);`army_config` 解析
+(`upgrade_names` 纯逻辑 / `upgrade_ids` 运行时转枚举,认不出静默跳过)。
+- Protoss:`_research_upgrades` 改从 `self._army.upgrade_ids() or DESIRED_UPGRADES` 取
+  —— protoss 块列**同样 3 项** → **行为逐位不变**,只是可配。
+- Terran:`_update_terran` 用 ares `UpgradeController(upgrade_list, base_location)`(种族无关自动 tech-up)。
+待跑局:研究时机/顺序。
+
+#### M4 开了头(专属 combat class,已落地坦克+医疗)
+- `combat=siege_offensive`(`bot/combat/siege_offensive.py`):ares `SiegeTankDecision` 自动架/撤 + AMove 推进。
+- `combat=medivac_support`(`bot/combat/medivac_support.py`):ares `MedivacHeal` 治疗跟队。
+- 注册进 `CombatManager._combat_dispatch` + `army_config.COMBAT_KINDS`;Terran 的 SIEGETANK/MEDIVAC 已切过去。
+**未跑局验证**:架起时机/站位、跟队距离、运兵(pick_up/drop_cargo)、高模 storm(用 `place_predictive_aoe`)是 M4 剩余项。
 
 #### M1 已落地(离线,骨架)
 `ProductionManager.update` 按 `ai.race` 分派:Terran → `_update_terran`,Zerg → `_update_zerg_stub`,

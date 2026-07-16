@@ -27,7 +27,14 @@ except Exception:
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "army_composition.yml"
 
 # combat 指挥方式的合法取值
-COMBAT_KINDS = ("tempest_offensive", "oracle_harass", "default")
+#   tempest_offensive = 暴风舰远射风筝  |  oracle_harass = 先知(OracleManager 管)
+#   default           = 通用 attack-move+基础风筝(generic_offensive)
+#   siege_offensive   = 攻城坦克架起/撤(M4, ares SiegeTankDecision)
+#   medivac_support   = 医疗船治疗跟队(M4, ares MedivacHeal)
+COMBAT_KINDS = (
+    "tempest_offensive", "oracle_harass", "default",
+    "siege_offensive", "medivac_support",
+)
 
 # 种族块键(army_composition.yml 支持 per-race:顶层 protoss/terran/zerg 各一套 units)
 RACE_KEYS = ("protoss", "terran", "zerg")
@@ -83,8 +90,13 @@ class UnitSpec:
 
 @dataclass
 class ArmyComposition:
-    """整份军队组成。"""
+    """整份军队组成(兵种 + 该种族要研究的升级)。"""
     units: list[UnitSpec]
+    upgrades: list[str] = None  # 引擎 UpgradeId 名(大写);默认空,见 __post_init__
+
+    def __post_init__(self):
+        if self.upgrades is None:
+            self.upgrades = []
 
     @classmethod
     def from_dict(cls, data: dict) -> "ArmyComposition":
@@ -103,7 +115,13 @@ class ArmyComposition:
                 notes=u.get("notes", ""),
             ))
         _validate(specs)
-        return cls(specs)
+        # 升级列表(M3):字符串名归一大写、去空、去重保序。运行时再转 UpgradeId 枚举。
+        upgrades: list[str] = []
+        for up in data.get("upgrades", []) or []:
+            name = str(up).strip().upper()
+            if name and name not in upgrades:
+                upgrades.append(name)
+        return cls(specs, upgrades)
 
     @classmethod
     def load(cls, path: Path | str | None = None, race: str | None = None
@@ -136,6 +154,24 @@ class ArmyComposition:
             }
             for u in self.units if u.proportion > 0
         }
+
+    # ── 升级(M3):给 ares UpgradeController 用 ──
+    def upgrade_names(self) -> list[str]:
+        """升级枚举名列表(纯字符串,可离线单测)。"""
+        return list(self.upgrades)
+
+    def upgrade_ids(self):
+        """[UpgradeId] —— 名字转引擎枚举,认不出的静默跳过(容忍手误/版本差异)。
+        需要 sc2;离线无 sc2 时抛错(调用方在 bot 运行时才用)。"""
+        if not _HAS_SC2:
+            raise RuntimeError("sc2 未安装,upgrade_ids 需运行时")
+        from sc2.ids.upgrade_id import UpgradeId
+        out = []
+        for name in self.upgrades:
+            uid = getattr(UpgradeId, name, None)
+            if uid is not None:
+                out.append(uid)
+        return out
 
     def by_combat(self, combat: str) -> list[UnitSpec]:
         """取某种指挥方式的所有兵种。"""

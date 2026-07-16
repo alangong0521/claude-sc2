@@ -59,6 +59,12 @@ protoss:
       role: ATTACKING
       combat: default
       notes: 不朽,对重甲。需 ROBOTICSFACILITY(当前 build 默认不造,先 build=robo)。
+  # 该种族要研究的升级(引擎 UpgradeId 名,全大写)。Protoss 保持原 3 项 → 行为不变。
+  # 名字认不出会在运行时静默跳过(bot 侧 getattr 兜底)。
+  upgrades:
+    - TEMPESTGROUNDATTACKUPGRADE
+    - PROTOSSAIRARMORSLEVEL1
+    - PROTOSSAIRARMORSLEVEL2
 
 # ⚠️ 以下 terran/zerg 为前瞻配置:需切 BOT_RACE + 补生产层才能真正出兵(见文件头约束 2)。
 terran:
@@ -79,14 +85,18 @@ terran:
       proportion: 0.2
       priority: 0
       role: ATTACKING
-      combat: default
-      notes: 攻城坦克。真正架起要 ares siege_tank_decision(待写专属 combat class);default 只平A。
+      combat: siege_offensive
+      notes: 攻城坦克。M4 专属 combat=siege_offensive(ares SiegeTankDecision 自动架/撤);未跑局验证。
     - id: MEDIVAC
       proportion: 0.1
       priority: 2
       role: ATTACKING
-      combat: default
-      notes: 医疗运输。治疗/运兵要 ares medivac_heal+pick_up/drop_cargo(待写);default 只跟队。
+      combat: medivac_support
+      notes: 医疗运输。M4 专属 combat=medivac_support(ares MedivacHeal 治疗跟队);运兵/未跑局验证。
+  upgrades:
+    - TERRANINFANTRYWEAPONSLEVEL1
+    - TERRANINFANTRYARMORSLEVEL1
+    - STIMPACK
 
 zerg:
   units:
@@ -108,3 +118,6 @@ zerg:
       role: ATTACKING
       combat: default
       notes: 刺蛇,远程对空/对地。需 HYDRALISKDEN。
+  upgrades:
+    - ZERGMISSILEWEAPONSLEVEL1
+    - ZERGGROUNDARMORSLEVEL1

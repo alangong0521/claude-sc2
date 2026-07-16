@@ -204,5 +204,54 @@ class TestLoadPerRace(unittest.TestCase):
             self.assertTrue(ac.units, f"{r} 块为空")
 
 
+class TestUpgrades(unittest.TestCase):
+    """M3:升级列表解析(纯逻辑,不需 sc2)。"""
+    def test_parse_and_normalize(self):
+        ac = ArmyComposition.from_dict({"units": [], "upgrades": [
+            "stimpack", " CombatShield ", "STIMPACK",  # 归一大写 + 去空 + 去重
+        ]})
+        self.assertEqual(ac.upgrade_names(), ["STIMPACK", "COMBATSHIELD"])
+
+    def test_default_empty(self):
+        ac = ArmyComposition.from_dict({"units": []})
+        self.assertEqual(ac.upgrade_names(), [])
+        # __post_init__ 保证 upgrades 是 list 不是 None
+        self.assertIsInstance(ac.upgrades, list)
+
+    def test_none_upgrades_key(self):
+        ac = ArmyComposition.from_dict({"units": [], "upgrades": None})
+        self.assertEqual(ac.upgrade_names(), [])
+
+    def test_shipped_protoss_upgrades_unchanged(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("pyyaml 未安装")
+        # Protoss 块必须仍是原 3 项(保证 M3 不改已验证行为)
+        ac = ArmyComposition.load(race="Protoss")
+        self.assertEqual(ac.upgrade_names(), [
+            "TEMPESTGROUNDATTACKUPGRADE",
+            "PROTOSSAIRARMORSLEVEL1",
+            "PROTOSSAIRARMORSLEVEL2",
+        ])
+
+
+class TestNewCombatKinds(unittest.TestCase):
+    """M4:新增 combat kinds 被接受。"""
+    def test_siege_and_medivac_accepted(self):
+        ac = ArmyComposition.from_dict({"units": [
+            {"id": "siegetank", "proportion": 0.5, "combat": "siege_offensive"},
+            {"id": "medivac", "proportion": 0.5, "combat": "medivac_support"},
+        ]})
+        self.assertEqual([u.combat for u in ac.units],
+                         ["siege_offensive", "medivac_support"])
+
+    def test_unknown_combat_still_rejected(self):
+        with self.assertRaises(ValueError):
+            ArmyComposition.from_dict(
+                {"units": [{"id": "x", "combat": "laser_offensive"}]}
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

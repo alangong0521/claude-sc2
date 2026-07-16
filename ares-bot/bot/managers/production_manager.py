@@ -11,6 +11,7 @@ from ares.behaviors.macro import (
     ProductionController,
     SpawnController,
     UpgradeCCs,
+    UpgradeController,
 )
 from ares.behaviors.macro.macro_plan import MacroPlan
 from ares.consts import UnitRole
@@ -172,6 +173,11 @@ class ProductionManager(Manager):
         # 农民 + 轨道指挥(种族无关的 SCV/CC 升级)
         ai.register_behavior(BuildWorkers(to_count=worker_target(ai.townhalls.amount)))
         ai.register_behavior(UpgradeCCs(to=UnitID.ORBITALCOMMAND))
+
+        # M3:升级配置化 —— army_composition.yml 的 terran.upgrades 交 ares UpgradeController
+        # (种族无关,自动 tech-up)。列表空则不注册。
+        if upgrades := self._army.upgrade_ids():
+            ai.register_behavior(UpgradeController(upgrades, base_location=base))
 
         # 气:有军事生产建筑后每矿双气,开局先单气
         has_prod = any(
@@ -426,7 +432,10 @@ class ProductionManager(Manager):
         structure_dict: dict[
             UnitID, list[Unit]
         ] = self.manager_mediator.get_own_structures_dict
-        for upgrade_id in DESIRED_UPGRADES:
+        # M3:升级列表来自 army_composition.yml(protoss 块列同样 3 项 → 行为不变);
+        # 配置为空时回退硬编码 DESIRED_UPGRADES,保证向后兼容。
+        desired = self._army.upgrade_ids() or DESIRED_UPGRADES
+        for upgrade_id in desired:
             researched_from: UnitID = UPGRADE_RESEARCHED_FROM[upgrade_id]
             cost = self.ai.calculate_cost(upgrade_id)
             # ensure there is always nearly enough for a tempest
