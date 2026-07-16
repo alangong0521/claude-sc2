@@ -75,13 +75,22 @@
   (`zerg_builds.yml` 已有 Standard)或自定义 morph 逻辑。这些**必须跑局**,列为下方排期。
 
 ### 多种族排期(需跑局)
-| # | 项 | 依赖 |
-|---|---|---|
-| M1 | Terran 生产层:用 `ProductionController` 替代 Protoss 专属建筑逻辑 | 跑局 |
-| M2 | Zerg 生产层:build order + larva/morph 自定义(ProductionController 不支持) | 跑局 |
-| M3 | 升级配置化:`UpgradeController` + army_composition 里加 `upgrades:` 字段(解 B7,种族无关) | 跑局 |
-| M4 | 专属 combat class:SIEGETANK 架起 / MEDIVAC 治疗运兵 / 高模 storm(用 ares 原语) | 跑局 |
-| M5 | generic_offensive 升级到 group 行为(队级) | 跑局调手感 |
+| # | 项 | 状态 | 依赖 |
+|---|---|---|---|
+| M1 | Terran 生产层:用 `ProductionController` 替代 Protoss 专属建筑逻辑 | **🚧 开了头(骨架落地,待跑局)** | 跑局 |
+| M2 | Zerg 生产层:build order + larva/morph 自定义(ProductionController 不支持) | 未开始(当前 stub:只维农民+补给) | 跑局 |
+| M3 | 升级配置化:`UpgradeController` + army_composition 里加 `upgrades:` 字段(解 B7,种族无关) | 未开始 | 跑局 |
+| M4 | 专属 combat class:SIEGETANK 架起 / MEDIVAC 治疗运兵 / 高模 storm(用 ares 原语) | 未开始 | 跑局 |
+| M5 | generic_offensive 升级到 group 行为(队级) | 未开始 | 跑局调手感 |
+
+#### M1 已落地(离线,骨架)
+`ProductionManager.update` 按 `ai.race` 分派:Terran → `_update_terran`,Zerg → `_update_zerg_stub`,
+Protoss → 原逻辑不变。`_update_terran` 全借 ares 宏行为(不手写建造序):
+`AutoSupply`+`BuildWorkers`+`GasBuildingController`+`ProductionController`(人族/神族支持,按 army_comp
+自动补 rax/factory/starport)+`SpawnController`+`UpgradeCCs`(升轨道)+ build/expand 杠杆(种族无关)。
+农民/气目标抽到 `bot/production_plans.py`(纯逻辑,`test_production_plans` 9 例)。
+**M1 待跑局(未验证)**:建造时机、addon(techlab/reactor)管理、开局序(可交 `terran_builds.yml` 的
+build runner)、与 M4 的架坦克/运兵专属微操。当前 Terran 能造建筑+出兵+补农民,但手感/平衡未测。
 
 ## 怎么加一个新兵种(用户问的重点)
 

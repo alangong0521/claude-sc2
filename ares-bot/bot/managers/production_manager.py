@@ -5,8 +5,12 @@ from sc2.unit import Unit
 from ares.behaviors.macro import (
     AutoSupply,
     BuildStructure,
+    BuildWorkers,
     ExpansionController,
+    GasBuildingController,
+    ProductionController,
     SpawnController,
+    UpgradeCCs,
 )
 from ares.behaviors.macro.macro_plan import MacroPlan
 from ares.consts import UnitRole
@@ -14,12 +18,15 @@ from cython_extensions.general_utils import cy_unit_pending
 from cython_extensions.units_utils import cy_closest_to
 from ares.managers.manager import Manager
 from ares.managers.manager_mediator import ManagerMediator
+from sc2.data import Race
 from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.buff_id import BuffId
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.units import Units
+
+from bot.production_plans import gas_target, worker_target
 
 if TYPE_CHECKING:
     from ares import AresBot
@@ -97,6 +104,14 @@ class ProductionManager(Manager):
         iteration :
             The game iteration.
         """
+        # 种族分派:Terran 走 M1 生产层(ares ProductionController + SpawnController);
+        # Zerg 尚未实现(见 status-and-roadmap M2)——先 no-op 造农民保命,不崩。
+        if self.ai.race == Race.Terran:
+            self._update_terran()
+            return
+        if self.ai.race == Race.Zerg:
+            self._update_zerg_stub()
+            return
 
         if not self._built_extra_production_pylon:
             self.ai.register_behavior(
@@ -139,6 +154,56 @@ class ProductionManager(Manager):
             ):
                 self.ai.train(UnitID.ORACLE)
                 self._built_single_oracle = True
+
+    # ────────────────────────────── Terran 生产层 (M1) ──────────────────────────────
+    def _update_terran(self) -> None:
+        """人族生产:全部借 ares 种族无关/人族支持的宏行为,不手写建造顺序。
+
+        组成: AutoSupply(补给站) + BuildWorkers(SCV) + GasBuildingController(炼油厂)
+             + ProductionController(按 army_comp 自动补 rax/factory/starport,人族支持)
+             + SpawnController(按 army_comp 出兵) + UpgradeCCs(升轨道指挥) + build 杠杆。
+        ⚠️ 未跑局验证(M1):建造时机/addon(techlab/reactor)管理/架坦克等细节留待实测调
+           (见 docs/status-and-roadmap.md M1/M4)。开局序列可由 terran_builds.yml 的 build runner 接管。
+        """
+        ai = self.ai
+        base = ai.start_location
+        spawn = self._army.spawn_dict()
+
+        # 农民 + 轨道指挥(种族无关的 SCV/CC 升级)
+        ai.register_behavior(BuildWorkers(to_count=worker_target(ai.townhalls.amount)))
+        ai.register_behavior(UpgradeCCs(to=UnitID.ORBITALCOMMAND))
+
+        # 气:有军事生产建筑后每矿双气,开局先单气
+        has_prod = any(
+            self._structure_present_or_pending(s)
+            for s in (UnitID.BARRACKS, UnitID.FACTORY, UnitID.STARPORT)
+        )
+        ai.register_behavior(GasBuildingController(
+            to_count=gas_target(ai.townhalls.ready.amount, has_prod),
+            closest_to=base,
+        ))
+
+        # 供给 / 造兵 / 自动补生产建筑(ProductionController 人族/神族支持)
+        plan: MacroPlan = MacroPlan()
+        plan.add(AutoSupply(base_location=base))
+        if spawn:
+            plan.add(SpawnController(army_composition_dict=spawn))
+            plan.add(ProductionController(spawn, base_location=base))
+        # 运营杠杆(build=barracks / expand=yes 等)复用同一套(expand 走 ExpansionController,种族无关)
+        _order = getattr(ai, "steer_order", None) or {}
+        self._handle_manual_build(_order, plan)
+        ai.register_behavior(plan)
+
+    def _update_zerg_stub(self) -> None:
+        """虫族生产尚未实现(M2:ProductionController 不支持 Zerg,需 build order+morph)。
+        先只维持农民 + 补给,避免开局崩;真正出兵靠 zerg_builds.yml 的 build runner/后续自定义。"""
+        ai = self.ai
+        ai.register_behavior(BuildWorkers(to_count=worker_target(ai.townhalls.amount)))
+        plan: MacroPlan = MacroPlan()
+        plan.add(AutoSupply(base_location=ai.start_location))
+        if spawn := self._army.spawn_dict():
+            plan.add(SpawnController(army_composition_dict=spawn))
+        ai.register_behavior(plan)
 
     def _structure_present_or_pending(self, structure_type: UnitID) -> bool:
         return (
