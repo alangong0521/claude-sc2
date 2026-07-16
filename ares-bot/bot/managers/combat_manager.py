@@ -9,6 +9,7 @@ from sc2.position import Point2
 from sc2.units import Units
 
 from bot.combat.base_unit import BaseUnit
+from bot.combat.generic_offensive import GenericOffensive
 from bot.combat.tempest_offensive import TempestOffensive
 
 if TYPE_CHECKING:
@@ -40,6 +41,16 @@ class CombatManager(Manager):
         self.expansions_generator = None
         self.current_base_target: Point2 = self.ai.focused_enemy_start()
         self.tempest_offensive: BaseUnit = TempestOffensive(ai, config, mediator)
+        self.generic_offensive: BaseUnit = GenericOffensive(ai, config, mediator)
+        # 兵种组成从 army_composition.yml 读(单一真相源),决定指挥哪些兵种、用哪个 combat class。
+        # 不再写死只指挥 TEMPEST —— 加兵种只改 yaml。
+        from bot.army_config import ArmyComposition
+        self._army = ArmyComposition.load()
+        # combat kind → combat class 分派表(oracle_harass 由 OracleManager 单独管,这里不收)
+        self._combat_dispatch: dict[str, BaseUnit] = {
+            "tempest_offensive": self.tempest_offensive,
+            "default": self.generic_offensive,
+        }
 
     def _enemy_near_their_base(self) -> bool:
         """敌主力是否还在自己家附近（⑥择时 when_enemy_away：在家就等他出门再打）。
@@ -161,12 +172,22 @@ class CombatManager(Manager):
         ):
             return
 
-        if offensive_tempests := self.manager_mediator.get_units_from_role(
-            role=UnitRole.ATTACKING, unit_type=UnitID.TEMPEST
-        ):
-            self.tempest_offensive.execute(
-                offensive_tempests,
-                attack_target=self.attack_target,
-                focus=order.get("focus"),        # ③焦点
-                maneuver=order.get("maneuver"),  # ④机动意图
-            )
+        # 按 army_composition 逐兵种指挥:取该兵种的 ATTACKING 单位,交给它配置的 combat class。
+        # 同一 combat class 的多兵种会各自 execute 一次(tempest/追猎各打各的),攻击点/焦点/机动共享。
+        attack_target = self.attack_target
+        for spec in self._army.by_role("ATTACKING"):
+            combat = self._combat_dispatch.get(spec.combat)
+            if combat is None:
+                continue  # oracle_harass 等不由本 manager 指挥
+            unit_id = getattr(UnitID, spec.id_name, None)
+            if unit_id is None:
+                continue
+            if units := self.manager_mediator.get_units_from_role(
+                role=UnitRole.ATTACKING, unit_type=unit_id
+            ):
+                combat.execute(
+                    units,
+                    attack_target=attack_target,
+                    focus=order.get("focus"),        # ③焦点
+                    maneuver=order.get("maneuver"),  # ④机动意图
+                )

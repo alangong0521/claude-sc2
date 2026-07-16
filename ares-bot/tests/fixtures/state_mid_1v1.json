@@ -1,0 +1,38 @@
+{
+  "time": 312.5,
+  "minerals": 640,
+  "vespene": 210,
+  "supply": "84/100",
+  "workers": 42,
+  "bases": 2,
+  "army": {
+    "TEMPEST": 4,
+    "ORACLE": 1
+  },
+  "enemies": [
+    {
+      "id": "E1",
+      "base": [120, 32],
+      "dist": 148,
+      "visible": {
+        "army": {"STALKER": 3, "PHOENIX": 2},
+        "structures": {"NEXUS": 1, "STARGATE": 2}
+      },
+      "remembered": {
+        "structures": {"NEXUS": 1, "GATEWAY": 2, "CYBERNETICSCORE": 1}
+      }
+    }
+  ],
+  "events": [
+    {"t": 240.0, "msg": "新基地建成：共 2"},
+    {"t": 268.5, "msg": "E1 发现 STARGATE"},
+    {"t": 291.0, "msg": "E1 发现 PHOENIX"},
+    {"t": 305.0, "msg": "损失暴风舰 1 艘"}
+  ],
+  "order": {
+    "stance": "attack",
+    "target": "enemy_natural",
+    "harass": "on",
+    "note": "压二矿追经济"
+  }
+}
