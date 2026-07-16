@@ -255,6 +255,27 @@ class TestNewCombatKinds(unittest.TestCase):
         self.assertEqual([u.combat for u in ac.units],
                          ["templar_caster", "medivac_transport"])
 
+    def test_specialist_kinds_accepted(self):
+        # 补充兵种:幽灵/渡鸦/女王/死神/感染虫
+        ac = ArmyComposition.from_dict({"units": [
+            {"id": "ghost", "proportion": 0.2, "combat": "ghost_offensive"},
+            {"id": "raven", "proportion": 0.2, "combat": "raven_support"},
+            {"id": "queen", "proportion": 0.2, "combat": "queen_support"},
+            {"id": "reaper", "proportion": 0.2, "combat": "reaper_harass"},
+            {"id": "infestor", "proportion": 0.2, "combat": "infestor_caster"},
+        ]})
+        self.assertEqual(
+            [u.combat for u in ac.units],
+            ["ghost_offensive", "raven_support", "queen_support",
+             "reaper_harass", "infestor_caster"],
+        )
+
+    def test_combat_kinds_count(self):
+        # COMBAT_KINDS 冻结在 12 个,防止误删/漏加
+        from bot.army_config import COMBAT_KINDS
+        self.assertEqual(len(COMBAT_KINDS), 12)
+        self.assertEqual(len(set(COMBAT_KINDS)), 12)  # 无重复
+
     def test_unknown_combat_still_rejected(self):
         with self.assertRaises(ValueError):
             ArmyComposition.from_dict(

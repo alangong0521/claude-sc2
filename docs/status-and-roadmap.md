@@ -100,6 +100,16 @@ army_composition.yml 每种族块加 `upgrades:` 列表(引擎 UpgradeId 名);`a
 **未跑局验证**:架起站位、跟队/空投时机、风暴落点/能量管理都需实测。`AbilityId.PSISTORM_PSISTORM`
 用 getattr 兜底(离线无法核对 sc2 枚举,对不上则不放风暴、不崩)。
 
+#### 专属 combat class 补充(跨三族,5 个)
+- `combat=ghost_offensive`(`ghost_offensive.py`):ares `GhostSnipe` 狙杀高血敌 + AMove。
+- `combat=raven_support`(`raven_support.py`):ares `RavenAutoTurret` 布防御机炮台跟队。
+- `combat=queen_support`(`queen_support.py`):ares `UseTransfuse` 输血 + `QueenSpreadCreep` 铺菌。
+- `combat=reaper_harass`(`reaper_harass.py`):ares `ReaperGrenade` 扔雷 + 风筝骚扰。
+- `combat=infestor_caster`(`infestor_caster.py`):ares `UseAOEAbility` 放真菌感染(敌扎堆时)。
+- 全注册进 `_combat_dispatch` + `COMBAT_KINDS`(现 12 个);ability id 均 getattr 兜底(离线无法核对枚举)。
+- `test_army_config`:新增 `test_specialist_kinds_accepted` + `test_combat_kinds_count`(冻结 12,防漏加)。
+**未跑局验证**:全部专属微操(狙杀目标选择、机炮布点、输血/铺菌时机、手雷走位、真菌落点)需实测。
+
 #### M2 开了头(Zerg 生产骨架)
 `_update_zerg`(替代原 stub)全用 ares 种族无关积木,不靠 ProductionController(它不支持 Zerg):
 `BuildWorkers`(drone)+`AutoSupply`(overlord,种族无关)+`SpawnController`(larva/morph 出兵)
@@ -137,9 +147,11 @@ build runner)、与 M4 的架坦克/运兵专属微操。当前 Terran 能造建
 3. **验证**:跑一局看它被造出来、会压上、会打(B0/B7 可能要调)。
 
 ### 三个边界(加兵种前必读)
-- **combat 只有三种**:`tempest_offensive`(暴风舰远射风筝)/ `oracle_harass`(先知,OracleManager 单独管)/
-  `default`(通用,`generic_offensive`,**未跑局验证**)。要更精细的兵种微操(如攻城坦克架起、
-  不朽护盾)得**新写一个 combat class** 并在 `CombatManager._combat_dispatch` 注册。
+- **combat 现有 12 种**(`COMBAT_KINDS`):通用 `default`(`generic_offensive`)+ `tempest_offensive` +
+  `oracle_harass`(先知,OracleManager 单独管)+ 专属 9 个(`siege_offensive`/`medivac_support`/
+  `medivac_transport`/`templar_caster`/`ghost_offensive`/`raven_support`/`queen_support`/
+  `reaper_harass`/`infestor_caster`)。要更精细的没覆盖的微操,**新写一个 combat class** 并在
+  `CombatManager._combat_dispatch` + `COMBAT_KINDS` 注册。全部专属类**未跑局验证**。
 - **科技/升级还没配置化**:`DESIRED_UPGRADES`、chrono 逻辑仍偏暴风舰(见 B7)。换**主力**兵种时
   这块要一并改;只是**添**辅助兵种通常不受影响。
 - **proportion 校验**:总和 > 1.0 会在加载时报错(`army_config._validate`);oracle 这种 0 占比

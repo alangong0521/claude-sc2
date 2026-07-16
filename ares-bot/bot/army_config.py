@@ -33,9 +33,14 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "army_composition.yml"
 #   medivac_support   = 医疗船治疗跟队(M4, ares MedivacHeal)
 #   medivac_transport = 医疗船装兵空投(M4, ares PickUpAndDropCargo)
 #   templar_caster    = 高模放灵能风暴(M4, ares UseAOEAbility)
+#   ghost_offensive   = 幽灵狙杀(ares GhostSnipe)  |  raven_support = 渡鸦机炮台(RavenAutoTurret)
+#   queen_support     = 女王输血(UseTransfuse)     |  reaper_harass = 死神手雷(ReaperGrenade)
+#   infestor_caster   = 感染虫真菌爆发(UseAOEAbility)
 COMBAT_KINDS = (
     "tempest_offensive", "oracle_harass", "default",
     "siege_offensive", "medivac_support", "medivac_transport", "templar_caster",
+    "ghost_offensive", "raven_support", "queen_support", "reaper_harass",
+    "infestor_caster",
 )
 
 # 种族块键(army_composition.yml 支持 per-race:顶层 protoss/terran/zerg 各一套 units)

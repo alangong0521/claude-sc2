@@ -10,8 +10,13 @@ from sc2.units import Units
 
 from bot.combat.base_unit import BaseUnit
 from bot.combat.generic_offensive import GenericOffensive
+from bot.combat.ghost_offensive import GhostOffensive
+from bot.combat.infestor_caster import InfestorCaster
 from bot.combat.medivac_support import MedivacSupport
 from bot.combat.medivac_transport import MedivacTransport
+from bot.combat.queen_support import QueenSupport
+from bot.combat.raven_support import RavenSupport
+from bot.combat.reaper_harass import ReaperHarass
 from bot.combat.siege_offensive import SiegeOffensive
 from bot.combat.templar_caster import TemplarCaster
 from bot.combat.tempest_offensive import TempestOffensive
@@ -50,6 +55,11 @@ class CombatManager(Manager):
         self.medivac_support: BaseUnit = MedivacSupport(ai, config, mediator)
         self.medivac_transport: BaseUnit = MedivacTransport(ai, config, mediator)
         self.templar_caster: BaseUnit = TemplarCaster(ai, config, mediator)
+        self.ghost_offensive: BaseUnit = GhostOffensive(ai, config, mediator)
+        self.raven_support: BaseUnit = RavenSupport(ai, config, mediator)
+        self.queen_support: BaseUnit = QueenSupport(ai, config, mediator)
+        self.reaper_harass: BaseUnit = ReaperHarass(ai, config, mediator)
+        self.infestor_caster: BaseUnit = InfestorCaster(ai, config, mediator)
         # 兵种组成从 army_composition.yml 读(单一真相源,按 bot 种族选块),决定指挥哪些兵种、
         # 用哪个 combat class。不再写死只指挥 TEMPEST —— 加兵种只改 yaml。
         from bot.army_config import ArmyComposition, bot_race_name
@@ -62,6 +72,11 @@ class CombatManager(Manager):
             "medivac_support": self.medivac_support,        # M4:医疗船治疗
             "medivac_transport": self.medivac_transport,    # M4:医疗船空投
             "templar_caster": self.templar_caster,          # M4:高模风暴
+            "ghost_offensive": self.ghost_offensive,        # 幽灵狙杀
+            "raven_support": self.raven_support,            # 渡鸦机炮台
+            "queen_support": self.queen_support,            # 女王输血
+            "reaper_harass": self.reaper_harass,            # 死神手雷
+            "infestor_caster": self.infestor_caster,        # 感染虫真菌
         }
 
     def _enemy_near_their_base(self) -> bool:
