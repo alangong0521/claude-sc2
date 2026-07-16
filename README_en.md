@@ -21,7 +21,13 @@ and — once you give the order — translates it into a small set of **high-lev
 never micromanages units. The result is a **zero-APM RTS**: command, not mechanics.
 
 The official face of this project is **Protoss** — an Aristaeus-style *Tempest sky + Oracle
-harass* build. The bot is race-agnostic under the hood; Terran and Zerg opening builds ship too.
+harass* build, and that line is battle-tested. Under the hood the bot is **race-agnostic and
+composition-configurable**: a single `army_composition.yml` registers every unit for all three
+races, and both production (what to build) and command (which combat micro each unit uses) read
+from it — so **adding a unit usually means editing that yaml, not touching Python**. The Terran
+and Zerg production paths, plus per-unit specials (siege-tank sieging, medivac heal & drops,
+High Templar storm, Ghost snipe, and more), are all scaffolded (control-ready) but not yet
+individually battle-tested; see `docs/status-and-roadmap.md`.
 
 ```
    You (chat)  ──intent──▶  LLM chief-of-staff
@@ -54,10 +60,16 @@ files** (`~/agent-rts-steer/`) ← **a constrained lever vocabulary** ← **the 
 |---|---|
 | `smoke.py` | Stage-0 probe: can python-sc2 launch the client and finish a game? (bare burnysc2, no ares) |
 | `ares-bot/` | The real bot + steer layer (Python 3.11 + Poetry) |
-| `ares-bot/bot/main.py` | The `AresBot` subclass: plays full-game + the steer seam |
+| `ares-bot/bot/main.py` | The `AresBot` subclass: plays full-game + the steer seam + human co-driving hand-off |
+| `ares-bot/bot/managers/` | Three managers: `combat` (commands the army) / `production` (units & economy) / `oracle` (harass) |
+| `ares-bot/bot/combat/` | Per-unit combat classes (built on ares combat primitives); units without a special use `generic_offensive` |
+| `ares-bot/army_composition.yml` | Single source of truth for units (all three races registered); production & command both read it — **add units here** |
+| `ares-bot/bot/army_config.py` | Loads `army_composition.yml`, splits by race, validates |
+| `ares-bot/bot/levers.py` | Pure lever logic (semantic → coordinate/enum, unit-testable offline) |
 | `ares-bot/bot/steer.py` | Bot side: atomic JSON I/O to `~/agent-rts-steer/` |
 | `ares-bot/bot/steer_vocab.py` | The shared lever vocabulary (single source of truth) |
 | `ares-bot/steer_cli.py` | Commander CLI: `state` / `set k=v` / `show` / `clear` / `vocab` |
+| `docs/lever-map.md` | Lever → bot-action map (where each lever lands in code) |
 | `ares-bot/spike_config.py` | One place for match settings (difficulty / map / race / realtime / replays) |
 | `ares-bot/run.py` | Launch entry point |
 | `.claude/skills/canmou/` | The Claude Code "chief-of-staff" skill (the LLM's playbook) |
@@ -205,8 +217,20 @@ yields that unit for 3 game-seconds per action and seamlessly takes it back when
 ## Status & roadmap
 
 Working today: Stage 0 (launch a game), Stage 1 (bot beats Hard built-in AI unaided), Stage 2
-(the live steer loop — read → order → apply → win). Next up (Stage 3): richer production/expansion
-levers, scouting memory, an autonomous advisor mode, deeper FFA. See `CHANGELOG.md`.
+(the live steer loop — read → order → apply → win).
+
+Scaffolded (ready to extend): **configurable** units/compositions (`army_composition.yml`
+registers every unit for all three races; production and command both read it), **multi-unit
+dispatch** (`CombatManager` hands each unit to its combat class), Terran / Zerg **production
+paths** (all via ares race-agnostic macro behaviors, bypassing the Protoss/Terran-only
+`ProductionController`), configurable upgrades, and a set of per-unit combat classes (siege-tank
+sieging, medivac heal & drop, High Templar storm, Ghost, Raven, Queen, Reaper, Infestor). These
+are mostly **offline scaffolding, not yet individually battle-tested**.
+
+Next up: Zerg **queen inject + creep spread** (core to larva economy and macro — queens currently
+only get built, not used), tuning the per-unit micro in real games, richer production/expansion
+levers, scouting memory, an autonomous advisor mode, deeper FFA. See `docs/status-and-roadmap.md`
+and `CHANGELOG.md`.
 
 ## Contributing
 
