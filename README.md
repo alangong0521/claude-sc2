@@ -16,8 +16,11 @@
 **参谋长**的 LLM 读实时战况、分析敌情、给你几个选项——等你**下令**后，把它翻译成一小组
 **高层杠杆**。它从不微操单位。于是这是一个**零 APM 的 RTS**：你负责「指挥」，不负责「操作」。
 
-本项目对外的官方方向是**神族（Protoss）**——Aristaeus 风格的**暴风舰天空体 + 先知骚扰**流派。
-底层是种族无关的，仓库里也带了人族、虫族的开局 build。
+本项目对外的官方方向是**神族（Protoss）**——Aristaeus 风格的**暴风舰天空体 + 先知骚扰**流派，
+这条线已实机验证。底层是**种族无关 + 兵种配置化**的：一份 `army_composition.yml` 登记三族全部兵种，
+生产（造什么兵）与指挥（每个兵种用哪套战斗微操）都从它读——**加一个兵种通常只改这份 yaml，不用动
+Python**。人族、虫族的生产层，以及坦克架起 / 医疗船治疗空投 / 高模风暴 / 幽灵狙杀等专属微操，骨架均已
+搭好（control-ready），但尚未逐一实机验证，详见 `docs/status-and-roadmap.md`。
 
 ```
    你(chat)  ──意图──▶  LLM 参谋长
@@ -47,10 +50,16 @@
 |---|---|
 | `smoke.py` | Stage-0 探针：python-sc2 能不能拉起客户端打完一局？（裸 burnysc2，不用 ares） |
 | `ares-bot/` | 真正的 bot + steer 层（Python 3.11 + Poetry） |
-| `ares-bot/bot/main.py` | `AresBot` 子类：自己打全场 + steer 接缝 |
+| `ares-bot/bot/main.py` | `AresBot` 子类：自己打全场 + steer 接缝 + 人机共驾让权 |
+| `ares-bot/bot/managers/` | 三个 manager：`combat`（指挥军队）/ `production`（造兵运营）/ `oracle`（先知骚扰） |
+| `ares-bot/bot/combat/` | 各兵种专属 combat class（借 ares 战斗原语）；无专属类的兵种走 `generic_offensive` |
+| `ares-bot/army_composition.yml` | 兵种单一真相源（三族全兵种登记）；生产与指挥都读它，**加兵种改这里** |
+| `ares-bot/bot/army_config.py` | 读 `army_composition.yml`、按种族分块、校验 |
+| `ares-bot/bot/levers.py` | 操纵杆纯逻辑（语义→坐标/枚举的纯计算，可离线单测） |
 | `ares-bot/bot/steer.py` | bot 侧：与 `~/agent-rts-steer/` 的原子 JSON 收发 |
 | `ares-bot/bot/steer_vocab.py` | 共享杠杆词表（单一真相源） |
 | `ares-bot/steer_cli.py` | 指挥 CLI：`state` / `set k=v` / `show` / `clear` / `vocab` |
+| `docs/lever-map.md` | 操纵杆 → bot 动作 映射图（每个杠杆最终落到哪段代码） |
 | `ares-bot/spike_config.py` | 一处管对局设置（难度 / 地图 / 种族 / realtime / 存 replay） |
 | `ares-bot/run.py` | 启动入口 |
 | `.claude/skills/canmou/` | Claude Code「参谋长」技能（LLM 的行动手册） |
@@ -187,8 +196,16 @@ poetry run python steer_cli.py vocab              # 列全部杠杆
 ## 现状与路线
 
 已跑通：Stage 0（拉起一局）、Stage 1（bot 无指挥即胜 Hard 内置 AI）、Stage 2（实时 steer 闭环——
-读 → 下令 → 应用 → 赢）。下一步（Stage 3）：更丰富的产能/扩张杠杆、侦查记忆、自动驾驶 advisor 模式、
-更完整的 FFA。见 `CHANGELOG.md`。
+读 → 下令 → 应用 → 赢）。
+
+已落地（骨架，随时可扩）：兵种/流派**配置化**（`army_composition.yml` 三族全兵种登记，
+生产 + 指挥都从它读）、**多兵种分派指挥**（`CombatManager` 按配置把各兵种交给对应 combat class）、
+Terran / Zerg **生产层**（全走 ares 种族无关宏行为，绕开只支持 P/T 的 `ProductionController`）、
+升级配置化、一批专属 combat class（坦克架起 / 医疗治疗空投 / 高模风暴 / 幽灵 / 渡鸦 / 女王 / 死神 / 感染虫）。
+这些多为**离线骨架、尚未逐一实机验证**。
+
+下一步：Zerg 的**女王注卵 + 铺菌毯**（爆兵与运营核心，目前女王只造不注）、各专属微操的实战手感调优、
+更丰富的产能/扩张杠杆、侦查记忆、自动驾驶 advisor 模式、更完整的 FFA。见 `docs/status-and-roadmap.md` 与 `CHANGELOG.md`。
 
 ## 参与贡献
 
