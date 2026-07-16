@@ -199,14 +199,6 @@ poetry run python steer_cli.py vocab              # 列全部杠杆
 这个项目是我们「让 Coding Agent 去玩点真东西」系列尝试的第一个公开 demo——我们准备用 Coding Agent
 去折腾各种各样的 Agent 玩法，**游戏只是一个开始**（星际 2 是起点，不是终点）。
 
-后续要是搞出什么新鲜好玩的，我们会**第一时间、第一视角**在企业微信群里分享。想围观、想一起玩、
-想聊聊 Agent 的，扫码直接进群，或加小澈（企业微信）拉你入群：
-
-<p align="center">
-  <img src="docs/wecom-group-qr.png" alt="企业微信群 · AsKlear 澈问 agent game 交流群" width="260">
-  &nbsp;&nbsp;&nbsp;
-  <img src="docs/wecom-qr.png" alt="企业微信 · 小澈" width="260">
-</p>
 
 *左：交流群直入二维码（会定期过期，失效了就扫右边）。右：小澈的个人企业微信，随时有效。*
 
