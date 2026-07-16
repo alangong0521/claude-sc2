@@ -83,9 +83,9 @@ class ProductionManager(Manager):
         # 一次性锁定：记下"目标数量"，造到就停；想再造先 clear 再下（同 scout 手感）。
         self._build_key: str | None = None
         self._build_target: int | None = None
-        # 兵种组成从 army_composition.yml 读(单一真相源),不再硬编码 TEMPEST。
-        from bot.army_config import ArmyComposition
-        self._army = ArmyComposition.load()
+        # 兵种组成从 army_composition.yml 读(单一真相源,按 bot 种族选块),不再硬编码 TEMPEST。
+        from bot.army_config import ArmyComposition, bot_race_name
+        self._army = ArmyComposition.load(race=bot_race_name(ai))
 
     async def update(self, iteration: int) -> None:
         """Handle production.

@@ -1,49 +1,110 @@
-# 军队组成配置 —— 兵种单一真相源
+# 军队组成配置 —— 兵种单一真相源(per-race)
 #
-# ProductionManager 的 SpawnController(造什么兵)和 CombatManager(指挥哪些兵进攻)
-# 都从本文件读,改这里就能调整 bot 支持的兵种,不用动 Python。
+# ProductionManager(造什么兵)和 CombatManager(指挥哪些兵、用哪个 combat class)按 bot
+# 自己的种族(ai.race)读对应块。改这里就能调 bot 支持的兵种,不用动 Python。
 #
-# 结构:
-#   units: 兵种列表,每个兵种:
-#     id:       引擎枚举名(sc2 UnitTypeId),全大写,如 TEMPEST
-#     proportion: 造该兵种的目标占比(0~1),所有 units 的 proportion 之和应≈1.0
-#     priority:   造兵优先级(整数,越小越优先;0=最高)
-#     role:       ares 的 UnitRole 名(ATTACKING/HARASSING/SCOUTING),默认 ATTACKING
-#     combat:     指挥方式,决定 CombatManager 用哪个 combat class 控它:
-#       tempest_offensive = 暴风舰风筝(射程远,主动追击/埋伏)
-#       oracle_harass     = 先知骚扰(由 OracleManager 单独管,这里仅登记)
-#       default           = 通用近战/地面兵,跟随 attack_target 压上(待实现)
-#     notes:    人话备注(给读配置的人/参谋长看)
+# 顶层 = 三个种族块 protoss/terran/zerg;每块一个 units 列表。每个兵种:
+#   id:        引擎枚举名(sc2 UnitTypeId),全大写,如 TEMPEST / MARINE / ROACH
+#   proportion: 该兵种目标占比(0~1)。**同一块内 >0 的占比之和应 ≤1.0**。
+#              proportion=0 = "已登记但不入产":CombatManager 会指挥它(若场上有),但
+#              SpawnController 不造它(spawn_dict 只收 >0)。想真正混编就把它调 >0。
+#   priority:   造兵优先级(整数,越小越优先;0=最高)
+#   role:       ares UnitRole 名(ATTACKING 归 CombatManager 指挥 / HARASSING 归 OracleManager)
+#   combat:     指挥方式,决定用哪个 combat class:
+#       tempest_offensive = 暴风舰远射风筝(BaseUnit 专属类)
+#       oracle_harass     = 先知骚扰(OracleManager 单独管,CombatManager 不收)
+#       default           = 通用 attack-move + 基础风筝(generic_offensive),任意兵种可用
+#   notes:     人话备注
 #
-# 想加兵种:在 units 下加一项即可。想换主力流派:改 proportion/priority。
-# 注意:combat=default 的兵种目前 CombatManager 还没实现通用指挥(见 main.py TODO),
-#       配了会造但不会主动指挥进攻 —— 加之前确认 combat class 已支持。
+# ⚠️ 两条硬约束(加兵种前必读,细节见 docs/status-and-roadmap.md「多兵种/多种族」):
+#  1. combat=default 的交战手感(风筝距离/集火/寻路)**未跑局验证**(B0)。
+#  2. **只有 protoss 块当前能真正出兵**:bot 默认 Protoss,且 ProductionManager 的
+#     科技建筑逻辑是 Protoss 专属。terran/zerg 块要真正 field,需(a)把 BOT_RACE 切成该
+#     种族,(b)补该种族的生产/科技层(Terran 可用 ares ProductionController;Zerg 不支持
+#     ProductionController,得靠 build order/自定义)。在那之前 terran/zerg 块是**控制层
+#     就绪的前瞻配置**,不是能打的 bot。
 
-units:
-  - id: TEMPEST
-    proportion: 1.0
-    priority: 0
-    role: ATTACKING
-    combat: tempest_offensive
-    notes: 主力天空体,射程极远,地面兵够不着。死穴=凤凰。
+protoss:
+  units:
+    # —— 已验证主力(保持原样,勿轻改)——
+    - id: TEMPEST
+      proportion: 1.0
+      priority: 0
+      role: ATTACKING
+      combat: tempest_offensive
+      notes: 主力天空体,射程极远,地面兵够不着。死穴=凤凰。
+    - id: ORACLE
+      proportion: 0.0
+      priority: 9
+      role: HARASSING
+      combat: oracle_harass
+      notes: 顺路骚扰农民。OracleManager 单独造(一次性一个),不进 SpawnController 混编。
 
-  - id: ORACLE
-    proportion: 0.0
-    priority: 9
-    role: HARASSING
-    combat: oracle_harass
-    notes: 顺路骚扰对面农民。由 OracleManager 单独管(一次性造一个),不进主力编队。
+    # —— 备选兵种(control-ready,proportion=0 默认不入产;调 >0 即混编,需对应科技+跑局验证)——
+    - id: STALKER
+      proportion: 0.0
+      priority: 1
+      role: ATTACKING
+      combat: default
+      notes: 追猎,通用地面/对空。补暴风舰被凤凰克时的对空火力。需 GATEWAY+控制核心。
+    - id: VOIDRAY
+      proportion: 0.0
+      priority: 2
+      role: ATTACKING
+      combat: default
+      notes: 虚空,对重甲/巨像好用,与暴风舰同走星门科技(STARGATE 已在造)。
+    - id: IMMORTAL
+      proportion: 0.0
+      priority: 2
+      role: ATTACKING
+      combat: default
+      notes: 不朽,对重甲。需 ROBOTICSFACILITY(当前 build 默认不造,先 build=robo)。
 
-# ── 示例:想支持多兵种混编,取消注释改 proportion 即可 ──────────────────
-#   - id: STALKER
-#     proportion: 0.4
-#     priority: 1
-#     role: ATTACKING
-#     combat: default
-#     notes: 追猎者,通用地面/对空,填补暴风舰被凤凰克时的对空火力。
-#   - id: VOIDRAY
-#     proportion: 0.3
-#     priority: 2
-#     role: ATTACKING
-#     combat: default
-#     notes: 虚空舰,对重甲/巨像好用。
+# ⚠️ 以下 terran/zerg 为前瞻配置:需切 BOT_RACE + 补生产层才能真正出兵(见文件头约束 2)。
+terran:
+  units:
+    - id: MARINE
+      proportion: 0.5
+      priority: 1
+      role: ATTACKING
+      combat: default
+      notes: 枪兵,生化核心。真正拉扯要 stutter_unit_back(default 目前只平A+基础风筝)。
+    - id: MARAUDER
+      proportion: 0.2
+      priority: 1
+      role: ATTACKING
+      combat: default
+      notes: 掠夺者,对重甲。需 barracks+techlab。
+    - id: SIEGETANK
+      proportion: 0.2
+      priority: 0
+      role: ATTACKING
+      combat: default
+      notes: 攻城坦克。真正架起要 ares siege_tank_decision(待写专属 combat class);default 只平A。
+    - id: MEDIVAC
+      proportion: 0.1
+      priority: 2
+      role: ATTACKING
+      combat: default
+      notes: 医疗运输。治疗/运兵要 ares medivac_heal+pick_up/drop_cargo(待写);default 只跟队。
+
+zerg:
+  units:
+    - id: ZERGLING
+      proportion: 0.3
+      priority: 2
+      role: ATTACKING
+      combat: default
+      notes: 小狗,便宜围杀。Zerg 不支持 ProductionController,出兵靠 build order/自定义。
+    - id: ROACH
+      proportion: 0.4
+      priority: 1
+      role: ATTACKING
+      combat: default
+      notes: 蟑螂,肉盾主力。需 ROACHWARREN。
+    - id: HYDRALISK
+      proportion: 0.3
+      priority: 1
+      role: ATTACKING
+      combat: default
+      notes: 刺蛇,远程对空/对地。需 HYDRALISKDEN。

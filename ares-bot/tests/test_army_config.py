@@ -9,10 +9,13 @@ spawn_dict() 需 sc2 枚举,离线跳过(它在 bot 运行时才被调用)。
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bot.army_config import ArmyComposition, UnitSpec  # noqa: E402
+from bot.army_config import (  # noqa: E402
+    ArmyComposition, UnitSpec, _select_block, bot_race_name,
+)
 
 
 _TWO_UNITS = {
@@ -114,17 +117,91 @@ class TestFilters(unittest.TestCase):
         self.assertEqual(self.ac.unit_ids(combat="default"), ["STALKER"])
 
 
-class TestDefaultConfigLoads(unittest.TestCase):
-    """确认仓库里真实的 army_composition.yml 能加载且合法(需 pyyaml)。"""
-    def test_load_shipped_config(self):
+_PER_RACE = {
+    "protoss": {"units": [
+        {"id": "tempest", "proportion": 1.0, "combat": "tempest_offensive"},
+    ]},
+    "terran": {"units": [
+        {"id": "marine", "proportion": 0.6, "combat": "default"},
+        {"id": "siegetank", "proportion": 0.4, "combat": "default"},
+    ]},
+    "zerg": {"units": [
+        {"id": "roach", "proportion": 1.0, "combat": "default"},
+    ]},
+}
+
+
+class TestSelectBlock(unittest.TestCase):
+    def test_pick_by_race(self):
+        self.assertEqual(_select_block(_PER_RACE, "Terran")["units"][0]["id"], "marine")
+        self.assertEqual(_select_block(_PER_RACE, "zerg")["units"][0]["id"], "roach")
+
+    def test_case_insensitive(self):
+        self.assertEqual(_select_block(_PER_RACE, "PROTOSS")["units"][0]["id"], "tempest")
+
+    def test_none_falls_back_to_protoss(self):
+        self.assertEqual(_select_block(_PER_RACE, None)["units"][0]["id"], "tempest")
+
+    def test_unknown_race_falls_back_to_protoss(self):
+        self.assertEqual(_select_block(_PER_RACE, "Random")["units"][0]["id"], "tempest")
+
+    def test_flat_backcompat(self):
+        # 旧扁平结构(顶层直接 units:) → 原样返回,忽略 race
+        flat = {"units": [{"id": "tempest", "proportion": 1.0,
+                           "combat": "tempest_offensive"}]}
+        self.assertIs(_select_block(flat, "terran"), flat)
+
+    def test_no_protoss_falls_back_first(self):
+        d = {"zerg": {"units": [{"id": "roach"}]}}
+        self.assertEqual(_select_block(d, "Terran")["units"][0]["id"], "roach")
+
+    def test_garbage_returns_empty(self):
+        self.assertEqual(_select_block(None, "x"), {})
+        self.assertEqual(_select_block({}, "x"), {})
+
+
+class TestBotRaceName(unittest.TestCase):
+    def test_extracts_name(self):
+        ai = SimpleNamespace(race=SimpleNamespace(name="Terran"))
+        self.assertEqual(bot_race_name(ai), "Terran")
+
+    def test_missing_race_none(self):
+        self.assertIsNone(bot_race_name(SimpleNamespace()))
+        self.assertIsNone(bot_race_name(SimpleNamespace(race=None)))
+
+
+class TestLoadPerRace(unittest.TestCase):
+    """load(race=...) 从真实 yaml 选块(需 pyyaml)。"""
+    def _yaml_or_skip(self):
         try:
             import yaml  # noqa: F401
         except ImportError:
             self.skipTest("pyyaml 未安装")
-        ac = ArmyComposition.load()
+
+    def test_default_protoss(self):
+        self._yaml_or_skip()
+        ac = ArmyComposition.load()  # race=None → protoss
         self.assertTrue(any(u.id_name == "TEMPEST" for u in ac.units))
-        # 主力应是 tempest_offensive 指挥
         self.assertTrue(ac.by_combat("tempest_offensive"))
+
+    def test_terran_block(self):
+        self._yaml_or_skip()
+        ac = ArmyComposition.load(race="Terran")
+        ids = [u.id_name for u in ac.units]
+        self.assertIn("MARINE", ids)
+        self.assertNotIn("TEMPEST", ids)
+
+    def test_zerg_block(self):
+        self._yaml_or_skip()
+        ac = ArmyComposition.load(race="Zerg")
+        self.assertIn("ROACH", [u.id_name for u in ac.units])
+
+    def test_all_race_blocks_valid(self):
+        # 三块都能过 _validate(proportion 和 ≤1.0、combat 合法、id 唯一)
+        self._yaml_or_skip()
+        for r in ("Protoss", "Terran", "Zerg"):
+            ac = ArmyComposition.load(race=r)
+            self.assertTrue(ac.units, f"{r} 块为空")
 
 
 if __name__ == "__main__":

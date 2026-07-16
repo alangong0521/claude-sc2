@@ -42,10 +42,10 @@ class CombatManager(Manager):
         self.current_base_target: Point2 = self.ai.focused_enemy_start()
         self.tempest_offensive: BaseUnit = TempestOffensive(ai, config, mediator)
         self.generic_offensive: BaseUnit = GenericOffensive(ai, config, mediator)
-        # 兵种组成从 army_composition.yml 读(单一真相源),决定指挥哪些兵种、用哪个 combat class。
-        # 不再写死只指挥 TEMPEST —— 加兵种只改 yaml。
-        from bot.army_config import ArmyComposition
-        self._army = ArmyComposition.load()
+        # 兵种组成从 army_composition.yml 读(单一真相源,按 bot 种族选块),决定指挥哪些兵种、
+        # 用哪个 combat class。不再写死只指挥 TEMPEST —— 加兵种只改 yaml。
+        from bot.army_config import ArmyComposition, bot_race_name
+        self._army = ArmyComposition.load(race=bot_race_name(ai))
         # combat kind → combat class 分派表(oracle_harass 由 OracleManager 单独管,这里不收)
         self._combat_dispatch: dict[str, BaseUnit] = {
             "tempest_offensive": self.tempest_offensive,

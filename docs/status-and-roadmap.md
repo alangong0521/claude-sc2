@@ -46,14 +46,52 @@
 4. 多兵种冒烟:改 `army_composition.yml` 放开一个 `combat: default` 兵种(如 STALKER),跑一局看它
    是否被造出来且会压向 attack_target;再调 B0。
 
+## 多兵种 / 多种族(ares-sc2 复用 + 现状)
+
+### army_composition.yml 现在是 per-race
+顶层三块 `protoss/terran/zerg`,bot 按自己的种族(`ai.race`)选块(`army_config.bot_race_name`
++ `_select_block`,回退 protoss)。`spawn_dict()` 只喂 `proportion>0` 的兵种给 SpawnController;
+`proportion=0` = "控制层已就绪但不入产"。**protoss 块的产出仍恰是 `{TEMPEST:1.0}`,与已验证行为逐位一致**。
+
+- Protoss:主力 TEMPEST(1.0)+ ORACLE(骚扰,单独造);备选 STALKER/VOIDRAY/IMMORTAL 已登记
+  (proportion=0,场上有就指挥,调 >0 即混编,需对应科技 + 跑局验证)。
+- Terran:MARINE/MARAUDER/SIEGETANK/MEDIVAC 组成已写(combat=default)。
+- Zerg:ZERGLING/ROACH/HYDRALISK 组成已写(combat=default)。
+
+### ares-sc2 里能直接复用的(已核对 vendored 源码)
+| 组件 | 用处 | 种族 |
+|---|---|---|
+| `SpawnController` | 按 army_comp 造兵,**已支持 Zerg larva/morph、Terran train、Protoss warp-in** | 全 |
+| group 战斗行为(`stutter_group_back`/`a_move_group`/`path_group_to_target`) | 队级微操,比逐单位省事,是 generic_offensive 的升级路线 | 全 |
+| 个体微操原语(`siege_tank_decision`/`ghost_snipe`/`medivac_heal`/`place_predictive_aoe`/`stutter_unit_back` 等 26 个) | 写专属 combat class 的积木 | 全 |
+| `UpgradeController(desired_upgrades=[...])` | **种族无关**的自动研究升级,可替代硬编码的暴风舰专属 `DESIRED_UPGRADES`(解 B7) | 全 |
+| `ProductionController` | 按 army_comp 自动补生产建筑 | **仅 Terran/Protoss,不支持 Zerg** |
+
+### 诚实的边界:控制层就绪 ≠ 能打的 T/Z bot
+- ✅ **控制 + 造兵层已多种族**:SpawnController(造)+ CombatManager 分派(指挥)对任意种族兵种都通。
+- ❌ **科技/生产层仍是 Protoss 专属**:当前 `ProductionManager` 只建 Protoss 结构(pylon/stargate/
+  chrono/tempest 链)。要真正 field Terran/Zerg 需:(a)`BOT_RACE` 切成该种族;(b)补该种族科技层
+  —— Terran 可接 ares `ProductionController`;**Zerg 不支持 ProductionController**,得靠 build order
+  (`zerg_builds.yml` 已有 Standard)或自定义 morph 逻辑。这些**必须跑局**,列为下方排期。
+
+### 多种族排期(需跑局)
+| # | 项 | 依赖 |
+|---|---|---|
+| M1 | Terran 生产层:用 `ProductionController` 替代 Protoss 专属建筑逻辑 | 跑局 |
+| M2 | Zerg 生产层:build order + larva/morph 自定义(ProductionController 不支持) | 跑局 |
+| M3 | 升级配置化:`UpgradeController` + army_composition 里加 `upgrades:` 字段(解 B7,种族无关) | 跑局 |
+| M4 | 专属 combat class:SIEGETANK 架起 / MEDIVAC 治疗运兵 / 高模 storm(用 ares 原语) | 跑局 |
+| M5 | generic_offensive 升级到 group 行为(队级) | 跑局调手感 |
+
 ## 怎么加一个新兵种(用户问的重点)
 
 **改一个 yaml 就能让 bot 造 + 指挥新兵种**,不用动 Python(前提:该兵种用现成 combat class)。
 
-1. 编辑 `ares-bot/army_composition.yml`,在 `units:` 下加一项:
+1. 编辑 `ares-bot/army_composition.yml`,在**对应种族块**(`protoss:`/`terran:`/`zerg:`)的
+   `units:` 下加一项:
    ```yaml
      - id: STALKER            # 引擎枚举名(sc2 UnitTypeId),全大写
-       proportion: 0.4        # 目标占比(所有 proportion 之和 ≤ 1.0)
+       proportion: 0.4        # 目标占比(同块内 >0 之和 ≤ 1.0);0=登记但不入产,只受指挥
        priority: 1            # 造兵优先级(越小越先),0=最高
        role: ATTACKING        # ATTACKING 归 CombatManager 指挥
        combat: default        # 用通用作战(generic_offensive);暴风舰用 tempest_offensive
