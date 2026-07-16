@@ -10,6 +10,7 @@ from ares.behaviors.macro import (
     GasBuildingController,
     ProductionController,
     SpawnController,
+    TechUp,
     UpgradeCCs,
     UpgradeController,
 )
@@ -111,7 +112,7 @@ class ProductionManager(Manager):
             self._update_terran()
             return
         if self.ai.race == Race.Zerg:
-            self._update_zerg_stub()
+            self._update_zerg()
             return
 
         if not self._built_extra_production_pylon:
@@ -200,16 +201,57 @@ class ProductionManager(Manager):
         self._handle_manual_build(_order, plan)
         ai.register_behavior(plan)
 
-    def _update_zerg_stub(self) -> None:
-        """虫族生产尚未实现(M2:ProductionController 不支持 Zerg,需 build order+morph)。
-        先只维持农民 + 补给,避免开局崩;真正出兵靠 zerg_builds.yml 的 build runner/后续自定义。"""
+    def _update_zerg(self) -> None:
+        """虫族生产 (M2):无 ProductionController(不支持 Zerg),改用 ares 种族无关积木自建。
+
+        组成: BuildWorkers(drone) + AutoSupply(overlord,种族无关) + SpawnController(larva/morph 出兵)
+             + TechUp(每个组成兵种自动补科技建筑,如 ROACH→RoachWarren,种族无关)
+             + 女王(每巢一只) + UpgradeController(M3) + build/expand 杠杆(expand→hatchery)。
+        ⚠️ 未跑局验证(M2):larva 注卵(inject)/铺菌毯/兵种节奏都没做 —— Zerg 宏离不开注卵,
+           这块是 M2 剩余大头,必须跑局调(见 status-and-roadmap M2)。开局序可交 zerg_builds.yml。
+        """
         ai = self.ai
+        base = ai.start_location
+        spawn = self._army.spawn_dict()
+
         ai.register_behavior(BuildWorkers(to_count=worker_target(ai.townhalls.amount)))
+
         plan: MacroPlan = MacroPlan()
-        plan.add(AutoSupply(base_location=ai.start_location))
-        if spawn := self._army.spawn_dict():
+        plan.add(AutoSupply(base_location=base))  # 种族无关:Zerg 下自动造 overlord
+        if spawn:
             plan.add(SpawnController(army_composition_dict=spawn))
+        # 每个在产兵种自动补所需科技建筑(TechUp 种族无关:ROACH→RoachWarren 等)
+        for spec in self._army.units:
+            if spec.proportion <= 0:
+                continue
+            uid = getattr(UnitID, spec.id_name, None)
+            if uid is not None:
+                plan.add(TechUp(desired_tech=uid, base_location=base))
+        if upgrades := self._army.upgrade_ids():
+            plan.add(UpgradeController(upgrades, base_location=base))
+        _order = getattr(ai, "steer_order", None) or {}
+        self._handle_manual_build(_order, plan)
         ai.register_behavior(plan)
+
+        self._build_zerg_queens()
+
+    def _build_zerg_queens(self) -> None:
+        """每个巢穴配一只女王(需孵化池;由 TechUp/ZERGLING 或 build 杠杆先造出)。
+        ⚠️ 只造女王,**没做注卵(inject larva)** —— 注卵是 Zerg 爆兵核心,列 M2 剩余,需跑局。"""
+        ai = self.ai
+        queen = getattr(UnitID, "QUEEN", None)
+        pool = getattr(UnitID, "SPAWNINGPOOL", None)
+        if queen is None or pool is None:
+            return
+        if not self._structure_present_or_pending(pool):
+            return  # 没孵化池造不了女王
+        have = ai.units(queen).amount + self.manager_mediator.get_building_counter[queen]
+        if have >= ai.townhalls.amount:
+            return
+        for th in ai.townhalls.ready.idle:
+            if ai.can_afford(queen):
+                th.train(queen)
+                break
 
     def _structure_present_or_pending(self, structure_type: UnitID) -> bool:
         return (

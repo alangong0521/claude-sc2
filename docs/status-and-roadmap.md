@@ -78,9 +78,9 @@
 | # | 项 | 状态 | 依赖 |
 |---|---|---|---|
 | M1 | Terran 生产层:用 `ProductionController` 替代 Protoss 专属建筑逻辑 | **🚧 开了头(骨架落地,待跑局)** | 跑局 |
-| M2 | Zerg 生产层:build order + larva/morph 自定义(ProductionController 不支持) | 未开始(当前 stub:只维农民+补给) | 跑局 |
+| M2 | Zerg 生产层:build order + larva/morph 自定义(ProductionController 不支持) | **🚧 开了头(骨架:drone/overlord/TechUp/女王;缺注卵)** | 跑局 |
 | M3 | 升级配置化:`UpgradeController` + army_composition 里加 `upgrades:` 字段(解 B7,种族无关) | **✅ 落地(骨架)** | 跑局验时机 |
-| M4 | 专属 combat class:SIEGETANK 架起 / MEDIVAC 治疗(用 ares 原语) | **🚧 开了头(坦克+医疗落地;storm/运兵待做)** | 跑局 |
+| M4 | 专属 combat class:坦克架起 / 医疗治疗+空投 / 高模风暴(用 ares 原语) | **✅ 落地(骨架:坦克+医疗治疗+空投+高模风暴)** | 跑局 |
 | M5 | generic_offensive 升级到 group 行为(队级) | 未开始 | 跑局调手感 |
 
 #### M3 已落地(升级配置化,解 B7)
@@ -91,11 +91,22 @@ army_composition.yml 每种族块加 `upgrades:` 列表(引擎 UpgradeId 名);`a
 - Terran:`_update_terran` 用 ares `UpgradeController(upgrade_list, base_location)`(种族无关自动 tech-up)。
 待跑局:研究时机/顺序。
 
-#### M4 开了头(专属 combat class,已落地坦克+医疗)
-- `combat=siege_offensive`(`bot/combat/siege_offensive.py`):ares `SiegeTankDecision` 自动架/撤 + AMove 推进。
-- `combat=medivac_support`(`bot/combat/medivac_support.py`):ares `MedivacHeal` 治疗跟队。
-- 注册进 `CombatManager._combat_dispatch` + `army_config.COMBAT_KINDS`;Terran 的 SIEGETANK/MEDIVAC 已切过去。
-**未跑局验证**:架起时机/站位、跟队距离、运兵(pick_up/drop_cargo)、高模 storm(用 `place_predictive_aoe`)是 M4 剩余项。
+#### M4 已落地(专属 combat class,4 个)
+- `combat=siege_offensive`(`siege_offensive.py`):ares `SiegeTankDecision` 自动架/撤 + AMove 推进。
+- `combat=medivac_support`(`medivac_support.py`):ares `MedivacHeal` 治疗跟队。
+- `combat=medivac_transport`(`medivac_transport.py`):ares `PickUpAndDropCargo` 装兵空投(与治疗二选一)。
+- `combat=templar_caster`(`templar_caster.py`):ares `UseAOEAbility` 放灵能风暴(能量≥75 且敌扎堆≥3)。
+- 全注册进 `CombatManager._combat_dispatch` + `COMBAT_KINDS`;Terran 坦克/医疗、Protoss 高模(proportion=0)已切。
+**未跑局验证**:架起站位、跟队/空投时机、风暴落点/能量管理都需实测。`AbilityId.PSISTORM_PSISTORM`
+用 getattr 兜底(离线无法核对 sc2 枚举,对不上则不放风暴、不崩)。
+
+#### M2 开了头(Zerg 生产骨架)
+`_update_zerg`(替代原 stub)全用 ares 种族无关积木,不靠 ProductionController(它不支持 Zerg):
+`BuildWorkers`(drone)+`AutoSupply`(overlord,种族无关)+`SpawnController`(larva/morph 出兵)
++`TechUp`(每个在产兵种自动补科技建筑,如 ROACH→RoachWarren)+`UpgradeController`(M3)
++`_build_zerg_queens`(每巢一只女王)+ build/expand 杠杆(expand→hatchery)。
+**M2 剩余(必跑局)**:**larva 注卵(inject larva)没做** —— 这是 Zerg 爆兵核心,女王目前只造不注;
+另有铺菌毯(creep)、兵种节奏。开局序可交 `zerg_builds.yml` 的 Standard。
 
 #### M1 已落地(离线,骨架)
 `ProductionManager.update` 按 `ai.race` 分派:Terran → `_update_terran`,Zerg → `_update_zerg_stub`,

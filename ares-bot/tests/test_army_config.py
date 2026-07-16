@@ -246,6 +246,15 @@ class TestNewCombatKinds(unittest.TestCase):
         self.assertEqual([u.combat for u in ac.units],
                          ["siege_offensive", "medivac_support"])
 
+    def test_m4_remaining_kinds_accepted(self):
+        # M4 剩余:高模风暴 + 医疗船空投
+        ac = ArmyComposition.from_dict({"units": [
+            {"id": "hightemplar", "proportion": 0.5, "combat": "templar_caster"},
+            {"id": "medivac", "proportion": 0.5, "combat": "medivac_transport"},
+        ]})
+        self.assertEqual([u.combat for u in ac.units],
+                         ["templar_caster", "medivac_transport"])
+
     def test_unknown_combat_still_rejected(self):
         with self.assertRaises(ValueError):
             ArmyComposition.from_dict(

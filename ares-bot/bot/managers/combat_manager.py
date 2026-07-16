@@ -11,7 +11,9 @@ from sc2.units import Units
 from bot.combat.base_unit import BaseUnit
 from bot.combat.generic_offensive import GenericOffensive
 from bot.combat.medivac_support import MedivacSupport
+from bot.combat.medivac_transport import MedivacTransport
 from bot.combat.siege_offensive import SiegeOffensive
+from bot.combat.templar_caster import TemplarCaster
 from bot.combat.tempest_offensive import TempestOffensive
 
 if TYPE_CHECKING:
@@ -46,6 +48,8 @@ class CombatManager(Manager):
         self.generic_offensive: BaseUnit = GenericOffensive(ai, config, mediator)
         self.siege_offensive: BaseUnit = SiegeOffensive(ai, config, mediator)
         self.medivac_support: BaseUnit = MedivacSupport(ai, config, mediator)
+        self.medivac_transport: BaseUnit = MedivacTransport(ai, config, mediator)
+        self.templar_caster: BaseUnit = TemplarCaster(ai, config, mediator)
         # 兵种组成从 army_composition.yml 读(单一真相源,按 bot 种族选块),决定指挥哪些兵种、
         # 用哪个 combat class。不再写死只指挥 TEMPEST —— 加兵种只改 yaml。
         from bot.army_config import ArmyComposition, bot_race_name
@@ -54,8 +58,10 @@ class CombatManager(Manager):
         self._combat_dispatch: dict[str, BaseUnit] = {
             "tempest_offensive": self.tempest_offensive,
             "default": self.generic_offensive,
-            "siege_offensive": self.siege_offensive,      # M4:攻城坦克
-            "medivac_support": self.medivac_support,      # M4:医疗船
+            "siege_offensive": self.siege_offensive,        # M4:攻城坦克
+            "medivac_support": self.medivac_support,        # M4:医疗船治疗
+            "medivac_transport": self.medivac_transport,    # M4:医疗船空投
+            "templar_caster": self.templar_caster,          # M4:高模风暴
         }
 
     def _enemy_near_their_base(self) -> bool:

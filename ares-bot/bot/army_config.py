@@ -31,9 +31,11 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "army_composition.yml"
 #   default           = 通用 attack-move+基础风筝(generic_offensive)
 #   siege_offensive   = 攻城坦克架起/撤(M4, ares SiegeTankDecision)
 #   medivac_support   = 医疗船治疗跟队(M4, ares MedivacHeal)
+#   medivac_transport = 医疗船装兵空投(M4, ares PickUpAndDropCargo)
+#   templar_caster    = 高模放灵能风暴(M4, ares UseAOEAbility)
 COMBAT_KINDS = (
     "tempest_offensive", "oracle_harass", "default",
-    "siege_offensive", "medivac_support",
+    "siege_offensive", "medivac_support", "medivac_transport", "templar_caster",
 )
 
 # 种族块键(army_composition.yml 支持 per-race:顶层 protoss/terran/zerg 各一套 units)
