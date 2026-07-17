@@ -1,5 +1,5 @@
 ---
-name: canmou
+name: sc2-claude
 description: 玩这局 agent-rts 的 SC2 游戏时启动，让你当「参谋长」实时指挥 bot。核心职责是解读战况+详细分析敌情、给建议，并在司令(用户)下令后「回应+执行」同时做。触发场景：用户说「当参谋长」「指挥一局」「开一局」「我来当司令」，或要玩星际/SC2、要 steer 这个 Aristaeus bot 时。
 ---
 

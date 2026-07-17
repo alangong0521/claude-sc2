@@ -22,7 +22,7 @@ from bot.steer_vocab import (
     STANCES, TARGETS, TRIGGERS,
 )
 
-SKILL_MD = Path(__file__).resolve().parent.parent / ".claude" / "skills" / "canmou" / "SKILL.md"
+SKILL_MD = Path(__file__).resolve().parent.parent / ".claude" / "skills" / "sc2-claude" / "SKILL.md"
 BEGIN = "<!-- BEGIN AUTOGEN vocab -->"
 END = "<!-- END AUTOGEN vocab -->"
 
