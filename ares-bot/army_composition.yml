@@ -1,49 +1,252 @@
-# 军队组成配置 —— 兵种单一真相源
+# 军队组成配置 —— 兵种单一真相源(per-race,全兵种登记)
 #
-# ProductionManager 的 SpawnController(造什么兵)和 CombatManager(指挥哪些兵进攻)
-# 都从本文件读,改这里就能调整 bot 支持的兵种,不用动 Python。
+# ProductionManager(造什么兵)和 CombatManager(指挥哪些兵、用哪个 combat class)按 bot
+# 自己的种族(ai.race)读对应块。改这里就能调 bot 支持的兵种,不用动 Python。
 #
-# 结构:
-#   units: 兵种列表,每个兵种:
-#     id:       引擎枚举名(sc2 UnitTypeId),全大写,如 TEMPEST
-#     proportion: 造该兵种的目标占比(0~1),所有 units 的 proportion 之和应≈1.0
-#     priority:   造兵优先级(整数,越小越优先;0=最高)
-#     role:       ares 的 UnitRole 名(ATTACKING/HARASSING/SCOUTING),默认 ATTACKING
-#     combat:     指挥方式,决定 CombatManager 用哪个 combat class 控它:
-#       tempest_offensive = 暴风舰风筝(射程远,主动追击/埋伏)
-#       oracle_harass     = 先知骚扰(由 OracleManager 单独管,这里仅登记)
-#       default           = 通用近战/地面兵,跟随 attack_target 压上(待实现)
-#     notes:    人话备注(给读配置的人/参谋长看)
+# 顶层 = 三个种族块 protoss/terran/zerg;每块 units 列表 + 可选 upgrades 列表。每个兵种:
+#   id:        引擎枚举名(sc2 UnitTypeId),全大写,如 TEMPEST / MARINE / ROACH
+#   proportion: 该兵种目标占比(0~1)。**同一块内 >0 的占比之和应 ≤1.0**。
+#              proportion=0 = "已登记但不入产":CombatManager 会指挥它(若场上有),但
+#              SpawnController 不造它(spawn_dict 只收 >0)。想真正混编就把它调 >0。
+#   priority:   造兵优先级(整数,越小越优先;0=最高)。默认 5。
+#   role:       ares UnitRole 名(ATTACKING 归 CombatManager 指挥 / HARASSING 归 OracleManager)
+#   combat:     指挥方式(combat class),见 army_config.COMBAT_KINDS:
+#       default           = 通用 attack-move+基础风筝(generic_offensive),任意战斗单位可用(兜底)
+#       tempest_offensive/oracle_harass/siege_offensive/medivac_support/medivac_transport/
+#       templar_caster/ghost_offensive/raven_support/queen_support/reaper_harass/infestor_caster
+#         = 各兵种专属(借 ares 原语)。没专属类的就用 default。
+#   notes:     人话备注
 #
-# 想加兵种:在 units 下加一项即可。想换主力流派:改 proportion/priority。
-# 注意:combat=default 的兵种目前 CombatManager 还没实现通用指挥(见 main.py TODO),
-#       配了会造但不会主动指挥进攻 —— 加之前确认 combat class 已支持。
+# ⚠️ 全兵种已登记(control-ready),但**都是离线骨架,没跑过游戏**:
+#  1. combat=default/专属类的交战手感、技能时机全部**未跑局验证**(B0/M4)。
+#  2. 各种族生产层:Protoss 已验证(TEMPEST),Terran M1 骨架,Zerg M2 骨架(缺注卵)。
+#  3. 兵种需对应科技建筑才能真正造出(TechUp 会自动补);proportion=0 的只是"能指挥",不占产能。
+#  详见 docs/status-and-roadmap.md。
 
-units:
-  - id: TEMPEST
-    proportion: 1.0
-    priority: 0
-    role: ATTACKING
-    combat: tempest_offensive
-    notes: 主力天空体,射程极远,地面兵够不着。死穴=凤凰。
+protoss:
+  units:
+    # —— 已验证主力(保持原样,勿轻改)——
+    - id: TEMPEST
+      proportion: 1.0
+      priority: 0
+      role: ATTACKING
+      combat: tempest_offensive
+      notes: 主力天空体,射程极远。已验证。死穴=凤凰。
+    - id: ORACLE
+      proportion: 0.0
+      priority: 9
+      role: HARASSING
+      combat: oracle_harass
+      notes: 骚扰农民。OracleManager 单独造,不进 SpawnController 混编。
+    # —— 其余全兵种(control-ready,proportion=0;调 >0 需对应科技+跑局验证)——
+    - id: ZEALOT
+      proportion: 0.0
+      combat: default
+      notes: 狂热者,基础近战肉。
+    - id: STALKER
+      proportion: 0.0
+      combat: default
+      notes: 追猎,通用地面/对空,可闪现(闪现微操待专属类)。
+    - id: SENTRY
+      proportion: 0.0
+      combat: default
+      notes: 哨兵。力场/护盾需专属类(UseAbility),暂 default。
+    - id: ADEPT
+      proportion: 0.0
+      combat: default
+      notes: 使徒,对轻甲;暗影分身待专属类。
+    - id: HIGHTEMPLAR
+      proportion: 0.0
+      priority: 3
+      role: ATTACKING
+      combat: templar_caster
+      notes: 高模,灵能风暴。需 TWILIGHT+TEMPLARARCHIVE。
+    - id: DARKTEMPLAR
+      proportion: 0.0
+      combat: default
+      notes: 黑暗圣堂,隐形近战。
+    - id: IMMORTAL
+      proportion: 0.0
+      combat: default
+      notes: 不朽,对重甲。需 ROBOTICSFACILITY。
+    - id: COLOSSUS
+      proportion: 0.0
+      combat: default
+      notes: 巨像,横扫轻甲。需 ROBOTICSBAY。
+    - id: DISRUPTOR
+      proportion: 0.0
+      combat: default
+      notes: 干扰者。净化新星需专属类(PlacePredictiveAoE),暂 default(无普攻,default 效果差)。
+    - id: ARCHON
+      proportion: 0.0
+      combat: default
+      notes: 执政官,高血范围对空/对地。
+    - id: PHOENIX
+      proportion: 0.0
+      combat: default
+      notes: 凤凰,对空;重力灄取需专属类(UseAbility)。
+    - id: VOIDRAY
+      proportion: 0.0
+      combat: default
+      notes: 虚空,对重甲/巨像。
+    - id: CARRIER
+      proportion: 0.0
+      combat: default
+      notes: 航母,舰载机;放机微操待专属类。
+    - id: MOTHERSHIP
+      proportion: 0.0
+      combat: default
+      notes: 母舰,大招/隐匿待专属类。
+  upgrades:
+    - TEMPESTGROUNDATTACKUPGRADE
+    - PROTOSSAIRARMORSLEVEL1
+    - PROTOSSAIRARMORSLEVEL2
 
-  - id: ORACLE
-    proportion: 0.0
-    priority: 9
-    role: HARASSING
-    combat: oracle_harass
-    notes: 顺路骚扰对面农民。由 OracleManager 单独管(一次性造一个),不进主力编队。
+terran:
+  units:
+    - id: MARINE
+      proportion: 0.5
+      priority: 1
+      role: ATTACKING
+      combat: default
+      notes: 枪兵,生化核心。拉扯待强化(stutter)。
+    - id: MARAUDER
+      proportion: 0.2
+      priority: 1
+      role: ATTACKING
+      combat: default
+      notes: 掠夺者,对重甲。需 techlab。
+    - id: SIEGETANK
+      proportion: 0.2
+      priority: 0
+      role: ATTACKING
+      combat: siege_offensive
+      notes: 攻城坦克,自动架/撤(SiegeTankDecision)。
+    - id: MEDIVAC
+      proportion: 0.1
+      priority: 2
+      role: ATTACKING
+      combat: medivac_support
+      notes: 医疗船,治疗跟队(MedivacHeal)。空投改 combat=medivac_transport。
+    - id: REAPER
+      proportion: 0.0
+      combat: reaper_harass
+      notes: 死神,KD8 手雷骚扰(ReaperGrenade)。
+    - id: GHOST
+      proportion: 0.0
+      combat: ghost_offensive
+      notes: 幽灵,狙杀(GhostSnipe);EMP 待强化。
+    - id: HELLION
+      proportion: 0.0
+      combat: default
+      notes: 恶火,快速对轻甲/骚扰。
+    - id: HELLIONTANK
+      proportion: 0.0
+      combat: default
+      notes: 恶蝠(变形恶火),近战对轻甲。
+    - id: CYCLONE
+      proportion: 0.0
+      combat: default
+      notes: 飓风,锁定对重甲/对空。
+    - id: THOR
+      proportion: 0.0
+      combat: default
+      notes: 雷神,重型对空/对地。
+    - id: VIKINGFIGHTER
+      proportion: 0.0
+      combat: default
+      notes: 维京(战机形态),对空;变形待专属类。
+    - id: LIBERATOR
+      proportion: 0.0
+      combat: default
+      notes: 解放者,架起区域压制待专属类。
+    - id: BANSHEE
+      proportion: 0.0
+      combat: default
+      notes: 女妖,隐形对地骚扰。
+    - id: RAVEN
+      proportion: 0.0
+      combat: raven_support
+      notes: 渡鸦,自动机炮台(RavenAutoTurret);干扰矩阵待强化。
+    - id: BATTLECRUISER
+      proportion: 0.0
+      combat: default
+      notes: 战列巡航舰,主力;跃迁/亚牛跑待专属类。
+    - id: WIDOWMINE
+      proportion: 0.0
+      combat: default
+      notes: 寡妇雷,埋地伏击待专属类(burrow)。
+  upgrades:
+    - TERRANINFANTRYWEAPONSLEVEL1
+    - TERRANINFANTRYARMORSLEVEL1
+    - STIMPACK
 
-# ── 示例:想支持多兵种混编,取消注释改 proportion 即可 ──────────────────
-#   - id: STALKER
-#     proportion: 0.4
-#     priority: 1
-#     role: ATTACKING
-#     combat: default
-#     notes: 追猎者,通用地面/对空,填补暴风舰被凤凰克时的对空火力。
-#   - id: VOIDRAY
-#     proportion: 0.3
-#     priority: 2
-#     role: ATTACKING
-#     combat: default
-#     notes: 虚空舰,对重甲/巨像好用。
+zerg:
+  units:
+    - id: ZERGLING
+      proportion: 0.3
+      priority: 2
+      role: ATTACKING
+      combat: default
+      notes: 小狗,便宜围杀。需孵化池。
+    - id: ROACH
+      proportion: 0.4
+      priority: 1
+      role: ATTACKING
+      combat: default
+      notes: 蟑螂,肉盾主力。需 ROACHWARREN。
+    - id: HYDRALISK
+      proportion: 0.3
+      priority: 1
+      role: ATTACKING
+      combat: default
+      notes: 刺蛇,远程对空/对地。需 HYDRALISKDEN。
+    - id: QUEEN
+      proportion: 0.0
+      priority: 8
+      role: ATTACKING
+      combat: queen_support
+      notes: 女王,战斗输血(UseTransfuse)。注卵在生产层(M2 剩余)。
+    - id: BANELING
+      proportion: 0.0
+      combat: default
+      notes: 毒爆虫,自爆对轻甲/建筑(a-move 即冲脸)。
+    - id: RAVAGER
+      proportion: 0.0
+      combat: default
+      notes: 蟑螂宿主,腐蚀胆汁待专属类。
+    - id: LURKERMP
+      proportion: 0.0
+      combat: default
+      notes: 潜伏者,埋地穿刺待专属类(burrow)。
+    - id: INFESTOR
+      proportion: 0.0
+      combat: infestor_caster
+      notes: 感染虫,真菌爆发(UseAOEAbility);神经寄生待强化。
+    - id: SWARMHOSTMP
+      proportion: 0.0
+      combat: default
+      notes: 虫巢领主,放蝗虫待专属类。
+    - id: ULTRALISK
+      proportion: 0.0
+      combat: default
+      notes: 雷兽,重型近战肉。需 ULTRALISKCAVERN。
+    - id: MUTALISK
+      proportion: 0.0
+      combat: default
+      notes: 飞龙,机动空军骚扰。需 SPIRE。
+    - id: CORRUPTOR
+      proportion: 0.0
+      combat: default
+      notes: 腐化者,对空;腐蚀待专属类。
+    - id: BROODLORD
+      proportion: 0.0
+      combat: default
+      notes: 巢虫领主,攻城空军。需 GREATERSPIRE。
+    - id: VIPER
+      proportion: 0.0
+      combat: default
+      notes: 飞蛇,牵引/致盲云待专属类。
+  upgrades:
+    - ZERGMISSILEWEAPONSLEVEL1
+    - ZERGGROUNDARMORSLEVEL1

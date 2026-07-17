@@ -35,6 +35,11 @@ STEER_DIR = Path(os.environ.get("STEER_DIR", Path.home() / "agent-rts-steer"))
 ORDERS_FILE = STEER_DIR / "orders.json"
 STATE_FILE = STEER_DIR / "state.json"
 
+# C1·fixture 录制:设 STEER_RECORD=<目录> 时,每次 publish_state 除写 state.json 外,
+# 再把该快照按 time 存一份到该目录(state_<time>.json),供离线回放测试参谋逻辑(L4),
+# 不必每改一次 skill 都开游戏。不设则零开销。
+_RECORD_DIR = os.environ.get("STEER_RECORD")
+
 
 def read_order() -> dict:
     """读参谋长写的 orders.json，返回 FIELDS 里全部字段的 dict（缺省值 None）。
@@ -49,11 +54,28 @@ def read_order() -> dict:
 
 
 def publish_state(state: dict) -> None:
-    """原子发布 state.json（先写 .tmp 再 replace，避免参谋长读到半截）。"""
+    """原子发布 state.json（先写 .tmp 再 replace，避免参谋长读到半截）。
+
+    STEER_RECORD 设了目录时,额外把快照按 time 存一份(fixture 录制,见 _RECORD_DIR)。
+    """
     STEER_DIR.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(state, ensure_ascii=False, indent=2)
     tmp = STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    tmp.write_text(payload)
     tmp.replace(STATE_FILE)
+    if _RECORD_DIR:
+        _record_snapshot(state, payload)
+
+
+def _record_snapshot(state: dict, payload: str) -> None:
+    """把一帧 state 存进 STEER_RECORD 目录(state_<time>.json)。录制失败不影响 bot。"""
+    try:
+        rec = Path(_RECORD_DIR)
+        rec.mkdir(parents=True, exist_ok=True)
+        t = state.get("time", 0)
+        (rec / f"state_{float(t):08.1f}.json").write_text(payload)
+    except Exception:
+        pass  # 录制是旁路,坏了也别拖垮 bot
 
 
 def reset() -> None:

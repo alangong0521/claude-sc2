@@ -25,6 +25,16 @@ description: 玩这局 agent-rts 的 SC2 游戏时启动，让你当「参谋长
 - **(a) 回应司令**：这命令意味着什么、为什么这样打、接下来会看到什么。
 - **(b) 执行**：把人话翻成 `steer_cli` 命令下达（见「命令词表」），并读回执行后的战况确认。
 
+**下令 checklist（每次 set 走一遍，防静默失败）**：
+1. `set k=v ...` —— CLI 会**自动校验** key/value,非法值直接报错不写盘(exit 2)。看到 ⛔ 就说明拼错了,改对再下。
+2. 拿不准合法值先 `set --dry-run k=v`(只校验不写盘)或 `vocab`(列全部词+别名)。
+3. 下完 `show` 看一眼当前生效命令,确认写进去了。
+4. **别用 `until` 阻塞轮询等战况**(见响应纪律);近况靠下次 `events[]` 尾巴补。
+
+**一次性命令的坑（必记）**：`build` / `expand` / `scout` 是**一次性锁定** —— 造到目标/派过一个即停,
+**重复下同一条是 no-op**(不会派第二个农民、不会再开一矿)。想再来一次:**先 `clear` 再重下**。
+其余命令是粘性的(写了一直生效)。分不清就查「命令词表」表尾的说明。
+
 ---
 
 ## 工作接口
@@ -72,21 +82,30 @@ REALTIME=True NO_PROXY=127.0.0.1,localhost MAP=AbyssalReefLE DIFF=Hard OPPONENT_
 
 ## 命令词表（人话 → steer_cli）
 
+<!-- BEGIN AUTOGEN vocab -->
+
+> 本段由 `gen_skill_vocab.py` 从 `bot/steer_vocab.py` 生成(字段全集: stance target focus maneuver harass trigger expand build scout enemy note)。**别手改**,改词表后跑 `python3 gen_skill_vocab.py` 重生成。
+
 | 司令会说 | 命令 |
 |---|---|
-| 出击/压上 · 撤 · 守家 · 龟一会儿 | `stance=attack` / `retreat` / `defend` / `hold` |
-| 打主基 · 打二矿 · 绕后偷家 · 压中路 · 回家 | `target=enemy_main` / `enemy_natural` / `enemy_backdoor` / `map_center` / `home`（还有 enemy_third/fourth）|
-| 集火攻城车 · 专杀某兵 · 打农民 · 打最脆的 | `focus=<兵种名如SIEGETANK>` / `workers` / `weakest` |
-| 埋伏蹲点 · 占住高地 | `maneuver=ambush` / `hold_position` |
-| 放先知骚扰 · 召回先知 | `harass=on` / `off` |
-| 攒满再打 · 等他兵出去打 | `trigger=when_maxed` / `when_enemy_away` |
-| 开分矿 / 补矿 | `expand=yes`（**一次性只多开一个矿**；想再开先 clear 再下。= `build=nexus` 的别名）|
-| 造某个建筑 | `build=<结构>`（**通用建筑杠杆**，一次性造一个，选农民/选位置全归 bot）。常用：`build=stargate`(加造舰) / `build=assimilator`(补气) / `build=nexus`(开矿) / `build=gateway` 等。再造一个先 clear 再下 |
-| 派个农民侦查 | `scout=on`（**只派一个**，看完撤回家、死了不补；想再派先 clear 再 scout=on；多人默认摸最近的 E1）|
-| （多人）打哪家 | `enemy=E2`（**焦点敌人**：所有 enemy_* 目标/侦查/骚扰都相对它；默认 E1=最近。1v1 不用管）|
-| 全部拆掉 / 清图 | `set target= stance=attack`（清掉固定目标 → 自动轮巡清掉所有敌建筑）|
+| 出击/压上 · 撤 · 守家 · 龟一会儿 | `stance=attack / defend / hold / retreat` |
+| 打哪(语义目标,bot 求解坐标) | `target=enemy_main / enemy_natural / enemy_third / enemy_fourth / enemy_backdoor / map_center / home` |
+| 集火(焦点) | `focus=weakest / closest / workers / <兵种名如 SIEGETANK>` |
+| 机动 | `maneuver=ambush / hold_position` |
+| 先知骚扰开关 | `harass=on / off` |
+| 择时 | `trigger=now / when_enemy_away / when_maxed` |
+| 开分矿(一次性) | `expand=yes`(= `build=nexus` 别名) |
+| 造建筑(一次性) | `build=nexus / assimilator / stargate / gateway / cyberneticscore / forge / robo / fleetbeacon / twilight`  别名: base cyber expand gas geyser pylon roboticsfacility |
+| 派农民侦查(一次性) | `scout=on`(只派一个,看完撤回,死了不补) |
+| (多人)焦点敌人 | `enemy=E1 / E2 / E3 / E4`(默认 E1=最近) |
+| 备注(不影响 bot) | `note=<自由文本>` |
 
-> 命令是**粘性**的：下了一直生效，直到改它或 `clear`。所以可以叠加（边侦查边骚扰边进攻）。
+> **一次性 vs 粘性**:`build`/`expand`/`scout` 是**一次性锁定** —— 造到/派过即停,**重下同值是 no-op**,想再来必须先 `clear`。其余(stance/target/focus/maneuver/harass/trigger/enemy)是**粘性**,写了一直生效直到改它或 `clear`。
+
+<!-- END AUTOGEN vocab -->
+
+**特殊组合**：全部拆掉 / 清图 = `set target= stance=attack`（清掉固定目标 → 自动轮巡清掉所有敌建筑）。
+命令可**叠加**（边侦查边骚扰边进攻）。
 
 **人机共驾（司令可亲自微操）**：司令在 SC2 客户端**选中并操作**任何我方单位 → bot 立刻让权，
 **每次操作续 3 秒**，停手 3 秒自动收回、单位归队（无需取消选择）。所以司令能随手抢过关键单位微操
@@ -97,11 +116,16 @@ REALTIME=True NO_PROXY=127.0.0.1,localhost MAP=AbyssalReefLE DIFF=Hard OPPONENT_
 
 ## 这局的流派（开局给司令介绍）
 
+> **流派知识的单一真相源 = `ares-bot/build_meta.md`**（bot 换 build 只改那份,skill 不用动）。
+> 开局前**先读 `ares-bot/build_meta.md`**,按里面的 codename / core_units / 节奏 / 死穴 / 空窗期
+> 给司令介绍。下面是当前 build(TempestRush)的摘要,与 build_meta.md 不一致时**以 build_meta.md 为准**。
+
 当前 bot = **Aristaeus（神族 Protoss）**：**直奔暴风舰(Tempest)天空体** + 先知(Oracle)骚扰。（注意：**没有光炮起手**——开局就是造农民 + 一路爬星门科技，前期没有任何拖延/骚扰手段，比较脆。）
 - 节奏：农民开局 → Gateway→控制核心→星门(Stargate)→舰队航标科技 → **暴风舰滚雪球**（射程极远，地面兵根本够不着）→ 出一个先知顺路骚扰对面农民。中后期靠暴风舰数量碾压。
 - **死穴 = 凤凰(Phoenix)**：能拉扯放风筝慢速的暴风舰。所以侦查到对面**起星门**，立刻向司令预警「他要转空军了」。
 - **前期是空窗期**：科技没成型前几乎没战斗力，怕对面早期 rush/压制。开局侦查确认对面不 rush 很关键。
 - 典型胜利路径（参考实战）：先知骚扰拖经济 → 开二矿追经济 → 暴风舰够量后压二矿、捅主矿、清图。
+- **支持的兵种由 `ares-bot/army_composition.yml` 决定**（当前主力=暴风舰,可配置多兵种混编）。
 
 ---
 

@@ -5,8 +5,14 @@ from sc2.unit import Unit
 from ares.behaviors.macro import (
     AutoSupply,
     BuildStructure,
+    BuildWorkers,
     ExpansionController,
+    GasBuildingController,
+    ProductionController,
     SpawnController,
+    TechUp,
+    UpgradeCCs,
+    UpgradeController,
 )
 from ares.behaviors.macro.macro_plan import MacroPlan
 from ares.consts import UnitRole
@@ -14,12 +20,15 @@ from cython_extensions.general_utils import cy_unit_pending
 from cython_extensions.units_utils import cy_closest_to
 from ares.managers.manager import Manager
 from ares.managers.manager_mediator import ManagerMediator
+from sc2.data import Race
 from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.buff_id import BuffId
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.units import Units
+
+from bot.production_plans import gas_target, worker_target
 
 if TYPE_CHECKING:
     from ares import AresBot
@@ -83,9 +92,9 @@ class ProductionManager(Manager):
         # 一次性锁定：记下"目标数量"，造到就停；想再造先 clear 再下（同 scout 手感）。
         self._build_key: str | None = None
         self._build_target: int | None = None
-        # 兵种组成从 army_composition.yml 读(单一真相源),不再硬编码 TEMPEST。
-        from bot.army_config import ArmyComposition
-        self._army = ArmyComposition.load()
+        # 兵种组成从 army_composition.yml 读(单一真相源,按 bot 种族选块),不再硬编码 TEMPEST。
+        from bot.army_config import ArmyComposition, bot_race_name
+        self._army = ArmyComposition.load(race=bot_race_name(ai))
 
     async def update(self, iteration: int) -> None:
         """Handle production.
@@ -97,6 +106,14 @@ class ProductionManager(Manager):
         iteration :
             The game iteration.
         """
+        # 种族分派:Terran 走 M1 生产层(ares ProductionController + SpawnController);
+        # Zerg 尚未实现(见 status-and-roadmap M2)——先 no-op 造农民保命,不崩。
+        if self.ai.race == Race.Terran:
+            self._update_terran()
+            return
+        if self.ai.race == Race.Zerg:
+            self._update_zerg()
+            return
 
         if not self._built_extra_production_pylon:
             self.ai.register_behavior(
@@ -139,6 +156,102 @@ class ProductionManager(Manager):
             ):
                 self.ai.train(UnitID.ORACLE)
                 self._built_single_oracle = True
+
+    # ────────────────────────────── Terran 生产层 (M1) ──────────────────────────────
+    def _update_terran(self) -> None:
+        """人族生产:全部借 ares 种族无关/人族支持的宏行为,不手写建造顺序。
+
+        组成: AutoSupply(补给站) + BuildWorkers(SCV) + GasBuildingController(炼油厂)
+             + ProductionController(按 army_comp 自动补 rax/factory/starport,人族支持)
+             + SpawnController(按 army_comp 出兵) + UpgradeCCs(升轨道指挥) + build 杠杆。
+        ⚠️ 未跑局验证(M1):建造时机/addon(techlab/reactor)管理/架坦克等细节留待实测调
+           (见 docs/status-and-roadmap.md M1/M4)。开局序列可由 terran_builds.yml 的 build runner 接管。
+        """
+        ai = self.ai
+        base = ai.start_location
+        spawn = self._army.spawn_dict()
+
+        # 农民 + 轨道指挥(种族无关的 SCV/CC 升级)
+        ai.register_behavior(BuildWorkers(to_count=worker_target(ai.townhalls.amount)))
+        ai.register_behavior(UpgradeCCs(to=UnitID.ORBITALCOMMAND))
+
+        # M3:升级配置化 —— army_composition.yml 的 terran.upgrades 交 ares UpgradeController
+        # (种族无关,自动 tech-up)。列表空则不注册。
+        if upgrades := self._army.upgrade_ids():
+            ai.register_behavior(UpgradeController(upgrades, base_location=base))
+
+        # 气:有军事生产建筑后每矿双气,开局先单气
+        has_prod = any(
+            self._structure_present_or_pending(s)
+            for s in (UnitID.BARRACKS, UnitID.FACTORY, UnitID.STARPORT)
+        )
+        ai.register_behavior(GasBuildingController(
+            to_count=gas_target(ai.townhalls.ready.amount, has_prod),
+            closest_to=base,
+        ))
+
+        # 供给 / 造兵 / 自动补生产建筑(ProductionController 人族/神族支持)
+        plan: MacroPlan = MacroPlan()
+        plan.add(AutoSupply(base_location=base))
+        if spawn:
+            plan.add(SpawnController(army_composition_dict=spawn))
+            plan.add(ProductionController(spawn, base_location=base))
+        # 运营杠杆(build=barracks / expand=yes 等)复用同一套(expand 走 ExpansionController,种族无关)
+        _order = getattr(ai, "steer_order", None) or {}
+        self._handle_manual_build(_order, plan)
+        ai.register_behavior(plan)
+
+    def _update_zerg(self) -> None:
+        """虫族生产 (M2):无 ProductionController(不支持 Zerg),改用 ares 种族无关积木自建。
+
+        组成: BuildWorkers(drone) + AutoSupply(overlord,种族无关) + SpawnController(larva/morph 出兵)
+             + TechUp(每个组成兵种自动补科技建筑,如 ROACH→RoachWarren,种族无关)
+             + 女王(每巢一只) + UpgradeController(M3) + build/expand 杠杆(expand→hatchery)。
+        ⚠️ 未跑局验证(M2):larva 注卵(inject)/铺菌毯/兵种节奏都没做 —— Zerg 宏离不开注卵,
+           这块是 M2 剩余大头,必须跑局调(见 status-and-roadmap M2)。开局序可交 zerg_builds.yml。
+        """
+        ai = self.ai
+        base = ai.start_location
+        spawn = self._army.spawn_dict()
+
+        ai.register_behavior(BuildWorkers(to_count=worker_target(ai.townhalls.amount)))
+
+        plan: MacroPlan = MacroPlan()
+        plan.add(AutoSupply(base_location=base))  # 种族无关:Zerg 下自动造 overlord
+        if spawn:
+            plan.add(SpawnController(army_composition_dict=spawn))
+        # 每个在产兵种自动补所需科技建筑(TechUp 种族无关:ROACH→RoachWarren 等)
+        for spec in self._army.units:
+            if spec.proportion <= 0:
+                continue
+            uid = getattr(UnitID, spec.id_name, None)
+            if uid is not None:
+                plan.add(TechUp(desired_tech=uid, base_location=base))
+        if upgrades := self._army.upgrade_ids():
+            plan.add(UpgradeController(upgrades, base_location=base))
+        _order = getattr(ai, "steer_order", None) or {}
+        self._handle_manual_build(_order, plan)
+        ai.register_behavior(plan)
+
+        self._build_zerg_queens()
+
+    def _build_zerg_queens(self) -> None:
+        """每个巢穴配一只女王(需孵化池;由 TechUp/ZERGLING 或 build 杠杆先造出)。
+        ⚠️ 只造女王,**没做注卵(inject larva)** —— 注卵是 Zerg 爆兵核心,列 M2 剩余,需跑局。"""
+        ai = self.ai
+        queen = getattr(UnitID, "QUEEN", None)
+        pool = getattr(UnitID, "SPAWNINGPOOL", None)
+        if queen is None or pool is None:
+            return
+        if not self._structure_present_or_pending(pool):
+            return  # 没孵化池造不了女王
+        have = ai.units(queen).amount + self.manager_mediator.get_building_counter[queen]
+        if have >= ai.townhalls.amount:
+            return
+        for th in ai.townhalls.ready.idle:
+            if ai.can_afford(queen):
+                th.train(queen)
+                break
 
     def _structure_present_or_pending(self, structure_type: UnitID) -> bool:
         return (
@@ -361,7 +474,10 @@ class ProductionManager(Manager):
         structure_dict: dict[
             UnitID, list[Unit]
         ] = self.manager_mediator.get_own_structures_dict
-        for upgrade_id in DESIRED_UPGRADES:
+        # M3:升级列表来自 army_composition.yml(protoss 块列同样 3 项 → 行为不变);
+        # 配置为空时回退硬编码 DESIRED_UPGRADES,保证向后兼容。
+        desired = self._army.upgrade_ids() or DESIRED_UPGRADES
+        for upgrade_id in desired:
             researched_from: UnitID = UPGRADE_RESEARCHED_FROM[upgrade_id]
             cost = self.ai.calculate_cost(upgrade_id)
             # ensure there is always nearly enough for a tempest

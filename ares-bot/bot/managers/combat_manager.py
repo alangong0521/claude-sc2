@@ -9,6 +9,16 @@ from sc2.position import Point2
 from sc2.units import Units
 
 from bot.combat.base_unit import BaseUnit
+from bot.combat.generic_offensive import GenericOffensive
+from bot.combat.ghost_offensive import GhostOffensive
+from bot.combat.infestor_caster import InfestorCaster
+from bot.combat.medivac_support import MedivacSupport
+from bot.combat.medivac_transport import MedivacTransport
+from bot.combat.queen_support import QueenSupport
+from bot.combat.raven_support import RavenSupport
+from bot.combat.reaper_harass import ReaperHarass
+from bot.combat.siege_offensive import SiegeOffensive
+from bot.combat.templar_caster import TemplarCaster
 from bot.combat.tempest_offensive import TempestOffensive
 
 if TYPE_CHECKING:
@@ -40,6 +50,34 @@ class CombatManager(Manager):
         self.expansions_generator = None
         self.current_base_target: Point2 = self.ai.focused_enemy_start()
         self.tempest_offensive: BaseUnit = TempestOffensive(ai, config, mediator)
+        self.generic_offensive: BaseUnit = GenericOffensive(ai, config, mediator)
+        self.siege_offensive: BaseUnit = SiegeOffensive(ai, config, mediator)
+        self.medivac_support: BaseUnit = MedivacSupport(ai, config, mediator)
+        self.medivac_transport: BaseUnit = MedivacTransport(ai, config, mediator)
+        self.templar_caster: BaseUnit = TemplarCaster(ai, config, mediator)
+        self.ghost_offensive: BaseUnit = GhostOffensive(ai, config, mediator)
+        self.raven_support: BaseUnit = RavenSupport(ai, config, mediator)
+        self.queen_support: BaseUnit = QueenSupport(ai, config, mediator)
+        self.reaper_harass: BaseUnit = ReaperHarass(ai, config, mediator)
+        self.infestor_caster: BaseUnit = InfestorCaster(ai, config, mediator)
+        # 兵种组成从 army_composition.yml 读(单一真相源,按 bot 种族选块),决定指挥哪些兵种、
+        # 用哪个 combat class。不再写死只指挥 TEMPEST —— 加兵种只改 yaml。
+        from bot.army_config import ArmyComposition, bot_race_name
+        self._army = ArmyComposition.load(race=bot_race_name(ai))
+        # combat kind → combat class 分派表(oracle_harass 由 OracleManager 单独管,这里不收)
+        self._combat_dispatch: dict[str, BaseUnit] = {
+            "tempest_offensive": self.tempest_offensive,
+            "default": self.generic_offensive,
+            "siege_offensive": self.siege_offensive,        # M4:攻城坦克
+            "medivac_support": self.medivac_support,        # M4:医疗船治疗
+            "medivac_transport": self.medivac_transport,    # M4:医疗船空投
+            "templar_caster": self.templar_caster,          # M4:高模风暴
+            "ghost_offensive": self.ghost_offensive,        # 幽灵狙杀
+            "raven_support": self.raven_support,            # 渡鸦机炮台
+            "queen_support": self.queen_support,            # 女王输血
+            "reaper_harass": self.reaper_harass,            # 死神手雷
+            "infestor_caster": self.infestor_caster,        # 感染虫真菌
+        }
 
     def _enemy_near_their_base(self) -> bool:
         """敌主力是否还在自己家附近（⑥择时 when_enemy_away：在家就等他出门再打）。
@@ -161,12 +199,22 @@ class CombatManager(Manager):
         ):
             return
 
-        if offensive_tempests := self.manager_mediator.get_units_from_role(
-            role=UnitRole.ATTACKING, unit_type=UnitID.TEMPEST
-        ):
-            self.tempest_offensive.execute(
-                offensive_tempests,
-                attack_target=self.attack_target,
-                focus=order.get("focus"),        # ③焦点
-                maneuver=order.get("maneuver"),  # ④机动意图
-            )
+        # 按 army_composition 逐兵种指挥:取该兵种的 ATTACKING 单位,交给它配置的 combat class。
+        # 同一 combat class 的多兵种会各自 execute 一次(tempest/追猎各打各的),攻击点/焦点/机动共享。
+        attack_target = self.attack_target
+        for spec in self._army.by_role("ATTACKING"):
+            combat = self._combat_dispatch.get(spec.combat)
+            if combat is None:
+                continue  # oracle_harass 等不由本 manager 指挥
+            unit_id = getattr(UnitID, spec.id_name, None)
+            if unit_id is None:
+                continue
+            if units := self.manager_mediator.get_units_from_role(
+                role=UnitRole.ATTACKING, unit_type=unit_id
+            ):
+                combat.execute(
+                    units,
+                    attack_target=attack_target,
+                    focus=order.get("focus"),        # ③焦点
+                    maneuver=order.get("maneuver"),  # ④机动意图
+                )
