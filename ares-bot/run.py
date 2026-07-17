@@ -15,6 +15,12 @@ sys.path.append("ares-sc2/src/ares")
 sys.path.append("ares-sc2/src")
 sys.path.append("ares-sc2")
 
+# 神族兵种流派 BUILD 必须在 `from bot.main import MyBot` 之前写进 os.environ —— 因为
+# 那个 import 会传递导入 production_manager，后者在模块导入时就 os.environ.get("BUILD")。
+# env 已设则不覆盖(env 赢)，其次 spike_config.BUILD，其次 "tempest"(与 _opt 语义一致)。
+import spike_config as _cfg_for_build
+os.environ.setdefault("BUILD", getattr(_cfg_for_build, "BUILD", "tempest") or "tempest")
+
 # 兼容补丁：让老 burnysc2 容忍新版客户端/地图里的未知 id（否则 CactusValleyLE 等
 # 4 人图会因未知单位 id 2009 在开局崩溃）。导入即打补丁，必须在起游戏前。
 import bot.compat_patch  # noqa: F401

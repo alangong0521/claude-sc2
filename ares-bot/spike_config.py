@@ -39,6 +39,13 @@ MAP = None
 # 想固定某流派：在 config.yml 写 Playstyle: bio_mmm（见 styles.resolve_style）。
 BOT_RACE = "Protoss"
 
+# --- build flow（神族走哪个兵种流派）---
+# tempest = 暴风舰天空体 + 先知骚扰（默认，零回归风险）
+# stalker = 纯追猎 blink 流：SpawnController 只造追猎、bot 自动建 twilight+研究 blink、
+#           combat 侧 StalkerOffensive 做集火/风筝/低血 blink 后撤。
+# 切流派：BUILD=stalker poetry run python run.py（env 同名覆盖此项，与其它设置一致）
+BUILD = "tempest"
+
 # --- replays ---
 # Off by default. Flip to True to save each game under ./replays/ for full-UI review
 # (double-click the .SC2Replay in SC2: free camera, both sides, health bars, graphs).
