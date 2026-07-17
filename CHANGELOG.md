@@ -12,7 +12,7 @@
 - **Docs**：全新双语 README（默认中文 `README.md` / 英文 `README_en.md`）——项目定位、架构图、跨平台
   安装/运行、「用任意 LLM 指挥」说明、杠杆词表、致谢与许可。新增 `CONTRIBUTING.md`、
   issue/PR 模板。
-- **参谋长技能随仓库分发**：`.claude/skills/canmou/`（路径改为相对仓库根）。
+- **参谋长技能随仓库分发**：`.claude/skills/sc2-claude/`（路径改为相对仓库根）。
 - **词表单一真相源**：真正落地 `bot/steer_vocab.py`，`steer.py` / `steer_cli.py` 都从它
   导入（此前两处各抄一份、且 README 声称的该文件并不存在）。
 - **仓库卫生**：`refs/`（15 个他人 bot）与 `_archive_*` 改为不跟踪（仅本地留存，不再分发）；
@@ -20,7 +20,7 @@
 - **CI**：新增轻量 `ci.yml`——语法编译 + 纯 Python 跑通 steer CLI/词表（不需 SC2/ares）。
 - **Windows 支持（静态验证级）**：`run.py` 按 OS 自动选 `MAPS_PATH` 默认值（win/mac/linux）；
   README 增补 Windows 一节（Python 3.11/3.12、win_amd64 wheel 免编译、PowerShell 跑法、
-  `taskkill /F /IM SC2_x64.exe` 收尾）；canmou 技能补齐 macOS/Linux 与 Windows 双平台的
+  `taskkill /F /IM SC2_x64.exe` 收尾）；sc2-claude 技能补齐 macOS/Linux 与 Windows 双平台的
   进程结束命令；`smoke.py` 路径提示改为平台中性。尚未在 Windows 实机端到端验证。
 
 > 备注：Poetry 包名 `name` 有意保留原模板值——虚拟环境按它定位，改名会让所有人的已装环境脱钩。品牌名只体现在文档里。

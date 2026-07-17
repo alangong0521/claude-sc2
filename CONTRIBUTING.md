@@ -33,7 +33,7 @@ poetry run python steer_cli.py vocab      # quick sanity check, no game needed
 
 - Make sure `python ares-bot/steer_cli.py vocab` still runs and the modules import cleanly.
 - If you touched steer levers, update **both** `README.md` (中文) and `README_en.md` vocab tables and
-  the `.claude/skills/canmou/SKILL.md` command table.
+  the `.claude/skills/sc2-claude/SKILL.md` command table.
   改了杠杆，请**同时**更新中英 README 的词表和参谋长技能里的命令表。
 - Describe what you changed and how you tested it (a replay or a headless win/loss run helps).
 

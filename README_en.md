@@ -72,7 +72,7 @@ files** (`~/agent-rts-steer/`) ← **a constrained lever vocabulary** ← **the 
 | `docs/lever-map.md` | Lever → bot-action map (where each lever lands in code) |
 | `ares-bot/spike_config.py` | One place for match settings (difficulty / map / race / realtime / replays) |
 | `ares-bot/run.py` | Launch entry point |
-| `.claude/skills/canmou/` | The Claude Code "chief-of-staff" skill (the LLM's playbook) |
+| `.claude/skills/sc2-claude/` | The Claude Code "chief-of-staff" skill (the LLM's playbook) |
 | `docs/` | Design notes & image assets (README figures) |
 
 ## Requirements
@@ -157,7 +157,7 @@ separate lightweight env (Python 3.13 + burnysc2). See the header of `smoke.py`.
 The bot plays fine alone. The *point*, though, is steering it live.
 
 **With Claude Code (batteries included).** This repo ships a skill at
-`.claude/skills/canmou/`. Open the repo in [Claude Code](https://claude.com/claude-code) and say
+`.claude/skills/sc2-claude/`. Open the repo in [Claude Code](https://claude.com/claude-code) and say
 *"be my chief-of-staff / 当参谋长"*. Claude will start the bot, read the state, brief you on the
 enemy, propose options, and — on your order — pull the levers. It follows two rules: it
 **analyses proactively but never issues an order you didn't give**, and when you do give one it

@@ -1,6 +1,6 @@
 # 当前 bot 流派档案（参谋长开局介绍用）
 
-> 本文件是 bot 当前 build 的"作战知识"单一真相源。`.claude/skills/canmou/SKILL.md`
+> 本文件是 bot 当前 build 的"作战知识"单一真相源。`.claude/skills/sc2-claude/SKILL.md`
 > 的「这局的流派」段落从本文件生成/引用 —— 换 build 只改这里,不用动 skill。
 > 机器可读字段见下方 YAML frontmatter(steer_cli / 校验工具可读)。
 

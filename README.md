@@ -62,7 +62,7 @@ Python**。人族、虫族的生产层，以及坦克架起 / 医疗船治疗空
 | `docs/lever-map.md` | 操纵杆 → bot 动作 映射图（每个杠杆最终落到哪段代码） |
 | `ares-bot/spike_config.py` | 一处管对局设置（难度 / 地图 / 种族 / realtime / 存 replay） |
 | `ares-bot/run.py` | 启动入口 |
-| `.claude/skills/canmou/` | Claude Code「参谋长」技能（LLM 的行动手册） |
+| `.claude/skills/sc2-claude/` | Claude Code「参谋长」技能（LLM 的行动手册） |
 | `docs/` | 设计笔记与图片素材（README 配图） |
 
 ## 前置要求
@@ -139,7 +139,7 @@ Windows 其实是 SC2 自动化支持最好的平台（python-sc2 本来就是 W
 
 bot 自己也能打。但**重点**是实时指挥它。
 
-**用 Claude Code（开箱即用）。** 仓库自带一个技能 `.claude/skills/canmou/`。用
+**用 Claude Code（开箱即用）。** 仓库自带一个技能 `.claude/skills/sc2-claude/`。用
 [Claude Code](https://claude.com/claude-code) 打开本仓库，说一句*「当参谋长」*。Claude 会起 bot、
 读战况、给你分析敌情、给选项——你**下令**后再拉杠杆。它遵守两条铁律：
 **主动分析但绝不擅自下你没下过的命令**；你一旦下令，就**「回应 + 执行」同一次做完**。
