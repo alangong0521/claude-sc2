@@ -45,8 +45,8 @@ protoss:
       notes: 狂热者,基础近战肉。
     - id: STALKER
       proportion: 0.0
-      combat: default
-      notes: 追猎,通用地面/对空,可闪现(闪现微操待专属类)。
+      combat: stalker_offensive
+      notes: 追猎 blink 流专属微操(StalkerOffensive:集火/风筝/低血 blink 后撤)。BUILD=stalker 时入产。
     - id: SENTRY
       proportion: 0.0
       combat: default

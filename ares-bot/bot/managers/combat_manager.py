@@ -18,6 +18,7 @@ from bot.combat.queen_support import QueenSupport
 from bot.combat.raven_support import RavenSupport
 from bot.combat.reaper_harass import ReaperHarass
 from bot.combat.siege_offensive import SiegeOffensive
+from bot.combat.stalker_offensive import StalkerOffensive
 from bot.combat.templar_caster import TemplarCaster
 from bot.combat.tempest_offensive import TempestOffensive
 
@@ -50,6 +51,7 @@ class CombatManager(Manager):
         self.expansions_generator = None
         self.current_base_target: Point2 = self.ai.focused_enemy_start()
         self.tempest_offensive: BaseUnit = TempestOffensive(ai, config, mediator)
+        self.stalker_offensive: BaseUnit = StalkerOffensive(ai, config, mediator)
         self.generic_offensive: BaseUnit = GenericOffensive(ai, config, mediator)
         self.siege_offensive: BaseUnit = SiegeOffensive(ai, config, mediator)
         self.medivac_support: BaseUnit = MedivacSupport(ai, config, mediator)
@@ -67,6 +69,7 @@ class CombatManager(Manager):
         # combat kind → combat class 分派表(oracle_harass 由 OracleManager 单独管,这里不收)
         self._combat_dispatch: dict[str, BaseUnit] = {
             "tempest_offensive": self.tempest_offensive,
+            "stalker_offensive": self.stalker_offensive,   # 纯追猎 blink 流(BUILD=stalker)
             "default": self.generic_offensive,
             "siege_offensive": self.siege_offensive,        # M4:攻城坦克
             "medivac_support": self.medivac_support,        # M4:医疗船治疗

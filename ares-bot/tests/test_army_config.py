@@ -270,11 +270,18 @@ class TestNewCombatKinds(unittest.TestCase):
              "reaper_harass", "infestor_caster"],
         )
 
+    def test_stalker_kind_accepted(self):
+        # 追猎 blink 流专属 combat kind
+        ac = ArmyComposition.from_dict({"units": [
+            {"id": "stalker", "proportion": 1.0, "combat": "stalker_offensive"},
+        ]})
+        self.assertEqual([u.combat for u in ac.units], ["stalker_offensive"])
+
     def test_combat_kinds_count(self):
-        # COMBAT_KINDS 冻结在 12 个,防止误删/漏加
+        # COMBAT_KINDS 冻结在 13 个,防止误删/漏加
         from bot.army_config import COMBAT_KINDS
-        self.assertEqual(len(COMBAT_KINDS), 12)
-        self.assertEqual(len(set(COMBAT_KINDS)), 12)  # 无重复
+        self.assertEqual(len(COMBAT_KINDS), 13)
+        self.assertEqual(len(set(COMBAT_KINDS)), 13)  # 无重复
 
     def test_unknown_combat_still_rejected(self):
         with self.assertRaises(ValueError):

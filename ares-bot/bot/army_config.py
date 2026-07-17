@@ -36,8 +36,9 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "army_composition.yml"
 #   ghost_offensive   = 幽灵狙杀(ares GhostSnipe)  |  raven_support = 渡鸦机炮台(RavenAutoTurret)
 #   queen_support     = 女王输血(UseTransfuse)     |  reaper_harass = 死神手雷(ReaperGrenade)
 #   infestor_caster   = 感染虫真菌爆发(UseAOEAbility)
+#   stalker_offensive = 追猎 blink 流(集火/风筝/低血 blink 后撤,BUILD=stalker 才入产)
 COMBAT_KINDS = (
-    "tempest_offensive", "oracle_harass", "default",
+    "tempest_offensive", "stalker_offensive", "oracle_harass", "default",
     "siege_offensive", "medivac_support", "medivac_transport", "templar_caster",
     "ghost_offensive", "raven_support", "queen_support", "reaper_harass",
     "infestor_caster",
