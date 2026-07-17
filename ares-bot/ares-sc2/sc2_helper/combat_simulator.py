@@ -1,6 +1,29 @@
 from typing import Tuple
 
-from .sc2_helper import CombatPredictor, CombatSettings
+try:
+    from .sc2_helper import CombatPredictor, CombatSettings
+except ImportError:
+    # arm64 macOS（及其它无预编译 sc2_helper 的平台）回退：纯 Python 桩。
+    # 本仓库的 bot 不调用战斗模拟（ares CombatSimManager 仅在 bot 主动查询时才跑，
+    # 而本 bot 从不查询），桩只为了让 `import ares` 通过。predict_engage 给保守回退值，
+    # 真要跑模拟时返回值不可信 —— 需切到 x86_64 平台（或 Rosetta）用真编译版。
+    class CombatSettings:
+        def __init__(self):
+            self.debug = False
+            self.bad_micro = False
+            self.enable_splash = True
+            self.enable_timing_adjustment = False
+            self.enable_surround_limits = True
+            self.enable_melee_blocking = True
+            self.workers_do_no_damage = False
+            self.assume_reasonable_positioning = True
+            self.max_time = 100000.0
+            self.start_time = 0.0
+
+    class CombatPredictor:
+        def predict_engage(self, own_units, enemy_units, defender_player, settings):
+            # 保守回退：假定我方(own_units)能赢，不报剩余血量。
+            return (1, 0.0)
 
 
 class CombatSimulator:
