@@ -1,3 +1,4 @@
+import os
 from typing import TYPE_CHECKING
 
 from sc2.unit import Unit
@@ -33,18 +34,37 @@ from bot.production_plans import gas_target, worker_target
 if TYPE_CHECKING:
     from ares import AresBot
 
-# we always want one of each
-CORE_STRUCTURES: list[UnitID] = [
-    UnitID.GATEWAY,
-    UnitID.CYBERNETICSCORE,
-    UnitID.STARGATE,
-]
+# 神族兵种流派（run.py 在导入本模块前已把 BUILD 写进 os.environ）：
+#   tempest = 暴风舰天空体 + 先知骚扰（默认，与已验证行为逐位一致）
+#   stalker = 纯追猎 blink 流（弃星门/舰队航标/先知，加议会研究 blink）
+BUILD_FLOW: str = os.environ.get("BUILD", "tempest")
+is_stalker_flow: bool = BUILD_FLOW == "stalker"
 
-DESIRED_UPGRADES: list[UpgradeId] = [
-    UpgradeId.TEMPESTGROUNDATTACKUPGRADE,
-    UpgradeId.PROTOSSAIRARMORSLEVEL1,
-    UpgradeId.PROTOSSAIRARMORSLEVEL2,
-]
+# 核心科技链：暴风舰流 = gateway+cyber+星门；追猎流 = gateway+cyber（星门是浪费，省 150/150）。
+CORE_STRUCTURES: list[UnitID] = (
+    [UnitID.GATEWAY, UnitID.CYBERNETICSCORE]
+    if is_stalker_flow
+    else [UnitID.GATEWAY, UnitID.CYBERNETICSCORE, UnitID.STARGATE]
+)
+
+# 升级：暴风舰流走空中装甲/对地；追猎流把 blink 科技排进去（research 自 TWILIGHTCOUNCIL）。
+DESIRED_UPGRADES: list[UpgradeId] = (
+    [UpgradeId.BLINKTECH, UpgradeId.PROTOSSGROUNDARMORSLEVEL1]
+    if is_stalker_flow
+    else [
+        UpgradeId.TEMPESTGROUNDATTACKUPGRADE,
+        UpgradeId.PROTOSSAIRARMORSLEVEL1,
+        UpgradeId.PROTOSSAIRARMORSLEVEL2,
+    ]
+)
+
+# 追猎流额外建 twilight council（blink 科技来源）；暴风舰流不需要，留空。
+EXTRA_CORE_STRUCTURES: list[UnitID] = (
+    [UnitID.TWILIGHTCOUNCIL] if is_stalker_flow else []
+)
+
+# 追猎流 SpawnController 配方（纯追猎）。暴风舰流走 self._army.spawn_dict()（army_composition.yml）。
+_STALKER_SPAWN: dict = {UnitID.STALKER: {"proportion": 1.0, "priority": 0}}
 
 # 通用建筑杠杆 build=<名> 的别名 → UnitID。认不出的名字再退回 UnitID[名.upper()]。
 # 注意:steer_vocab.BUILD_ALIASES 是"别名→规范名词表"给 CLI 校验用;本表是"别名→引擎枚举"
@@ -124,9 +144,11 @@ class ProductionManager(Manager):
         # use ares-sc2 macro behaviors for building pylons and units
         macro_plan: MacroPlan = MacroPlan()
         macro_plan.add(AutoSupply(base_location=self.ai.start_location))
-        # 兵种组成来自 army_composition.yml(可配置多兵种),不再写死只造 TEMPEST。
+        # 兵种组成：追猎流写死纯追猎(_STALKER_SPAWN)；暴风舰流走 army_composition.yml。
         macro_plan.add(
-            SpawnController(army_composition_dict=self._army.spawn_dict())
+            SpawnController(
+                army_composition_dict=_STALKER_SPAWN if is_stalker_flow else self._army.spawn_dict()
+            )
         )
         # 运营指挥·通用建筑杠杆 build=<结构>（expand=yes = build=nexus 别名）
         _order = getattr(self.ai, "steer_order", None) or {}
@@ -141,12 +163,13 @@ class ProductionManager(Manager):
 
         self._build_probes(self.ai.ready_townhalls)
         await self._build_tempest_rush_structures(building_counter, structures_dict)
-        self._build_extra_stargates(structures_dict)
+        if not is_stalker_flow:  # 追猎流不走星门，跳过追加星门
+            self._build_extra_stargates(structures_dict)
         self._chrono_structures()
         self._research_upgrades()
 
-        # one off task to build an oracle
-        if not self._built_single_oracle:
+        # one off task to build an oracle（仅暴风舰流；追猎流无星门无舰队航标，跳过）
+        if not is_stalker_flow and not self._built_single_oracle:
             if (
                 self.ai.can_afford(UnitID.ORACLE)
                 and len(structures_dict[UnitID.FLEETBEACON]) > 0
@@ -326,10 +349,19 @@ class ProductionManager(Manager):
             await self._build_core_structure(core_structure_id)
 
         # add fleetbeacon separate, since `tech_requirement_progress` doesn't work
-        if not self._structure_present_or_pending(UnitID.FLEETBEACON) and [
-            s for s in structures_dict[UnitID.STARGATE] if s.is_ready
-        ]:
+        # 仅暴风舰流需要舰队航标（造暴风舰/先知前置）；追猎流不需要，跳过省气。
+        if (
+            not is_stalker_flow
+            and not self._structure_present_or_pending(UnitID.FLEETBEACON)
+            and [s for s in structures_dict[UnitID.STARGATE] if s.is_ready]
+        ):
             await self._build_core_structure(UnitID.FLEETBEACON)
+
+        # 追猎流额外建 twilight council（blink 科技来源）。cybernetics core 已在
+        # CORE_STRUCTURES 里造，twilight 只依赖它，core 就绪即可建。
+        if EXTRA_CORE_STRUCTURES:
+            for extra_id in EXTRA_CORE_STRUCTURES:
+                await self._build_core_structure(extra_id)
 
     def _build_gas(self) -> None:
         """在离某个基地最近的空气矿上建一个气矿厂（自动选农民）。含分矿的气矿。"""
@@ -437,46 +469,50 @@ class ProductionManager(Manager):
         return getattr(UnitID, primary.id_name, UnitID.TEMPEST)
 
     def _chrono_structures(self):
-        """Decide what to chrono."""
-        stargates: list[Unit] = self.manager_mediator.get_own_structures_dict[
-            UnitID.STARGATE
-        ]
+        """Decide what to chrono. 暴风舰流加速星门(造暴风舰);追猎流加速 gateway(出追猎),
+        没 gateway 时退 twilight council(抢 blink 科技)。"""
+        if is_stalker_flow:
+            targets: list[Unit] = self.manager_mediator.get_own_structures_dict[UnitID.GATEWAY]
+            if not targets:  # 还没 gateway(或已全升 warpgate)→ 退 twilight 抢 blink
+                targets = self.manager_mediator.get_own_structures_dict[UnitID.TWILIGHTCOUNCIL]
+        else:
+            targets = self.manager_mediator.get_own_structures_dict[UnitID.STARGATE]
         primary = self._primary_unit_id()
         for nexus in self.ai.townhalls:
-            if nexus.energy >= 50:
-                non_idle_stargates = [
-                    s
-                    for s in stargates
-                    if not s.is_idle
-                    and not s.has_buff(BuffId.CHRONOBOOSTENERGYCOST)
-                    and s.type_id == UnitID.STARGATE
-                ]
-                if len(non_idle_stargates) > 0:
-                    if cy_unit_pending(self.ai, primary):
-                        nexus(
-                            AbilityId.EFFECT_CHRONOBOOSTENERGYCOST,
-                            non_idle_stargates[0],
-                        )
-                        return
-                    if not self._oracle_chrono:
-                        nexus(
-                            AbilityId.EFFECT_CHRONOBOOSTENERGYCOST,
-                            non_idle_stargates[0],
-                        )
-                        self._oracle_chrono = True
+            if nexus.energy < 50:
+                continue
+            non_idle = [
+                s for s in targets
+                if not s.is_idle
+                and not s.has_buff(BuffId.CHRONOBOOSTENERGYCOST)
+            ]
+            if not non_idle:
+                continue
+            if is_stalker_flow or cy_unit_pending(self.ai, primary):
+                nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, non_idle[0])
+                return
+            if not self._oracle_chrono:
+                nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, non_idle[0])
+                self._oracle_chrono = True
 
     def _research_upgrades(self):
         """Decide what to research."""
-        # only get upgrades if stargate is already building a tempest
-        if cy_unit_pending(self.ai, UnitID.TEMPEST) == 0:
+        # 升级只在主力兵种已在产时开始:暴风舰流看 TEMPEST 在造,追猎流看 STALKER 在造。
+        pending_main = (
+            cy_unit_pending(self.ai, UnitID.STALKER)
+            if is_stalker_flow
+            else cy_unit_pending(self.ai, UnitID.TEMPEST)
+        )
+        if pending_main == 0:
             return
 
         structure_dict: dict[
             UnitID, list[Unit]
         ] = self.manager_mediator.get_own_structures_dict
-        # M3:升级列表来自 army_composition.yml(protoss 块列同样 3 项 → 行为不变);
-        # 配置为空时回退硬编码 DESIRED_UPGRADES,保证向后兼容。
-        desired = self._army.upgrade_ids() or DESIRED_UPGRADES
+        # 升级列表:追猎流用硬编码 DESIRED_UPGRADES(blink+地面装甲;不读 yaml —— yaml 仍是
+        # 暴风舰升级,test_shipped_protoss_upgrades_unchanged 要它不动);
+        # 暴风舰流走 army_composition.yml,空则回退 DESIRED_UPGRADES(向后兼容)。
+        desired = DESIRED_UPGRADES if is_stalker_flow else (self._army.upgrade_ids() or DESIRED_UPGRADES)
         for upgrade_id in desired:
             researched_from: UnitID = UPGRADE_RESEARCHED_FROM[upgrade_id]
             cost = self.ai.calculate_cost(upgrade_id)
