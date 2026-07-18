@@ -58,8 +58,17 @@ def _opt(name: str, default):
     if v is None:
         return default
     if isinstance(default, bool):
-        return v not in ("0", "false", "False", "")
+        return v.strip().lower() not in ("0", "false", "")
     return v
+
+
+def _pick_enum(enum_cls, raw: str, what: str):
+    """大小写不敏感地取枚举成员(VeryHard 这类驼峰名也安全);非法值人话报错退出。"""
+    lut = {e.name.lower(): e for e in enum_cls}
+    member = lut.get(str(raw).strip().lower())
+    if member is None:
+        sys.exit(f"⛔ {what}={raw!r} 非法(可用: {' '.join(e.name for e in enum_cls)})")
+    return member
 
 
 REALTIME: bool = _opt("REALTIME", cfg.REALTIME)
@@ -68,7 +77,10 @@ AI_BUILD: str = _opt("AI_BUILD", cfg.AI_BUILD)
 OPPONENT_RACE: str = _opt("OPPONENT_RACE", cfg.OPPONENT_RACE)
 SAVE_REPLAY: bool = _opt("SAVE_REPLAY", cfg.SAVE_REPLAY)
 # 对手数量：1 = 常规 1v1；>1 = 多人混战（需对应人数的地图，如 4 人图 CactusValleyLE）
-OPPONENTS: int = int(_opt("OPPONENTS", getattr(cfg, "OPPONENTS", 1)))
+try:
+    OPPONENTS: int = int(_opt("OPPONENTS", getattr(cfg, "OPPONENTS", 1)))
+except ValueError:
+    sys.exit("⛔ OPPONENTS 必须是整数(1=1v1, >1=混战)")
 
 
 def main():
@@ -84,12 +96,12 @@ def main():
             if MY_BOT_NAME in config:
                 bot_name = config[MY_BOT_NAME]
             if MY_BOT_RACE in config:
-                race = Race[config[MY_BOT_RACE].title()]
+                race = _pick_enum(Race, config[MY_BOT_RACE], "MyBotRace(config.yml)")
 
     # spike_config.BOT_RACE (or env) wins if set
     bot_race_override = _opt("BOT_RACE", cfg.BOT_RACE)
     if bot_race_override:
-        race = Race[str(bot_race_override).title()]
+        race = _pick_enum(Race, bot_race_override, "BOT_RACE")
 
     bot1 = Bot(race, MyBot(), bot_name)
 
@@ -126,9 +138,9 @@ def main():
             ]
 
         chosen_map = _opt("MAP", cfg.MAP) or random.choice(map_list)
-        difficulty = Difficulty[DIFF]
-        opp_race = Race[str(OPPONENT_RACE).title()]
-        ai_build = AIBuild[AI_BUILD]
+        difficulty = _pick_enum(Difficulty, DIFF, "DIFF")
+        opp_race = _pick_enum(Race, OPPONENT_RACE, "OPPONENT_RACE")
+        ai_build = _pick_enum(AIBuild, AI_BUILD, "AI_BUILD")
 
         replay_path = None
         if SAVE_REPLAY:

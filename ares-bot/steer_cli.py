@@ -38,8 +38,11 @@ def _load(f: Path) -> dict:
 
 
 def _save(order: dict) -> None:
+    """原子写 orders.json(先写 .tmp 再 replace):bot 每 ~4s 读一次,别让它读到写一半的。"""
     STEER_DIR.mkdir(parents=True, exist_ok=True)
-    ORDERS_FILE.write_text(json.dumps(order, ensure_ascii=False, indent=2))
+    tmp = ORDERS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(order, ensure_ascii=False, indent=2))
+    tmp.replace(ORDERS_FILE)
 
 
 def cmd_state() -> None:

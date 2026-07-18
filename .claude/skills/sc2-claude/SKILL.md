@@ -95,7 +95,7 @@ REALTIME=True NO_PROXY=127.0.0.1,localhost MAP=AbyssalReefLE DIFF=Hard OPPONENT_
 | 先知骚扰开关 | `harass=on / off` |
 | 择时 | `trigger=now / when_enemy_away / when_maxed` |
 | 开分矿(一次性) | `expand=yes`(= `build=nexus` 别名) |
-| 造建筑(一次性) | `build=nexus / assimilator / stargate / gateway / cyberneticscore / forge / robo / fleetbeacon / twilight`  别名: base cyber expand gas geyser pylon roboticsfacility |
+| 造建筑(一次性) | `build=nexus / assimilator / stargate / gateway / cyberneticscore / forge / robo / fleetbeacon / twilight`  别名: base cyber expand gas geyser pylon roboticsfacility twilightcouncil |
 | 派农民侦查(一次性) | `scout=on`(只派一个,看完撤回,死了不补) |
 | (多人)焦点敌人 | `enemy=E1 / E2 / E3 / E4`(默认 E1=最近) |
 | 备注(不影响 bot) | `note=<自由文本>` |

@@ -32,11 +32,7 @@ OPPONENTS = 1
 MAP = None
 
 # --- our bot ---
-# None = use MyBotRace from config.yml; or force Protoss | Terran | Zerg | Random
-# 流派按种族自动随机（config.yml 的 Playstyle 留空时）：
-#   Zerg  → ravager_pressure
-#   Terran→ bio_mmm / mech_tank 随机
-# 想固定某流派：在 config.yml 写 Playstyle: bio_mmm（见 styles.resolve_style）。
+# None = 用 config.yml 的 MyBotRace；或强制 Protoss | Terran | Zerg | Random
 BOT_RACE = "Protoss"
 
 # --- build flow（神族走哪个兵种流派）---

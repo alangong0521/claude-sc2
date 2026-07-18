@@ -121,6 +121,10 @@ class TestResolveBuildName(unittest.TestCase):
         self.assertEqual(resolve_build_name("cyber"), "CYBERNETICSCORE")
         self.assertEqual(resolve_build_name("robo"), "ROBOTICSFACILITY")
         self.assertEqual(resolve_build_name("roboticsfacility"), "ROBOTICSFACILITY")
+        # 回归:词表词 twilight 必须映射到真枚举名 TWILIGHTCOUNCIL
+        # (曾解析成不存在的 TWILIGHT,build=twilight 被静默忽略)
+        self.assertEqual(resolve_build_name("twilight"), "TWILIGHTCOUNCIL")
+        self.assertEqual(resolve_build_name("twilightcouncil"), "TWILIGHTCOUNCIL")
 
     def test_passthrough_unknown(self):
         # 不在规范表 → 原样大写交回(引擎可能能造,如 PYLON/DARKSHRINE)

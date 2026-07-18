@@ -35,9 +35,10 @@ BUILDABLE: tuple[str, ...] = (
     "nexus", "assimilator", "stargate", "gateway",
     "cyberneticscore", "forge", "robo", "fleetbeacon", "twilight",
 )
-# build=<名> 的别名 → 规范名(指向 BUILDABLE 里的词)。CLI 校验/vocab 都认这些别名。
-# 与 production_manager.BUILD_ALIASES 的"别名→UnitID"是两套:那套映射到引擎枚举,
-# 这套映射到本词表的规范名。两边别名键应保持一致,避免"CLI 认但 bot 不认"。
+# build=<名> 的别名 → 规范名。CLI 校验/vocab 都认这些别名。
+# ⚠️ 规范名 .upper() 后必须就是引擎枚举名(levers.resolve_build_name 靠它 getattr(UnitID,…)):
+# 不一致的必须在本表映射到真枚举名 —— 如 twilight → twilightcouncil(枚举 TWILIGHTCOUNCIL),
+# 否则 bot 侧拿不到枚举,build 命令被静默忽略。
 BUILD_ALIASES: dict[str, str] = {
     "base": "nexus", "expand": "nexus", "nexus": "nexus",
     "gas": "assimilator", "geyser": "assimilator", "assimilator": "assimilator",
@@ -46,13 +47,13 @@ BUILD_ALIASES: dict[str, str] = {
     "forge": "forge",
     "robo": "roboticsfacility", "roboticsfacility": "roboticsfacility",
     "fleetbeacon": "fleetbeacon",
-    "twilight": "twilight",
+    "twilight": "twilightcouncil", "twilightcouncil": "twilightcouncil",
     "pylon": "pylon",  # pylon 不在 BUILDABLE(非核心),但 bot 能造,CLI 也放行
 }
 # orders.json 里所有可写字段(bot 读取时按此列表取)/ every field the bot reads back.
 FIELDS: tuple[str, ...] = (
     "stance", "target", "focus", "maneuver", "harass", "trigger",
-    "expand", "build", "scout", "enemy", "note",
+    "expand", "build", "scout", "enemy", "note", "defend",
 )
 # 每个字段的合法取值(用于 CLI 校验)。note/enemy 之外都是受限枚举。
 # None 表示"自由取值/不校验":note=自由文本;build=BUILDABLE+别名+任意引擎结构名(运行时再判);
@@ -66,6 +67,7 @@ _FIELD_VALUES: dict[str, tuple[str, ...] | None] = {
     "expand": EXPAND,
     "scout": ("on", "off"),
     "enemy": ENEMY_SLOTS,
+    "defend": ("yes", "no"),   # F2: 铺防御塔(B+F+Cannon)开关
     "focus": None,    # weakest/closest/workers + 任意兵种名
     "build": None,    # BUILDABLE + 别名 + 任意引擎结构名
     "note": None,     # 自由文本
@@ -105,7 +107,7 @@ def validate_field(field: str, value: str) -> list[str]:
       - 受限枚举字段(stance/target/maneuver/harass/trigger/expand/scout/enemy)
         值必须在对应元组里;
       - focus 接受 weakest/closest/workers 或任意大写兵种名(只做形式校验);
-      - build 走 canonical_build,接受 BUILDABLE/别名/任意结构名(形式校验);
+      - build 自由放行(规范名/别名/任意结构名都行,运行时再判可否建造);
       - note 自由,不校验。
 
     Validate one key=value; return list of human-readable error strings (empty=ok).
@@ -128,13 +130,6 @@ def validate_field(field: str, value: str) -> list[str]:
                 )
         return errs
     v = value.strip()
-    # build 的别名归一后再比对
-    if field == "build":
-        canon = canonical_build(v)
-        if canon in BUILDABLE or v in BUILDABLE or v in BUILD_ALIASES:
-            return errs
-        # 不在规范表里 → 放行(可能是 pylon/roboticsfacility 等引擎能造的结构)
-        return errs
     if v not in allowed:
         errs.append(f"{field} 值 '{value}' 不合法(可用: {' '.join(allowed)})")
     return errs

@@ -81,7 +81,14 @@ class MyBot(AresBot):
         多人混战：默认摸**最近的敌人**（E1）；想摸别家先 enemy=E2 再 scout=on。"""
         enemy_main = self.focused_enemy_start()
         if (self.steer_order or {}).get("scout") != "on":
-            self._scout_done = False  # 命令撤销 → 允许下次重新派
+            # 命令撤销 → 把还在路上的侦查农民拉回采矿(别留着 SCOUTING role 继续送),
+            # 并重置 _scout_done 允许下次重新派
+            if self._scout_tag:
+                scout = self.units.find_by_tag(self._scout_tag)
+                if scout is not None:
+                    self.mediator.assign_role(tag=scout.tag, role=UnitRole.GATHERING)
+                self._scout_tag = None
+            self._scout_done = False
             return
 
         if self._scout_done:
@@ -155,8 +162,16 @@ class MyBot(AresBot):
         for tag in list(self._player_ctrl):
             if now >= self._player_ctrl[tag]["until"]:
                 prev = self._player_ctrl.pop(tag)["role"]
-                if self.all_own_units.find_by_tag(tag) is not None and prev:
-                    self.mediator.assign_role(tag=tag, role=UnitRole(prev))
+                unit = self.all_own_units.find_by_tag(tag)
+                if unit is not None:
+                    # prev 正常都有;拿不到(接管瞬间的一帧窗口)给兜底 role —— 别让它
+                    # 滞留在 PERSISTENT_BUILDER 永远不干活
+                    role = UnitRole(prev) if prev else (
+                        UnitRole.GATHERING
+                        if unit.type_id.name in ("PROBE", "SCV", "DRONE")
+                        else UnitRole.ATTACKING
+                    )
+                    self.mediator.assign_role(tag=tag, role=role)
                 if debug:
                     print(f"[player-ctrl] t={now:.1f} 归还 tag={tag} → {prev}",
                           flush=True)

@@ -237,8 +237,8 @@ class OracleHarass(BaseUnit):
 
         """
         target_health: float = targets[0].health + targets[0].shield
-        for unit in targets:
-            if unit.shield + unit.health != target_health:
+        for t in targets:
+            if t.shield + t.health != target_health:
                 return cy_pick_enemy_target(targets)
 
         return cy_closest_to(unit.position, targets)
