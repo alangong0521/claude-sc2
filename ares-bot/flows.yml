@@ -1,0 +1,65 @@
+# 流派配置 —— 神族生产侧单一真相源(per-flow)
+#
+# ProductionManager 按 BUILD env 选流派(默认 tempest,未知名回退 tempest 并警告),
+# 造兵配方/科技链/升级/chrono/追加产能全从本文件读。加流派 = 加一块 yaml,不动 Python。
+#
+# 每个流派字段:
+#   spawn:            造兵配方 {引擎兵种名(全大写): {proportion, priority}}
+#                     proportion 和应 ≈ 1.0;priority 越小越优先(0=主力,chrono/primary 判断用它)
+#   core_structures:  有序科技链(引擎结构名)。FLEETBEACON 是特例:需有就绪星门才建
+#                     (tech_requirement_progress 对它不准,代码按 id 特判)
+#   upgrades:         升级列表(引擎 UpgradeId 名),交 ares UpgradeController(自动补科技建筑)
+#   extra_production: 矿富余(>400)时追加的产兵建筑 {id, cap, base}
+#                     desired = min(cap, base + 已就绪基地数);GATEWAY 计数含 WARPGATE(代码特判)
+#   chrono:           {targets: [...], when: always|primary_pending}
+#                     targets 按顺序取第一个有建筑的;always=见忙就加速,
+#                     primary_pending=主力在产才加速(省能量给一次性建造首次加速)
+#   one_off:          一次性建造(如 ORACLE,需舰队航标+空闲就绪星门,造一个即停)
+#
+# ⚠️ tempest/stalker 两块与已验证行为逐位一致,勿轻改(有 shipped 测试冻结,见
+#    tests/test_flow_config.py)。战斗侧指挥不读本文件 —— CombatManager 按
+#    army_composition.yml 兵种注册表逐兵种分派,流派无关。
+
+flows:
+  # 暴风舰天空体 + 先知骚扰(默认,已实机验证)
+  tempest:
+    spawn:
+      TEMPEST: {proportion: 1.0, priority: 0}
+    core_structures: [GATEWAY, CYBERNETICSCORE, STARGATE, FLEETBEACON]
+    upgrades:
+      - TEMPESTGROUNDATTACKUPGRADE
+      - PROTOSSAIRARMORSLEVEL1
+      - PROTOSSAIRARMORSLEVEL2
+    extra_production: {id: STARGATE, cap: 6, base: 1}
+    chrono: {targets: [STARGATE], when: primary_pending}
+    one_off: [ORACLE]
+
+  # 纯追猎 blink 流(骨架,待跑局验证)
+  stalker:
+    spawn:
+      STALKER: {proportion: 0.7, priority: 0}
+      ZEALOT: {proportion: 0.3, priority: 1}
+    core_structures: [GATEWAY, CYBERNETICSCORE, TWILIGHTCOUNCIL]
+    upgrades:
+      - WARPGATERESEARCH
+      - BLINKTECH
+      - PROTOSSGROUNDWEAPONSLEVEL1
+      - PROTOSSGROUNDARMORSLEVEL1
+      - PROTOSSSHIELDSLEVEL1
+    extra_production: {id: GATEWAY, cap: 8, base: 2}
+    chrono: {targets: [GATEWAY, TWILIGHTCOUNCIL], when: always}
+    one_off: []
+
+  # 航母黄金舰队(新,待跑局验证):科技链与暴风舰完全相同,航母主 C、暴风舰副 C
+  carrier:
+    spawn:
+      CARRIER: {proportion: 0.7, priority: 0}
+      TEMPEST: {proportion: 0.3, priority: 1}
+    core_structures: [GATEWAY, CYBERNETICSCORE, STARGATE, FLEETBEACON]
+    upgrades:
+      - PROTOSSAIRWEAPONSLEVEL1
+      - PROTOSSAIRARMORSLEVEL1
+      - PROTOSSSHIELDSLEVEL1
+    extra_production: {id: STARGATE, cap: 6, base: 1}
+    chrono: {targets: [STARGATE], when: primary_pending}
+    one_off: [ORACLE]

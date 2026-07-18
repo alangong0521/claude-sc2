@@ -2,6 +2,8 @@
 
 > 优先级 S 级 · 预计改动量：小（P0 配置化完成后基本只改 yaml + 档案）
 > 社区出处：SpawningTool "skytoss smasher carriers"、"CIA into Carriers"；中文社区「黄金舰队」。
+> **状态：已落地（2026-07，待跑局验证）** —— `flows.yml` 的 `carrier` 块 + `build_meta.md`
+> 档案段已就位，`BUILD=carrier poetry run python run.py` 即可开局；跑局结果回填到末节。
 
 ## 流派定位
 

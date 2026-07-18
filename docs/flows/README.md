@@ -5,6 +5,9 @@
 > 排期确定后按单份方案独立实施、独立验收，验收标准见各文件末节。
 > 筛选时已排除依赖单位级精准施法的流派（使徒分身、干扰者瞄准、哨兵力场、凤凰抬人），
 > 它们与 0-APM 架构天然相冲。
+>
+> **进度**：P0（流派配置化，`flows.yml` + `bot/flow_config.py`）与**航母流已落地**
+> （2026-07，待跑局验证），`BUILD=carrier poetry run python run.py` 即可开局。
 
 ## 现状
 
@@ -15,7 +18,7 @@
 
 ## 共同前置（所有流派都依赖，建议最先做）
 
-### P0 · 流派差异配置化（解锁后续一切）
+### P0 · 流派差异配置化（解锁后续一切）✅ 已落地（2026-07）
 
 现状：两个流派的差异**硬编码**在 `production_manager.py` 的 `if is_stalker_flow` 分支里
 （spawn 配方 `_STALKER_SPAWN`、核心建筑链 `CORE_STRUCTURES` / `EXTRA_CORE_STRUCTURES`、
@@ -46,7 +49,7 @@ CombatManager 按 yml 逐兵种分派继续指挥（指挥侧本就流派无关�
 | 顺序 | 流派 | 方案文件 | 核心兵种 | 新增科技链 | 依赖 | 预计改动量 |
 |---|---|---|---|---|---|---|
 | 0 | stalker 验证（白捡） | （骨架已在仓库） | STALKER | twilight+blink | 只需跑局 | 0（跑局调参） |
-| 1 | 航母黄金舰队 | [carrier-skytoss.md](carrier-skytoss.md) | CARRIER(+TEMPEST) | 复用暴风舰链 | P0 | 小 |
+| 1 | 航母黄金舰队 ✅(待跑局) | [carrier-skytoss.md](carrier-skytoss.md) | CARRIER(+TEMPEST) | 复用暴风舰链 | P0 | 小 |
 | 2 | 隐刀 DT | [dt-rush.md](dt-rush.md) | DARKTEMPLAR | twilight→darkshrine | P0 | 中 |
 | 3 | 巨像地面流 | [robo-colossus.md](robo-colossus.md) | COLOSSUS+IMMORTAL | robo→robo bay | P0 + B0 | 中 |
 | 4 | 提速叉白球 | [chargelot-archon.md](chargelot-archon.md) | ZEALOT+ARCHON+HT | twilight→templar archives | P0 + 合球行为 | 中大 |

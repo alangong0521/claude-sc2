@@ -20,6 +20,9 @@ sys.path.append("ares-sc2")
 # env 已设则不覆盖(env 赢)，其次 spike_config.BUILD，其次 "tempest"(与 _opt 语义一致)。
 import spike_config as _cfg_for_build
 os.environ.setdefault("BUILD", getattr(_cfg_for_build, "BUILD", "tempest") or "tempest")
+# 流派名归一:未知名(flows.yml 里没有的)在此警告并回退 tempest,避免拼错静默开错流派
+from bot.flow_config import FlowConfig as _FlowConfig
+os.environ["BUILD"] = _FlowConfig.load(os.environ.get("BUILD")).name
 
 # 兼容补丁：让老 burnysc2 容忍新版客户端/地图里的未知 id（否则 CactusValleyLE 等
 # 4 人图会因未知单位 id 2009 在开局崩溃）。导入即打补丁，必须在起游戏前。
@@ -156,6 +159,7 @@ def main():
         mode = "1v1" if OPPONENTS == 1 else f"{OPPONENTS + 1}人混战"
         print(f"Starting local game [{mode}]: map={chosen_map} vs {OPPONENTS}x "
               f"{opp_race.name} {difficulty.name}/{ai_build.name} "
+              f"flow={os.environ.get('BUILD')} "
               f"(realtime={REALTIME}, replay={replay_path})")
         if OPPONENTS > 1:
             logger.warning(

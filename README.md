@@ -54,6 +54,7 @@ Python**。人族、虫族的生产层，以及坦克架起 / 医疗船治疗空
 | `ares-bot/bot/managers/` | 三个 manager：`combat`（指挥军队）/ `production`（造兵运营）/ `oracle`（先知骚扰） |
 | `ares-bot/bot/combat/` | 各兵种专属 combat class（借 ares 战斗原语）；无专属类的兵种走 `generic_offensive` |
 | `ares-bot/army_composition.yml` | 兵种单一真相源（三族全兵种登记）；生产与指挥都读它，**加兵种改这里** |
+| `ares-bot/flows.yml` | 流派单一真相源（spawn/科技链/升级/chrono，按 `BUILD` 选块），**加流派改这里** |
 | `ares-bot/bot/army_config.py` | 读 `army_composition.yml`、按种族分块、校验 |
 | `ares-bot/bot/levers.py` | 操纵杆纯逻辑（语义→坐标/枚举的纯计算，可离线单测） |
 | `ares-bot/bot/steer.py` | bot 侧：与 `~/agent-rts-steer/` 的原子 JSON 收发 |

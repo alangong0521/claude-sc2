@@ -84,7 +84,7 @@ REALTIME=True NO_PROXY=127.0.0.1,localhost MAP=AbyssalReefLE DIFF=Hard OPPONENT_
 
 <!-- BEGIN AUTOGEN vocab -->
 
-> 本段由 `gen_skill_vocab.py` 从 `bot/steer_vocab.py` 生成(字段全集: stance target focus maneuver harass trigger expand build scout enemy note)。**别手改**,改词表后跑 `python3 gen_skill_vocab.py` 重生成。
+> 本段由 `gen_skill_vocab.py` 从 `bot/steer_vocab.py` 生成(字段全集: stance target focus maneuver harass trigger expand build scout enemy note defend)。**别手改**,改词表后跑 `python3 gen_skill_vocab.py` 重生成。
 
 | 司令会说 | 命令 |
 |---|---|
@@ -116,9 +116,10 @@ REALTIME=True NO_PROXY=127.0.0.1,localhost MAP=AbyssalReefLE DIFF=Hard OPPONENT_
 
 ## 这局的流派（开局给司令介绍）
 
-> **流派知识的单一真相源 = `ares-bot/build_meta.md`**（bot 换 build 只改那份,skill 不用动）。
-> 开局前**先读 `ares-bot/build_meta.md`**,按里面的 codename / core_units / 节奏 / 死穴 / 空窗期
-> 给司令介绍。下面是当前 build(TempestRush)的摘要,与 build_meta.md 不一致时**以 build_meta.md 为准**。
+> **流派知识的单一真相源 = `ares-bot/build_meta.md`**（per-flow 分段;换/加流派只改那份和
+> `ares-bot/flows.yml`,skill 不用动）。开局前**先读 `ares-bot/build_meta.md`**,按 **$BUILD**
+> （flows.yml 流派名,默认 tempest）读对应段,按里面的 codename / core_units / 节奏 / 死穴 /
+> 空窗期给司令介绍。下面是默认 build(tempest)的摘要,与 build_meta.md 不一致时**以 build_meta.md 为准**。
 
 当前 bot = **Aristaeus（神族 Protoss）**：**直奔暴风舰(Tempest)天空体** + 先知(Oracle)骚扰。（注意：**没有光炮起手**——开局就是造农民 + 一路爬星门科技，前期没有任何拖延/骚扰手段，比较脆。）
 - 节奏：农民开局 → Gateway→控制核心→星门(Stargate)→舰队航标科技 → **暴风舰滚雪球**（射程极远，地面兵根本够不着）→ 出一个先知顺路骚扰对面农民。中后期靠暴风舰数量碾压。

@@ -23,7 +23,6 @@ from cython_extensions.units_utils import cy_closest_to
 from ares.managers.manager import Manager
 from ares.managers.manager_mediator import ManagerMediator
 from sc2.data import Race
-from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.buff_id import BuffId
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
@@ -36,51 +35,11 @@ from bot.production_plans import gas_target, worker_target
 if TYPE_CHECKING:
     from ares import AresBot
 
-# 神族兵种流派（run.py 在导入本模块前已把 BUILD 写进 os.environ）：
-#   tempest = 暴风舰天空体 + 先知骚扰（默认，与已验证行为逐位一致）
-#   stalker = 纯追猎 blink 流（弃星门/舰队航标/先知，加议会研究 blink）
-BUILD_FLOW: str = os.environ.get("BUILD", "tempest")
-is_stalker_flow: bool = BUILD_FLOW == "stalker"
+# 神族流派(造兵配方/科技链/升级/chrono/追加产能/一次性建造)全部进 flows.yml,
+# 按 BUILD env 选块(run.py 在起游戏前已把 BUILD 写进 os.environ 并归一)。
+# 本文件不再有 per-流派硬编码常量 —— 加流派改 flows.yml,不动这里。
+from bot.flow_config import FlowConfig
 
-# 核心科技链：暴风舰流 = gateway+cyber+星门；追猎流 = gateway+cyber（星门是浪费，省 150/150）。
-CORE_STRUCTURES: list[UnitID] = (
-    [UnitID.GATEWAY, UnitID.CYBERNETICSCORE]
-    if is_stalker_flow
-    else [UnitID.GATEWAY, UnitID.CYBERNETICSCORE, UnitID.STARGATE]
-)
-
-# 升级列表：交 ares UpgradeController（自动 TechUp 建 FORGE/TWILIGHTCOUNCIL + 研究 + 打日志）。
-#   追猎流：折跃门(warpgate) + blink + 地面武器/装甲/护盾 L1（L2/L3 后续追加）
-#   暴风舰流：tempest 对地 + 空军装甲 L1/L2 + 护盾 L1
-DESIRED_UPGRADES: list[UpgradeId] = (
-    [
-        UpgradeId.WARPGATERESEARCH,
-        UpgradeId.BLINKTECH,
-        UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1,
-        UpgradeId.PROTOSSGROUNDARMORSLEVEL1,
-        UpgradeId.PROTOSSSHIELDSLEVEL1,
-    ]
-    if is_stalker_flow
-    else [
-        UpgradeId.TEMPESTGROUNDATTACKUPGRADE,
-        UpgradeId.PROTOSSAIRARMORSLEVEL1,
-        UpgradeId.PROTOSSAIRARMORSLEVEL2,
-        UpgradeId.PROTOSSSHIELDSLEVEL1,
-    ]
-)
-
-# 追猎流额外建 twilight council（blink 科技来源）；暴风舰流不需要，留空。
-EXTRA_CORE_STRUCTURES: list[UnitID] = (
-    [UnitID.TWILIGHTCOUNCIL] if is_stalker_flow else []
-)
-
-# 追猎流 SpawnController 配方（纯追猎）。暴风舰流走 self._army.spawn_dict()（army_composition.yml）。
-# 追猎流 SpawnController 配方：追猎为主 + 狂热者混编（rush 杀伤力更高）。
-# 暴风舰流走 self._army.spawn_dict()（army_composition.yml）。比例和须 = 1.0。
-_STALKER_SPAWN: dict = {
-    UnitID.STALKER: {"proportion": 0.7, "priority": 0},
-    UnitID.ZEALOT: {"proportion": 0.3, "priority": 1},
-}
 
 class ProductionManager(Manager):
     def __init__(
@@ -115,7 +74,10 @@ class ProductionManager(Manager):
         # 一次性锁定：记下"目标数量"，造到就停；想再造先 clear 再下（同 scout 手感）。
         self._build_key: str | None = None
         self._build_target: int | None = None
-        # 兵种组成从 army_composition.yml 读(单一真相源,按 bot 种族选块),不再硬编码 TEMPEST。
+        # 流派配置(flows.yml,神族生产侧单一真相源);Terran/Zerg 路径不走它。
+        self._flow: FlowConfig = FlowConfig.load(os.environ.get("BUILD"))
+        # 兵种组成注册表(army_composition.yml):Terran/Zerg 路径的 spawn/升级从这里读,
+        # 神族路径的造兵已改走 self._flow。
         from bot.army_config import ArmyComposition, bot_race_name
         self._army = ArmyComposition.load(race=bot_race_name(ai))
 
@@ -148,10 +110,10 @@ class ProductionManager(Manager):
         # use ares-sc2 macro behaviors for building pylons and units
         macro_plan: MacroPlan = MacroPlan()
         macro_plan.add(AutoSupply(base_location=self.ai.start_location))
-        # 兵种组成：追猎流写死纯追猎(_STALKER_SPAWN)；暴风舰流走 army_composition.yml。
+        # 兵种配方从 flows.yml 当前流派读(spawn_dict 只含 proportion>0 的兵种)。
         macro_plan.add(
             SpawnController(
-                army_composition_dict=_STALKER_SPAWN if is_stalker_flow else self._army.spawn_dict(),
+                army_composition_dict=self._flow.spawn_dict(),
                 spawn_target=self._front_point(),  # F1: 折跃向前线(非主基地),配合前线水晶塔远程投送
             )
         )
@@ -176,28 +138,21 @@ class ProductionManager(Manager):
         ] = self.manager_mediator.get_own_structures_dict
 
         self._build_probes(self.ai.ready_townhalls)
-        await self._build_tempest_rush_structures(building_counter, structures_dict)
-        # 按流派扩产能：追猎流补 gateway（主力产能来源），暴风舰流补星门。治"矿堆花不出去"。
-        if is_stalker_flow:
-            self._build_extra_gateways(structures_dict)
-        else:
-            self._build_extra_stargates(structures_dict)
-        self._build_forward_pylon()  # F1: 前线水晶塔(投送),两流派共用
+        await self._build_flow_structures(building_counter, structures_dict)
+        # 按流派配置扩产能(矿富余追加产兵建筑,治"矿堆花不出去")
+        self._build_extra_production(structures_dict)
+        self._build_forward_pylon()  # F1: 前线水晶塔(投送),各流派共用
         self._chrono_structures()
-        # 升级交 ares UpgradeController（自动建 FORGE/TWILIGHTCOUNCIL + 研究 + 打日志），
-        # 替代手写 _research_upgrades（气体门槛过严要 310 气 / 不建 FORGE / 无日志 三 bug）。
-        _upgrades = (
-            DESIRED_UPGRADES
-            if is_stalker_flow
-            else (self._army.upgrade_ids() or DESIRED_UPGRADES)
-        )
+        # 升级交 ares UpgradeController（自动建 FORGE/TWILIGHTCOUNCIL 等前置 + 研究 + 打日志）。
+        _upgrades = self._flow.upgrade_ids()
         if _upgrades:
             self.ai.register_behavior(
                 UpgradeController(_upgrades, base_location=self.ai.start_location)
             )
 
-        # one off task to build an oracle（仅暴风舰流；追猎流无星门无舰队航标，跳过）
-        if not is_stalker_flow and not self._built_single_oracle:
+        # one off task to build an oracle（流派配置里 one_off 含 ORACLE 才造；
+        # 需舰队航标 + 有空闲就绪星门）
+        if not self._built_single_oracle and UnitID.ORACLE in self._flow.one_off_ids():
             if (
                 self.ai.can_afford(UnitID.ORACLE)
                 and len(structures_dict[UnitID.FLEETBEACON]) > 0
@@ -346,19 +301,19 @@ class ProductionManager(Manager):
                 for nexus in idle_ths:
                     nexus.train(UnitID.PROBE)
 
-    async def _build_tempest_rush_structures(
+    async def _build_flow_structures(
         self,
         building_counter: dict[UnitID, int],
         structures_dict: dict[UnitID, list[Unit]],
     ) -> None:
-        """Build everything we need towards Tempest tech.
+        """按当前流派的 core_structures 爬科技链(flows.yml 配置驱动)。
 
         building_counter : Dict[UnitTypeId, int]
             What is currently pending in the building tracker
         structures_dict : Dict[UnitTypeId, Units]
             Data structure of current buildings.
         """
-        # 气随基地数放大：每个已建好的基地采满 2 个气矿（暴风舰吃气大户，之前写死 2 会气荒）。
+        # 气随基地数放大：每个已建好的基地采满 2 个气矿（吃气大户流派的命脉）。
         # 前期没兵营时先只开 1 个气（保持原起手节奏）。
         max_gas_buildings = (
             2 * self.ai.townhalls.ready.amount
@@ -374,23 +329,16 @@ class ProductionManager(Manager):
         if not ready_pylons:
             return
 
-        for core_structure_id in CORE_STRUCTURES:
-            await self._build_core_structure(core_structure_id)
-
-        # add fleetbeacon separate, since `tech_requirement_progress` doesn't work
-        # 仅暴风舰流需要舰队航标（造暴风舰/先知前置）；追猎流不需要，跳过省气。
-        if (
-            not is_stalker_flow
-            and not self._structure_present_or_pending(UnitID.FLEETBEACON)
-            and [s for s in structures_dict[UnitID.STARGATE] if s.is_ready]
-        ):
-            await self._build_core_structure(UnitID.FLEETBEACON)
-
-        # 追猎流额外建 twilight council（blink 科技来源）。cybernetics core 已在
-        # CORE_STRUCTURES 里造，twilight 只依赖它，core 就绪即可建。
-        if EXTRA_CORE_STRUCTURES:
-            for extra_id in EXTRA_CORE_STRUCTURES:
-                await self._build_core_structure(extra_id)
+        for structure_id in self._flow.core_structure_ids():
+            if structure_id == UnitID.FLEETBEACON:
+                # 特例:tech_requirement_progress 对舰队航标不准,需有就绪星门才建
+                if (
+                    not self._structure_present_or_pending(UnitID.FLEETBEACON)
+                    and [s for s in structures_dict[UnitID.STARGATE] if s.is_ready]
+                ):
+                    await self._build_core_structure(UnitID.FLEETBEACON)
+            else:
+                await self._build_core_structure(structure_id)
 
     def _build_gas(self) -> None:
         """在离某个基地最近的空气矿上建一个气矿厂（自动选农民）。含分矿的气矿。"""
@@ -417,39 +365,30 @@ class ProductionManager(Manager):
             )
             self.ai.mediator.assign_role(tag=worker.tag, role=UnitRole.BUILDING)
 
-    def _build_extra_stargates(self, structures_dict: dict[UnitID, list[Unit]]) -> None:
-        """矿有富余时自动追加星门，把积压的矿变成暴风舰产能（治"5880 矿花不出去"）。
-        得先有第一个星门（核心科技就位）才追加；每多一个基地多一个，封顶 6。"""
-        stargates = structures_dict[UnitID.STARGATE]
-        if not stargates:
+    def _build_extra_production(self, structures_dict: dict[UnitID, list[Unit]]) -> None:
+        """矿有富余时按流派配置追加产兵建筑（治"矿堆花不出去"）。
+        得先有第一个同类建筑（核心科技就位）才追加。GATEWAY 特例:升级成 WARPGATE
+        后类型变了,两者都算产能。"""
+        ep = self._flow.extra_production
+        if ep is None:
             return
-        desired = min(6, 1 + self.ai.townhalls.ready.amount)
-        have = len(stargates) + self.manager_mediator.get_building_counter[UnitID.STARGATE]
-        if (
-            have < desired
-            and self.ai.minerals > 400  # 只在矿有富余时追加，别抢科技/暴风舰的钱
-            and self.ai.can_afford(UnitID.STARGATE)
-        ):
-            self.ai.register_behavior(
-                BuildStructure(self.ai.start_location, UnitID.STARGATE)
-            )
-
-    def _build_extra_gateways(self, structures_dict: dict[UnitID, list[Unit]]) -> None:
-        """矿有富余时自动追加 gateway/warpgate，把积压的矿变成追猎产能（治"3000+ 矿花不出去"）。
-        得先有第一个 gateway（核心科技就位）才追加；随基地数放大，封顶 8。stalker 流主力产能来源。"""
-        # gateway morph 成 warpgate 后类型变 WARPGATE，两者都算产能建筑。
-        gateways = structures_dict[UnitID.GATEWAY] + structures_dict[UnitID.WARPGATE]
-        if not gateways:
+        sid = getattr(UnitID, ep.id_name, None)
+        if sid is None:
             return
-        desired = min(8, 2 + self.ai.townhalls.ready.amount)
-        have = len(gateways) + self.manager_mediator.get_building_counter[UnitID.GATEWAY]
+        have_structures: list[Unit] = list(structures_dict[sid])
+        if sid == UnitID.GATEWAY:
+            have_structures += structures_dict[UnitID.WARPGATE]
+        if not have_structures:
+            return
+        desired = min(ep.cap, ep.base + self.ai.townhalls.ready.amount)
+        have = len(have_structures) + self.manager_mediator.get_building_counter[sid]
         if (
             have < desired
             and self.ai.minerals > 400  # 只在矿有富余时追加，别抢科技/造兵的钱
-            and self.ai.can_afford(UnitID.GATEWAY)
+            and self.ai.can_afford(sid)
         ):
             self.ai.register_behavior(
-                BuildStructure(self.ai.start_location, UnitID.GATEWAY)
+                BuildStructure(self.ai.start_location, sid)
             )
 
     def _front_point(self) -> Point2:
@@ -535,23 +474,30 @@ class ProductionManager(Manager):
             self.ai.register_behavior(BuildStructure(self.ai.start_location, sid))
 
     def _primary_unit_id(self) -> UnitID:
-        """army_composition 里优先级最高(proportion>0 且 priority 最小)的兵种枚举。
-        用于 chrono/升级判断"主力是否在造"。换 build 时自动跟随配置。"""
-        candidates = [u for u in self._army.units if u.proportion > 0]
+        """当前流派 spawn 里优先级最高(proportion>0 且 priority 最小)的兵种枚举。
+        chrono 判断"主力是否在造"用它;换流派自动跟随 flows.yml 配置。"""
+        candidates = [
+            (name, cfg) for name, cfg in self._flow.spawn.items()
+            if cfg["proportion"] > 0
+        ]
         if not candidates:
             return UnitID.TEMPEST  # 兜底
-        primary = min(candidates, key=lambda u: u.priority)
-        return getattr(UnitID, primary.id_name, UnitID.TEMPEST)
+        name = min(candidates, key=lambda kv: kv[1]["priority"])[0]
+        return getattr(UnitID, name, UnitID.TEMPEST)
 
     def _chrono_structures(self):
-        """Decide what to chrono. 暴风舰流加速星门(造暴风舰);追猎流加速 gateway(出追猎),
-        没 gateway 时退 twilight council(抢 blink 科技)。"""
-        if is_stalker_flow:
-            targets: list[Unit] = self.manager_mediator.get_own_structures_dict[UnitID.GATEWAY]
-            if not targets:  # 还没 gateway(或已全升 warpgate)→ 退 twilight 抢 blink
-                targets = self.manager_mediator.get_own_structures_dict[UnitID.TWILIGHTCOUNCIL]
-        else:
-            targets = self.manager_mediator.get_own_structures_dict[UnitID.STARGATE]
+        """按流派 chrono 配置加速:targets 顺序取第一个有建筑的;
+        when=always 见忙就加速,primary_pending 等主力在产(或一次性 oracle 的首次加速)。"""
+        targets: list[Unit] = []
+        for name in self._flow.chrono.targets:
+            sid = getattr(UnitID, name, None)
+            if sid is None:
+                continue
+            targets = self.manager_mediator.get_own_structures_dict[sid]
+            if targets:
+                break
+        if not targets:
+            return
         primary = self._primary_unit_id()
         for nexus in self.ai.townhalls:
             if nexus.energy < 50:
@@ -563,41 +509,9 @@ class ProductionManager(Manager):
             ]
             if not non_idle:
                 continue
-            if is_stalker_flow or cy_unit_pending(self.ai, primary):
+            if self._flow.chrono.when == "always" or cy_unit_pending(self.ai, primary):
                 nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, non_idle[0])
                 return
             if not self._oracle_chrono:
                 nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, non_idle[0])
                 self._oracle_chrono = True
-
-    def _research_upgrades(self):
-        """Decide what to research."""
-        # 升级只在主力兵种已在产时开始:暴风舰流看 TEMPEST 在造,追猎流看 STALKER 在造。
-        pending_main = (
-            cy_unit_pending(self.ai, UnitID.STALKER)
-            if is_stalker_flow
-            else cy_unit_pending(self.ai, UnitID.TEMPEST)
-        )
-        if pending_main == 0:
-            return
-
-        structure_dict: dict[
-            UnitID, list[Unit]
-        ] = self.manager_mediator.get_own_structures_dict
-        # 升级列表:追猎流用硬编码 DESIRED_UPGRADES(blink+地面装甲;不读 yaml —— yaml 仍是
-        # 暴风舰升级,test_shipped_protoss_upgrades_unchanged 要它不动);
-        # 暴风舰流走 army_composition.yml,空则回退 DESIRED_UPGRADES(向后兼容)。
-        desired = DESIRED_UPGRADES if is_stalker_flow else (self._army.upgrade_ids() or DESIRED_UPGRADES)
-        for upgrade_id in desired:
-            researched_from: UnitID = UPGRADE_RESEARCHED_FROM[upgrade_id]
-            cost = self.ai.calculate_cost(upgrade_id)
-            # ensure there is always nearly enough for a tempest
-            # before spending all the banked vespene
-            if self.ai.vespene - cost.vespene < 160:
-                continue
-            if (
-                self.ai.can_afford(upgrade_id)
-                and len([s for s in structure_dict[researched_from] if s.is_idle]) > 0
-            ):
-                if self.ai.research(upgrade_id):
-                    return

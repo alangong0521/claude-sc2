@@ -170,4 +170,6 @@ build runner)、与 M4 的架坦克/运兵专属微操。当前 Terran 能造建
 | `ares-bot/gen_skill_vocab.py` | 从词表生成 SKILL.md 词表段 |
 | `docs/lever-map.md` | 操纵杆→动作映射图 |
 | `ares-bot/tests/` | 75 例离线单测(不需游戏) |
-| `docs/flows/` | **神族新流派方案库**(未合入):总览 + 7 份流派方案(航母/隐刀/巨像/提速叉白球/4-gate/凤凰虚空/修地堡),排期见 `docs/flows/README.md` |
+| `ares-bot/flows.yml` | **流派配置单一真相源**(spawn/科技链/升级/chrono/追加产能,按 BUILD 选块) |
+| `ares-bot/bot/flow_config.py` | 解析 flows.yml;纯逻辑可单测(`test_flow_config`) |
+| `docs/flows/` | **神族新流派方案库**:总览 + 7 份流派方案(航母已落地待跑局;隐刀/巨像/提速叉白球/4-gate/凤凰虚空/修地堡待实施),排期见 `docs/flows/README.md` |

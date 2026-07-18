@@ -35,11 +35,11 @@ MAP = None
 # None = 用 config.yml 的 MyBotRace；或强制 Protoss | Terran | Zerg | Random
 BOT_RACE = "Protoss"
 
-# --- build flow（神族走哪个兵种流派）---
-# tempest = 暴风舰天空体 + 先知骚扰（默认，零回归风险）
-# stalker = 纯追猎 blink 流：SpawnController 只造追猎、bot 自动建 twilight+研究 blink、
-#           combat 侧 StalkerOffensive 做集火/风筝/低血 blink 后撤。
-# 切流派：BUILD=stalker poetry run python run.py（env 同名覆盖此项，与其它设置一致）
+# --- build flow（神族走哪个兵种流派,配置在 ares-bot/flows.yml）---
+# tempest = 暴风舰天空体 + 先知骚扰（默认，已验证）
+# stalker = 追猎 blink 流（混狂热者）：自动建 twilight + 研究 blink，StalkerOffensive 微操
+# carrier = 航母黄金舰队：航母主 C + 暴风舰副 C，科技链与暴风舰相同
+# 切流派：BUILD=carrier poetry run python run.py（env 同名覆盖此项；未知名回退 tempest 并警告）
 BUILD = "tempest"
 
 # --- replays ---
