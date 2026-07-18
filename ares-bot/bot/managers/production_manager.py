@@ -10,6 +10,7 @@ from ares.behaviors.macro import (
     ExpansionController,
     GasBuildingController,
     ProductionController,
+    ProtossStaticDefence,
     SpawnController,
     TechUp,
     UpgradeCCs,
@@ -27,6 +28,7 @@ from sc2.ids.ability_id import AbilityId
 from sc2.ids.buff_id import BuffId
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.ids.upgrade_id import UpgradeId
+from sc2.position import Point2
 from sc2.units import Units
 
 from bot.production_plans import gas_target, worker_target
@@ -47,14 +49,23 @@ CORE_STRUCTURES: list[UnitID] = (
     else [UnitID.GATEWAY, UnitID.CYBERNETICSCORE, UnitID.STARGATE]
 )
 
-# 升级：暴风舰流走空中装甲/对地；追猎流把 blink 科技排进去（research 自 TWILIGHTCOUNCIL）。
+# 升级列表：交 ares UpgradeController（自动 TechUp 建 FORGE/TWILIGHTCOUNCIL + 研究 + 打日志）。
+#   追猎流：折跃门(warpgate) + blink + 地面武器/装甲/护盾 L1（L2/L3 后续追加）
+#   暴风舰流：tempest 对地 + 空军装甲 L1/L2 + 护盾 L1
 DESIRED_UPGRADES: list[UpgradeId] = (
-    [UpgradeId.BLINKTECH, UpgradeId.PROTOSSGROUNDARMORSLEVEL1]
+    [
+        UpgradeId.WARPGATERESEARCH,
+        UpgradeId.BLINKTECH,
+        UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1,
+        UpgradeId.PROTOSSGROUNDARMORSLEVEL1,
+        UpgradeId.PROTOSSSHIELDSLEVEL1,
+    ]
     if is_stalker_flow
     else [
         UpgradeId.TEMPESTGROUNDATTACKUPGRADE,
         UpgradeId.PROTOSSAIRARMORSLEVEL1,
         UpgradeId.PROTOSSAIRARMORSLEVEL2,
+        UpgradeId.PROTOSSSHIELDSLEVEL1,
     ]
 )
 
@@ -64,21 +75,12 @@ EXTRA_CORE_STRUCTURES: list[UnitID] = (
 )
 
 # 追猎流 SpawnController 配方（纯追猎）。暴风舰流走 self._army.spawn_dict()（army_composition.yml）。
-_STALKER_SPAWN: dict = {UnitID.STALKER: {"proportion": 1.0, "priority": 0}}
-
-# 通用建筑杠杆 build=<名> 的别名 → UnitID。认不出的名字再退回 UnitID[名.upper()]。
-# 注意:steer_vocab.BUILD_ALIASES 是"别名→规范名词表"给 CLI 校验用;本表是"别名→引擎枚举"
-# 给 bot 造建筑用。两套别名键应保持一致 —— 改一处记得改另一处(或用 canonical_build 归一)。
-BUILD_ALIASES: dict[str, UnitID] = {
-    "nexus": UnitID.NEXUS, "base": UnitID.NEXUS, "expand": UnitID.NEXUS,
-    "gas": UnitID.ASSIMILATOR, "assimilator": UnitID.ASSIMILATOR, "geyser": UnitID.ASSIMILATOR,
-    "stargate": UnitID.STARGATE, "gateway": UnitID.GATEWAY,
-    "cyber": UnitID.CYBERNETICSCORE, "cyberneticscore": UnitID.CYBERNETICSCORE,
-    "forge": UnitID.FORGE, "robo": UnitID.ROBOTICSFACILITY,
-    "roboticsfacility": UnitID.ROBOTICSFACILITY, "fleetbeacon": UnitID.FLEETBEACON,
-    "twilight": UnitID.TWILIGHTCOUNCIL, "pylon": UnitID.PYLON,
+# 追猎流 SpawnController 配方：追猎为主 + 狂热者混编（rush 杀伤力更高）。
+# 暴风舰流走 self._army.spawn_dict()（army_composition.yml）。比例和须 = 1.0。
+_STALKER_SPAWN: dict = {
+    UnitID.STALKER: {"proportion": 0.7, "priority": 0},
+    UnitID.ZEALOT: {"proportion": 0.3, "priority": 1},
 }
-
 
 class ProductionManager(Manager):
     def __init__(
@@ -106,6 +108,7 @@ class ProductionManager(Manager):
 
         self._built_single_oracle: bool = False
         self._built_extra_production_pylon: bool = False
+        self._forward_pylon_built: bool = False  # F1: 前线水晶塔(一次性,给折跃门提供前线电源)
         # can use a single chrono for the oracle
         self._oracle_chrono: bool = False
         # 通用建筑杠杆 build=<结构>（expand=yes 是 build=nexus 的别名）。
@@ -135,7 +138,8 @@ class ProductionManager(Manager):
             self._update_zerg()
             return
 
-        if not self._built_extra_production_pylon:
+        # can_afford 守卫：钱够才派农民去造 pylon，否则农民走过去干等不采矿（idle bug 根因）。
+        if not self._built_extra_production_pylon and self.ai.can_afford(UnitID.PYLON):
             self.ai.register_behavior(
                 BuildStructure(self.ai.start_location, UnitID.PYLON)
             )
@@ -147,13 +151,23 @@ class ProductionManager(Manager):
         # 兵种组成：追猎流写死纯追猎(_STALKER_SPAWN)；暴风舰流走 army_composition.yml。
         macro_plan.add(
             SpawnController(
-                army_composition_dict=_STALKER_SPAWN if is_stalker_flow else self._army.spawn_dict()
+                army_composition_dict=_STALKER_SPAWN if is_stalker_flow else self._army.spawn_dict(),
+                spawn_target=self._front_point(),  # F1: 折跃向前线(非主基地),配合前线水晶塔远程投送
             )
         )
         # 运营指挥·通用建筑杠杆 build=<结构>（expand=yes = build=nexus 别名）
         _order = getattr(self.ai, "steer_order", None) or {}
         self._handle_manual_build(_order, macro_plan)
         self.ai.register_behavior(macro_plan)
+
+        # F2: 按局势铺防御塔(B+F+Cannon)——框架自动建 forge + 光子炮 + 护盾电池并补前置科技。
+        if self._should_build_defense(_order):
+            self.ai.register_behavior(
+                ProtossStaticDefence(
+                    photon_cannons_per_base=2,
+                    shield_batteries_per_base=1,
+                )
+            )
 
         # custom behavior for all other production, using ares-sc2 to help
         building_counter: dict[UnitID, int] = self.manager_mediator.get_building_counter
@@ -163,10 +177,24 @@ class ProductionManager(Manager):
 
         self._build_probes(self.ai.ready_townhalls)
         await self._build_tempest_rush_structures(building_counter, structures_dict)
-        if not is_stalker_flow:  # 追猎流不走星门，跳过追加星门
+        # 按流派扩产能：追猎流补 gateway（主力产能来源），暴风舰流补星门。治"矿堆花不出去"。
+        if is_stalker_flow:
+            self._build_extra_gateways(structures_dict)
+        else:
             self._build_extra_stargates(structures_dict)
+        self._build_forward_pylon()  # F1: 前线水晶塔(投送),两流派共用
         self._chrono_structures()
-        self._research_upgrades()
+        # 升级交 ares UpgradeController（自动建 FORGE/TWILIGHTCOUNCIL + 研究 + 打日志），
+        # 替代手写 _research_upgrades（气体门槛过严要 310 气 / 不建 FORGE / 无日志 三 bug）。
+        _upgrades = (
+            DESIRED_UPGRADES
+            if is_stalker_flow
+            else (self._army.upgrade_ids() or DESIRED_UPGRADES)
+        )
+        if _upgrades:
+            self.ai.register_behavior(
+                UpgradeController(_upgrades, base_location=self.ai.start_location)
+            )
 
         # one off task to build an oracle（仅暴风舰流；追猎流无星门无舰队航标，跳过）
         if not is_stalker_flow and not self._built_single_oracle:
@@ -293,6 +321,7 @@ class ProductionManager(Manager):
         if (
             not self._structure_present_or_pending(structure_id)
             and self.ai.tech_requirement_progress(structure_id) >= 1.0
+            and self.ai.can_afford(structure_id)
         ):
             self.ai.register_behavior(
                 BuildStructure(self.ai.start_location, structure_id)
@@ -404,6 +433,52 @@ class ProductionManager(Manager):
             self.ai.register_behavior(
                 BuildStructure(self.ai.start_location, UnitID.STARGATE)
             )
+
+    def _build_extra_gateways(self, structures_dict: dict[UnitID, list[Unit]]) -> None:
+        """矿有富余时自动追加 gateway/warpgate，把积压的矿变成追猎产能（治"3000+ 矿花不出去"）。
+        得先有第一个 gateway（核心科技就位）才追加；随基地数放大，封顶 8。stalker 流主力产能来源。"""
+        # gateway morph 成 warpgate 后类型变 WARPGATE，两者都算产能建筑。
+        gateways = structures_dict[UnitID.GATEWAY] + structures_dict[UnitID.WARPGATE]
+        if not gateways:
+            return
+        desired = min(8, 2 + self.ai.townhalls.ready.amount)
+        have = len(gateways) + self.manager_mediator.get_building_counter[UnitID.GATEWAY]
+        if (
+            have < desired
+            and self.ai.minerals > 400  # 只在矿有富余时追加，别抢科技/造兵的钱
+            and self.ai.can_afford(UnitID.GATEWAY)
+        ):
+            self.ai.register_behavior(
+                BuildStructure(self.ai.start_location, UnitID.GATEWAY)
+            )
+
+    def _front_point(self) -> Point2:
+        """F1: 前线折跃点 —— 敌我之间偏敌 60%。让 WarpInManager 优先把兵折跃到前线
+        水晶塔（而非主基地），配合 _build_forward_pylon 实现远程投送。"""
+        return self.ai.start_location.towards(self.ai.focused_enemy_start(), 0.6)
+
+    def _build_forward_pylon(self) -> None:
+        """F1: 在前线造水晶塔，给折跃门提供前线电源（兵秒投前线，不全程走）。
+        条件：warpgate 已研究（能折跃）+ 矿富余 + 还没造过（一次性）。
+        ⚠️ 前线塔易被打，是最小方案的固有风险（完整方案会用折跃棱镜）。"""
+        if self._forward_pylon_built:
+            return
+        # warpgate 研究好才值得造前线塔（否则 gateway train 用不上前线电源）
+        if UpgradeId.WARPGATERESEARCH not in self.ai.state.upgrades:
+            return
+        if self.ai.minerals > 300 and self.ai.can_afford(UnitID.PYLON):
+            self.ai.register_behavior(
+                BuildStructure(self._front_point(), UnitID.PYLON)
+            )
+            self._forward_pylon_built = True
+
+    def _should_build_defense(self, order: dict) -> bool:
+        """F2: 是否铺防御塔(B+F+Cannon)。判据: 司令下令 defend=yes / 中后期(>6分钟)自动铺。"""
+        if order.get("defend") == "yes":
+            return True
+        if self.ai.time > 360:  # 6 分钟后自动铺防御
+            return True
+        return False
 
     def _resolve_buildable(self, name: str) -> UnitID | None:
         """build=<名> → UnitID。先走 levers.resolve_build_name 归一(复用 CLI 同一份逻辑),
