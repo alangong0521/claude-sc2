@@ -48,6 +48,13 @@ class ChronoConfig:
     when: str = "primary_pending"
 
 
+@dataclass(frozen=True)
+class AutoExpand:
+    """自动开矿:到 at 秒把基地扩到 to 个(缺省不开,司令 expand=yes 杠杆不受影响)。"""
+    at: float = 0.0
+    to: int = 2
+
+
 @dataclass
 class FlowConfig:
     """一个流派的完整生产配置。"""
@@ -58,6 +65,9 @@ class FlowConfig:
     extra_production: ExtraProduction | None
     chrono: ChronoConfig
     one_off: list[str]           # 一次性建造(引擎结构/兵种名大写,如 ORACLE)
+    rally_min_army: int = 0      # 集结阈值:兵力低于它且司令没下 stance 时先守家(0=关)
+    auto_expand: AutoExpand | None = None  # 自动开矿(None=关)
+    freeflow: bool = False       # SpawnController.freeflow_mode:不按配比卡产(多兵种流派必开)
 
     @classmethod
     def from_dict(cls, name: str, data: dict) -> "FlowConfig":
@@ -106,10 +116,19 @@ class FlowConfig:
             str(s).strip().upper()
             for s in (data.get("one_off") or []) if str(s).strip()
         ]
+        ae_raw = data.get("auto_expand")
+        auto_expand = None
+        if ae_raw:
+            auto_expand = AutoExpand(
+                float(ae_raw.get("at", 0.0)), int(ae_raw.get("to", 2))
+            )
         return cls(
             name=name, spawn=spawn, core_structures=core, upgrades=upgrades,
             extra_production=extra, chrono=ChronoConfig(targets=targets, when=when),
             one_off=one_off,
+            rally_min_army=int(data.get("rally_min_army", 0) or 0),
+            auto_expand=auto_expand,
+            freeflow=bool(data.get("freeflow", False)),
         )
 
     @classmethod

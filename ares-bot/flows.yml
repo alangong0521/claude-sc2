@@ -15,6 +15,13 @@
 #                     targets 按顺序取第一个有建筑的;always=见忙就加速,
 #                     primary_pending=主力在产才加速(省能量给一次性建造首次加速)
 #   one_off:          一次性建造(如 ORACLE,需舰队航标+空闲就绪星门,造一个即停)
+#   rally_min_army:   集结阈值(整数,缺省 0=关)。>0 时,兵力低于它且司令没下 stance
+#                     命令,部队先守家攒兵不主动压上(治 trickle-feed 分批送死)
+#   auto_expand:      {at: 秒, to: 基地数}(缺省关)。到点自动把基地扩到 to 个
+#                     (地面消耗流的命脉;天空流不开,维持已验证的单矿打法)
+#   freeflow:         true|false(缺省 false)。true = SpawnController 不按配比卡产
+#                     (配比只当优先序不当上限)——多兵种流派必开,否则兵力在
+#                     精确配比点永久死锁(单兵种流派靠 over_produce 豁免,不用开)
 #
 # ⚠️ tempest/stalker 两块与已验证行为逐位一致,勿轻改(有 shipped 测试冻结,见
 #    tests/test_flow_config.py)。战斗侧指挥不读本文件 —— CombatManager 按
@@ -49,6 +56,9 @@ flows:
     extra_production: {id: GATEWAY, cap: 8, base: 2}
     chrono: {targets: [GATEWAY, TWILIGHTCOUNCIL], when: always}
     one_off: []
+    rally_min_army: 14
+    auto_expand: {at: 210, to: 2}
+    freeflow: true
 
   # 航母黄金舰队(新,待跑局验证):科技链与暴风舰完全相同,航母主 C、暴风舰副 C
   carrier:

@@ -1,0 +1,43 @@
+# Baselines 与迭代日志（自调优回路）
+
+> 数据来源：`bench.py` 系列（`ares-bot/bench/<tag>/summary.json`）。
+> 固定变量：地图 `AbyssalReefLE`、对手 `Terran`、AI build `Macro`、`REALTIME=False`。
+> 判定门槛（docs/bot-self-tuning-plan.md §6）：中档 N=10 ≥7 胜为「显著强于骰子」。
+
+## Baseline（2026-07-19 凌晨，SC2 Base97563）
+
+| 系列 | tag | 战绩 | 胜率 | 平均时长 | 主力成型 | 终局编成(均值) | 备注 |
+|---|---|---|---|---|---|---|---|
+| tempest vs Hard | b1-tempest-hard-terran | **10-0** | 1.0 | 632s | ORACLE@249s TEMPEST@290s | TEMPEST×10.4 | 官方已验证流，对照组，符合预期 |
+| stalker vs Hard | b2-stalker-hard-terran | **0-10** | 0.0 | 661s | ZEALOT@156s STALKER@215s | （全军覆没） | 见下方根因 |
+| carrier vs Hard | b3-carrier-hard-terran | **10-0** | 1.0 | 748s | CARRIER@340s TEMPEST@400s | CARRIER×5.6 TEMPEST×3.0 | **新流派首飞即过**，P0 配置化链路实战验证 |
+
+### B2 stalker 0-10 根因（诊断局 b2-diag 实证）
+
+- 现象：前 5 个兵出门送死后，**~340s 起生产完全停摆**（army=0），存款堆到 5000+，
+  建筑（3 gateway、6 pylon）和升级（warpgate/blink/攻防盾全研究）全部正常。
+- 根因：ares `SpawnController.execute` 开头——**warpgate 研究完成后，只要还有就绪空闲
+  gateway 就 `return False` 停产等变形**；而 vendored ares 没有任何 gateway→warpgate
+  变形行为，没人变形 = 永久停产。tempest/carrier 不含 WARPGATERESEARCH 所以不踩。
+- 快照诊断字段（`structures`/`upgrades`）已加进 `state.json`（本过程产物）。
+
+## 迭代日志
+
+| # | 日期 | 假设 | 改动 | 系列 | 结果 | 结论 |
+|---|---|---|---|---|---|---|
+| C1 | 2026-07-19 | 「让 gateway 变形为 warpgate 后，stalker 生产不再停摆，胜率从 0/10 显著提升」 | `production_manager._morph_gateways()`：研究完成后对就绪空闲 gateway 下 `MORPH_WARPGATE` | c1-warpgate-fix-smoke（N=4） | 0-4，但机制层完全修复：t≈321s gateway 全变 warpgate，生产全程不断，存款峰值 5100→565 | **留**（停摆根因消除；胜率未动 → 暴露第二败因，见 C3） |
+| C3a | 2026-07-19 | 「集结阈值让兵力攒到 8 再出门，减少分批送死」 | flows.yml `rally_min_army: 8`（仅 stalker）+ `combat_manager` 集结逻辑（司令 stance 优先） | c3a-rally-smoke（N=4） | 0-4，集结生效（289s 攒到 7-9 才接战），但 8 个兵打不过对方 17-25 的波次；全程单矿 | **留**（机制成立，绑约束移到经济，见 C3b） |
+| C3b | 2026-07-19 | 「地面流到点自动开二矿，经济撑起消耗战」 | flows.yml `auto_expand: {at: 210, to: 2}`（仅 stalker）+ `production_manager._auto_expand` | c3b-expand-smoke（N=4） | 0-4，但局面质变：281s 二矿、42 农民、兵力反复到 13、时长 661→1125s；输给对方后期 40-60 大军的波次消耗 | **留**（经济约束消除；绑约束移到「中后期决战质量」） |
+| C3c | 2026-07-19 | 「集结阈值 8→14，减少中期失血，攒到能打赢的体量再接战」 | flows.yml stalker `rally_min_army: 14` | c3c-rally14-smoke（N=4） | 0-4；兵力卡在 10 永远到不了 14——诊断出**第二根停产因**：SpawnController 配比死锁（7:3 精确配比点双方都 ≥ 目标 → 全停产），存款又堆到 4045 | **留 14**（阈值本身无辜，死锁由 C3d 解） |
+| C3d | 2026-07-19 | 「freeflow 解除配比死锁，产能不再卡在配比点，兵力上限由经济决定」 | flows.yml stalker `freeflow: true` + `SpawnController(freeflow_mode=...)` 配置化 | c3d-freeflow-smoke（N=4） | 0-4，但兵力破死锁：10→15→17→**21**（643s），打上真正的团战；配比滑向纯追猎（无前排）；输给 31-38 大军的决战质量 | **留**（第二个停产根因消除；绑约束移到「兵种构成天花板」——纯追猎+狂热者无溅射，打不动 bio+坦克） |
+
+### 后续假设候选（按优先级）
+
+- C5 **兵种构成天花板**（C3d 实证）：纯追猎+狂热者无溅射，打不动 bio+坦克的 30+ 大军。
+  两条路：(a) 前排强化——zealot 比例/优先级调整（freeflow 下配比会滑向纯追猎，需要
+  别的方式保前排，如 priority 反转或定期补 zealot 的机制）；(b) 上溅射——直接做
+  `docs/flows/robo-colossus.md`（巨像）或 `chargelot-archon.md`（闪电+白球），
+  这正是排期里的下两条地面流。
+- C2 stalker blink 门限实测调优（F3 的 0.25 护盾/4 敌围攻是拍脑袋值；进攻型 blink
+  可能往坦克脸上送）。
+- C4 carrier 气体节奏：CARRIER@340s 成型已不慢，但存款峰值 3385 提示仍有优化空间。

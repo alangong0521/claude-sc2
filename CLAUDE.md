@@ -45,6 +45,7 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 - **spawn 比例和必须 ≈ 1.0**——`flows.yml` 与 `army_composition.yml` 同一约束（加载时各自校验）。
 - **ares-sc2 是本地包**——`import ares` 需 `sys.path` 加 `ares-sc2/src`（`run.py:14-16`）；离线编译检查也要加。
 - **headless `websocket 超时`**——SC2 更新中 / 冷启动慢会导致；用 REALTIME 或等 SC2 ready。headless 本环境不稳，优先 REALTIME。
+- **SC2 补丁日首发失败**（2026-07-18 实证）：当天补丁（如 Base97563）后 SC2 二进制能起进程但**不开 websocket、不出窗口、静默退出**，新旧 build 都一样 → 不是 bot 问题，去 Battle.net 让它完成更新 / 「扫描和修复」，确认手动能进游戏后再跑 bench。排查手法：直启二进制 `-listen 127.0.0.1 -port <p>` + `lsof -iTCP:<p> -sTCP:LISTEN`；多实例互斥会互相踢，先 `pkill -9 -x SC2` 再测。
 - **idle 农民**：ares 框架层 `BuildStructure.execute` 不查 `can_afford`（bot 层加守卫根治，不改框架）。
 - **steer 一次性 vs 粘性**：`build`/`expand`/`scout` 一次性（重下 no-op，要 `clear` 再下）；其余粘性。`clear` 清**全部**字段（无单 key clear）。
 

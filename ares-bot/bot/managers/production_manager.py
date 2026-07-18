@@ -111,10 +111,13 @@ class ProductionManager(Manager):
         macro_plan: MacroPlan = MacroPlan()
         macro_plan.add(AutoSupply(base_location=self.ai.start_location))
         # 兵种配方从 flows.yml 当前流派读(spawn_dict 只含 proportion>0 的兵种)。
+        # freeflow_mode 按流派配置:多兵种流派必开(true=配比只当优先序不当上限),
+        # 否则兵力在精确配比点永久死锁(C3c 诊断出的 stalker 停产第二根因)。
         macro_plan.add(
             SpawnController(
                 army_composition_dict=self._flow.spawn_dict(),
                 spawn_target=self._front_point(),  # F1: 折跃向前线(非主基地),配合前线水晶塔远程投送
+                freeflow_mode=self._flow.freeflow,
             )
         )
         # 运营指挥·通用建筑杠杆 build=<结构>（expand=yes = build=nexus 别名）
@@ -139,6 +142,8 @@ class ProductionManager(Manager):
 
         self._build_probes(self.ai.ready_townhalls)
         await self._build_flow_structures(building_counter, structures_dict)
+        self._morph_gateways()
+        self._auto_expand(macro_plan)
         # 按流派配置扩产能(矿富余追加产兵建筑,治"矿堆花不出去")
         self._build_extra_production(structures_dict)
         self._build_forward_pylon()  # F1: 前线水晶塔(投送),各流派共用
@@ -241,6 +246,17 @@ class ProductionManager(Manager):
 
         self._build_zerg_queens()
 
+    def _auto_expand(self, macro_plan: MacroPlan) -> None:
+        """C3b 自动开矿(flows.yml auto_expand,缺省关):到 at 秒把基地扩到 to 个。
+        地面消耗流的命脉(B2/C1 实证 stalker 全程单矿打不起消耗战);天空流不开。
+        与司令 expand=yes 杠杆不冲突:到数后 ExpansionController 自然不再动作。"""
+        ae = self._flow.auto_expand
+        if ae is None or self.ai.time < ae.at:
+            return
+        if self.ai.townhalls.amount >= ae.to:
+            return
+        macro_plan.add(ExpansionController(to_count=ae.to, max_pending=1))
+
     def _build_zerg_queens(self) -> None:
         """每个巢穴配一只女王(需孵化池;由 TechUp/ZERGLING 或 build 杠杆先造出)。
         ⚠️ 只造女王,**没做注卵(inject larva)** —— 注卵是 Zerg 爆兵核心,列 M2 剩余,需跑局。"""
@@ -339,6 +355,19 @@ class ProductionManager(Manager):
                     await self._build_core_structure(UnitID.FLEETBEACON)
             else:
                 await self._build_core_structure(structure_id)
+
+    def _morph_gateways(self) -> None:
+        """WARPGATERESEARCH 完成后,把就绪空闲的 gateway 变形为 warpgate。
+
+        关键背景(B2 baseline 0-10 的根因):ares `SpawnController.execute` 在 warpgate
+        研究完成后,只要还有就绪空闲的 gateway 就 `return False` —— 主动停产等变形;
+        而 vendored ares 全框架**没有**现成的变形行为,不下 MORPH_WARPGATE 的话,
+        生产从研究完成那一刻起永久停摆。没研究(默认流派不含该升级)时 no-op。"""
+        if UpgradeId.WARPGATERESEARCH not in self.ai.state.upgrades:
+            return
+        for gateway in self.manager_mediator.get_own_structures_dict[UnitID.GATEWAY]:
+            if gateway.is_ready and gateway.is_idle:
+                gateway(AbilityId.MORPH_WARPGATE)
 
     def _build_gas(self) -> None:
         """在离某个基地最近的空气矿上建一个气矿厂（自动选农民）。含分矿的气矿。"""

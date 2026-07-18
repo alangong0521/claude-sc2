@@ -66,6 +66,10 @@ class CombatManager(Manager):
         # 用哪个 combat class。不再写死只指挥 TEMPEST —— 加兵种只改 yaml。
         from bot.army_config import ArmyComposition, bot_race_name
         self._army = ArmyComposition.load(race=bot_race_name(ai))
+        # C3a 集结阈值(flows.yml rally_min_army,缺省 0=关):低于阈值且司令没下 stance 时守家攒兵
+        import os
+        from bot.flow_config import FlowConfig
+        self._rally_min: int = FlowConfig.load(os.environ.get("BUILD")).rally_min_army
         # combat kind → combat class 分派表(oracle_harass 由 OracleManager 单独管,这里不收)
         self._combat_dispatch: dict[str, BaseUnit] = {
             "tempest_offensive": self.tempest_offensive,
@@ -204,7 +208,12 @@ class CombatManager(Manager):
 
         # 按 army_composition 逐兵种指挥:取该兵种的 ATTACKING 单位,交给它配置的 combat class。
         # 同一 combat class 的多兵种会各自 execute 一次(tempest/追猎各打各的),攻击点/焦点/机动共享。
-        attack_target = self.attack_target
+        # C3a 集结纪律:兵力低于 rally_min_army 且司令没下 stance 时,先守家攒兵(治分批送死);
+        # 司令下了 stance(attack/defend/...)以司令为准,集结让位。
+        if order.get("stance") is None and 0 < self._own_army_count() < self._rally_min:
+            attack_target = self.ai.start_location
+        else:
+            attack_target = self.attack_target
         for spec in self._army.by_role("ATTACKING"):
             combat = self._combat_dispatch.get(spec.combat)
             if combat is None:
@@ -221,3 +230,12 @@ class CombatManager(Manager):
                     focus=order.get("focus"),        # ③焦点
                     maneuver=order.get("maneuver"),  # ④机动意图
                 )
+
+    def _own_army_count(self) -> int:
+        """当前 ATTACKING 编制内的兵力数(按 army_composition 登记兵种数)。"""
+        count = 0
+        for spec in self._army.by_role("ATTACKING"):
+            uid = getattr(UnitID, spec.id_name, None)
+            if uid is not None:
+                count += self.manager_mediator.get_own_unit_count(unit_type_id=uid)
+        return count

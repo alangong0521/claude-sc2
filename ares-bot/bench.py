@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""自调优验证台 runner —— 串行打 N 局 + 聚合 W/L 与军力曲线。
+
+见 docs/bot-self-tuning-plan.md Phase A。每局 = 子进程 `poetry run python run.py`
+(env 注入 BUILD/MAP/DIFF/OPPONENT_RACE/AI_BUILD/REALTIME/STEER_RECORD/BENCH_DIR;
+**剥掉全部代理 env** —— 本机代理会让 SC2 本地 websocket 连不上,见 README 平台说明)。
+结果信号来自 bot on_end 写的 game_*.json;没有结果文件 = 崩溃/超时 → 重试一次,
+仍失败记 error(不计入胜率,单独报数)。曲线来自 STEER_RECORD 的 state_*.json 快照。
+
+串行 + 重试是刻意的:CLAUDE.md 记录本环境 headless 不稳(websocket 超时),不并行。
+
+用法(在 ares-bot/ 下):
+  poetry run python bench.py --flow tempest --diff Hard --race Terran \
+      --map AbyssalReefLE -n 10 --tag tempest-hard-terran
+  # 冒烟 1 局: poetry run python bench.py -n 1 --diff Medium --tag smoke
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+_AREAS = Path(__file__).resolve().parent  # ares-bot/
+
+# 本机 .zshrc 导出的代理会毒化 SC2 本地连接,子进程环境必须全剥(大小写都剥)
+_PROXY_KEYS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "all_proxy",
+)
+
+
+def _game_env(args: argparse.Namespace, game_dir: Path) -> dict:
+    env = dict(os.environ)
+    for k in _PROXY_KEYS:
+        env.pop(k, None)
+    env["NO_PROXY"] = "127.0.0.1,localhost"
+    env["no_proxy"] = "127.0.0.1,localhost"
+    env.update({
+        "BUILD": args.flow,
+        "MAP": args.map,
+        "DIFF": args.diff,
+        "OPPONENT_RACE": args.race,
+        "AI_BUILD": args.ai_build,
+        "OPPONENTS": "1",
+        "REALTIME": "1" if args.realtime else "0",
+        "STEER_RECORD": str(game_dir),   # 军力曲线(state_<time>.json)
+        "BENCH_DIR": str(game_dir),      # on_end 结果 JSON(game_<uuid>.json)
+    })
+    return env
+
+
+def _read_result(game_dir: Path) -> dict | None:
+    """读 bot on_end 写的最新一个结果 JSON;没有 → None(崩溃/超时)。"""
+    results = list(game_dir.glob("game_*.json"))
+    if not results:
+        return None
+    latest = max(results, key=lambda p: p.stat().st_mtime)
+    try:
+        return json.loads(latest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None:
+    """打第 i 局,返回结果 dict;无结果 → None。"""
+    game_dir = series_dir / f"game_{i:02d}"
+    game_dir.mkdir(parents=True, exist_ok=True)
+    log_path = game_dir / "run.log"
+    with log_path.open("w", encoding="utf-8") as logf:
+        subprocess.run(
+            ["poetry", "run", "python", "run.py"],
+            cwd=_AREAS,
+            env=_game_env(args, game_dir),
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            timeout=args.timeout,
+            check=False,
+        )
+    return _read_result(game_dir)
+
+
+def _curve_stats(game_dir: Path) -> dict:
+    """从 STEER_RECORD 快照抽曲线指标:存款峰值 + 各兵种首次出现时间。"""
+    max_minerals = 0
+    first_seen: dict[str, float] = {}
+    for sp in sorted(game_dir.glob("state_*.json")):
+        try:
+            s = json.loads(sp.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        max_minerals = max(max_minerals, s.get("minerals", 0))
+        t = s.get("time", 0)
+        for unit, cnt in (s.get("army") or {}).items():
+            if cnt and unit not in first_seen:
+                first_seen[unit] = t
+    return {"max_minerals": max_minerals, "unit_first_seen": first_seen}
+
+
+def _aggregate(games: list[dict], series_dir: Path, args: argparse.Namespace) -> dict:
+    played = [g for g in games if g.get("result")]
+    wins = sum(1 for g in played if g["result"] == "Victory")
+    losses = sum(1 for g in played if g["result"] == "Defeat")
+    ties = sum(1 for g in played if g["result"] == "Tie")
+    errors = len(games) - len(played)
+    times = sorted(g["game_time"] for g in played if g.get("game_time"))
+
+    curves = [
+        _curve_stats(series_dir / f"game_{i:02d}")
+        for i in range(1, len(games) + 1)
+    ]
+    max_bank = max((c["max_minerals"] for c in curves), default=0)
+    # 兵种首次出现:只统计出现过的局,取均值
+    first_seen_avg: dict[str, float] = {}
+    seen_units = {u for c in curves for u in c["unit_first_seen"]}
+    for u in seen_units:
+        ts = [c["unit_first_seen"][u] for c in curves if u in c["unit_first_seen"]]
+        first_seen_avg[u] = round(sum(ts) / len(ts), 1)
+    final_army_avg: dict[str, float] = {}
+    for g in played:
+        for u, cnt in (g.get("army") or {}).items():
+            final_army_avg.setdefault(u, []).append(cnt)
+    final_army_avg = {
+        u: round(sum(v) / len(v), 1) for u, v in final_army_avg.items()
+    }
+
+    return {
+        "tag": args.tag,
+        "config": {
+            "flow": args.flow, "map": args.map, "diff": args.diff,
+            "race": args.race, "ai_build": args.ai_build,
+            "realtime": bool(args.realtime),
+        },
+        "games": len(games), "wins": wins, "losses": losses,
+        "ties": ties, "errors": errors,
+        "winrate": round(wins / len(played), 3) if played else None,
+        "avg_game_time": round(sum(times) / len(times), 1) if times else None,
+        "median_game_time": times[len(times) // 2] if times else None,
+        "max_bank": max_bank,
+        "unit_first_seen_avg": first_seen_avg,
+        "final_army_avg": final_army_avg,
+    }
+
+
+def _print_table(s: dict) -> None:
+    c = s["config"]
+    print("\n========== series 汇总 ==========")
+    print(f"tag={s['tag']}  {c['flow']} vs {c['race']} {c['diff']}/{c['ai_build']} @ {c['map']}")
+    print(f"战绩: {s['wins']}胜 {s['losses']}负 {s['ties']}平 {s['errors']}异常 "
+          f"→ 胜率 {s['winrate']}")
+    print(f"时长: 平均 {s['avg_game_time']}s 中位 {s['median_game_time']}s "
+          f"存款峰值 {s['max_bank']}")
+    if s["unit_first_seen_avg"]:
+        fs = " ".join(f"{u}@{t}s" for u, t in
+                      sorted(s["unit_first_seen_avg"].items(), key=lambda kv: kv[1]))
+        print(f"主力成型(首次出现均值): {fs}")
+    if s["final_army_avg"]:
+        fa = " ".join(f"{u}x{n}" for u, n in s["final_army_avg"].items())
+        print(f"终局编成(均值): {fa}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--flow", default="tempest", help="flows.yml 流派名")
+    ap.add_argument("--diff", default="Hard", help="Difficulty 名(如 Hard)")
+    ap.add_argument("--race", default="Terran", help="对手种族(Terran/Zerg/Protoss)")
+    ap.add_argument("--map", default="AbyssalReefLE", help="地图名(不带 .SC2Map)")
+    ap.add_argument("--ai-build", default="Macro", help="AI_BUILD(RandomBuild/Rush/...)")
+    ap.add_argument("-n", type=int, default=10, help="局数")
+    ap.add_argument("--tag", required=True, help="系列名(bench/<tag>/ 目录)")
+    ap.add_argument("--realtime", action="store_true",
+                    help="REALTIME=True 跑(慢,可排查 headless 不稳时用)")
+    ap.add_argument("--timeout", type=int, default=1800, help="单局超时秒数")
+    args = ap.parse_args()
+
+    series_dir = _AREAS / "bench" / args.tag
+    series_dir.mkdir(parents=True, exist_ok=True)
+
+    games: list[dict] = []
+    for i in range(1, args.n + 1):
+        t0 = time.time()
+        try:
+            res = _play_one(i, args, series_dir)
+        except subprocess.TimeoutExpired:
+            res = None
+        if res is None:
+            print(f"[bench] 第 {i} 局无结果(崩溃/超时),重试一次", flush=True)
+            try:
+                res = _play_one(i, args, series_dir)
+            except subprocess.TimeoutExpired:
+                res = None
+        if res is None:
+            res = {"result": None, "error": "no result json after retry"}
+        games.append(res)
+        print(f"[bench] 第 {i}/{args.n} 局: {res.get('result') or 'ERROR'} "
+              f"({time.time() - t0:.0f}s)", flush=True)
+
+    summary = _aggregate(games, series_dir, args)
+    (series_dir / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    _print_table(summary)
+    # 有异常局返回 1(便于外部脚本感知),否则 0;胜负不影响返回码
+    return 1 if summary["errors"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

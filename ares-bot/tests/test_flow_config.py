@@ -98,6 +98,7 @@ class TestShippedFlowsUnchanged(unittest.TestCase):
         self.assertEqual(fc.chrono.targets, ("STARGATE",))
         self.assertEqual(fc.chrono.when, "primary_pending")
         self.assertEqual(fc.one_off, ["ORACLE"])
+        self.assertEqual(fc.rally_min_army, 0)  # 默认关,已验证行为不动
 
     def test_stalker_frozen(self):
         _yaml_or_skip(self)
@@ -117,6 +118,9 @@ class TestShippedFlowsUnchanged(unittest.TestCase):
         self.assertEqual(fc.chrono.targets, ("GATEWAY", "TWILIGHTCOUNCIL"))
         self.assertEqual(fc.chrono.when, "always")
         self.assertEqual(fc.one_off, [])
+        self.assertEqual(fc.rally_min_army, 14)  # C3c:地面流集结阈值
+        self.assertEqual((fc.auto_expand.at, fc.auto_expand.to), (210.0, 2))  # C3b
+        self.assertTrue(fc.freeflow)  # C3d:多兵种流派必须 freeflow,否则配比死锁
 
     def test_carrier_flow(self):
         _yaml_or_skip(self)

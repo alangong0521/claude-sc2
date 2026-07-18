@@ -25,3 +25,6 @@ _archive_*/
 # SC2 回放/日志
 *.SC2Replay
 *.log
+
+# 自调优验证台产出(bench.py 的局结果/曲线/汇总)
+ares-bot/bench/

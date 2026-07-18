@@ -244,6 +244,12 @@ class MyBot(AresBot):
             "workers": workers,
             "bases": bases,
             "army": dict(army),
+            # 自调优诊断字段(纯增量,参谋可忽略):我方建筑编成 + 已研究升级
+            # —— 回答「gateway 还在吗/ pylons 够吗/ blink 研究了吗」这类验证台常问的问题
+            "structures": dict(
+                Counter(u.type_id.name for u in self.structures)
+            ),
+            "upgrades": sorted(u.name for u in self.state.upgrades),
             "enemies": enemies,
             "events": self._events[-12:],
             "order": self.steer_order,
@@ -313,16 +319,39 @@ class MyBot(AresBot):
     #
     #     # on_start logic here ...
     #
-    # async def on_end(self, game_result: Result) -> None:
-    #     await super(MyBot, self).on_end(game_result)
-    #
-    #     # custom on_end logic here ...
-    #
     # async def on_building_construction_complete(self, unit: Unit) -> None:
     #     await super(MyBot, self).on_building_construction_complete(unit)
     #
     #     # custom on_building_construction_complete logic here ...
     #
+    async def on_end(self, game_result) -> None:
+        """结局捕获:bench runner 注入 BENCH_DIR 时把本局结果写成 JSON(胜负信号,
+        见 docs/bot-self-tuning-plan.md Phase A)。缺省(正常玩法)不写文件。
+        纯增量,不影响对局内行为。"""
+        await super(MyBot, self).on_end(game_result)
+        bench_dir = os.environ.get("BENCH_DIR")
+        if not bench_dir:
+            return
+        import json
+        import uuid
+        from pathlib import Path
+
+        d = Path(bench_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        army = Counter(u.type_id.name for u in self.units if u.type_id != UnitID.PROBE)
+        payload = {
+            "result": getattr(game_result, "name", str(game_result)),
+            "game_time": round(self.time, 1),
+            "flow": os.environ.get("BUILD", "tempest"),
+            "army": dict(army),
+            "bases": self.townhalls.amount,
+            "workers": self.workers.amount,
+            "supply": f"{self.supply_used}/{self.supply_cap}",
+        }
+        (d / f"game_{uuid.uuid4().hex[:8]}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
     async def on_unit_created(self, unit: Unit) -> None:
         await super(MyBot, self).on_unit_created(unit)
 
