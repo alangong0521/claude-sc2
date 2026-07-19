@@ -49,6 +49,7 @@ def _game_env(args: argparse.Namespace, game_dir: Path) -> dict:
         "REALTIME": "1" if args.realtime else "0",
         "STEER_RECORD": str(game_dir),   # 军力曲线(state_<time>.json)
         "BENCH_DIR": str(game_dir),      # on_end 结果 JSON(game_<uuid>.json)
+        "SAVE_REPLAY": "1" if args.replay else "0",  # 每局存回放(双击可看全战况)
     })
     return env
 
@@ -80,6 +81,14 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
             timeout=args.timeout,
             check=False,
         )
+    if args.replay:
+        # run.py 把回放写到 ares-bot/replays/(固定文件名,每局覆盖) → 挪进本局目录
+        replays = sorted(
+            (_AREAS / "replays").glob("*.SC2Replay"),
+            key=lambda p: p.stat().st_mtime,
+        )
+        if replays:
+            replays[-1].replace(game_dir / f"replay_{i:02d}.SC2Replay")
     return _read_result(game_dir)
 
 
@@ -98,6 +107,69 @@ def _curve_stats(game_dir: Path) -> dict:
             if cnt and unit not in first_seen:
                 first_seen[unit] = t
     return {"max_minerals": max_minerals, "unit_first_seen": first_seen}
+
+
+def _postmortem(game_dir: Path, res: dict) -> list[str]:
+    """单局自动复盘:从快照找「这局哪里做得不好」的启发式信号(供迭代回溯)。
+    每条 = 问题标签 + 关键数据;不求全,专抓迭代里真踩过的坑(停产/花不出去/
+    碎兵/卡人口/单矿/被碾压)。"""
+    snaps = []
+    for sp in sorted(game_dir.glob("state_*.json")):
+        try:
+            snaps.append(json.loads(sp.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    if not snaps:
+        return ["no_snapshots(无曲线可复盘)"]
+    issues: list[str] = []
+
+    # 停产:army=0 且存款≥800 持续 ≥60s(C1/B2 根因的探测器)
+    stall_t = sum(
+        b["time"] - a["time"] for a, b in zip(snaps, snaps[1:])
+        if sum(a["army"].values()) == 0 and a["minerals"] >= 800
+    )
+    if stall_t >= 60:
+        issues.append(f"stall(停产 {stall_t:.0f}s)")
+
+    # 花不出去:存款峰值 ≥2000
+    max_min = max(s["minerals"] for s in snaps)
+    if max_min >= 2000:
+        issues.append(f"bank(存款峰值 {max_min})")
+
+    # 碎兵:相邻快照兵力跌 ≥5 出现 ≥3 次(分批送死)
+    drops = sum(
+        1 for a, b in zip(snaps, snaps[1:])
+        if sum(a["army"].values()) - sum(b["army"].values()) >= 5
+    )
+    if drops >= 3:
+        issues.append(f"trickle(兵力反复崩落 {drops} 次)")
+
+    # 卡人口:used>=cap 持续 ≥60s
+    def _blocked(s) -> bool:
+        try:
+            used, cap = s["supply"].split("/")
+            return int(used) >= int(cap) > 0
+        except (ValueError, AttributeError):
+            return False
+    block_t = sum(
+        b["time"] - a["time"] for a, b in zip(snaps, snaps[1:]) if _blocked(a)
+    )
+    if block_t >= 60:
+        issues.append(f"supply_block(卡人口 {block_t:.0f}s)")
+
+    # 单矿过久(地面流重点;天空流可忽略)
+    t300 = [s for s in snaps if s["time"] >= 300]
+    if t300 and t300[0]["bases"] == 1:
+        issues.append("one_base(300s 仍单矿)")
+
+    # 被碾压:败局且终局敌可见兵力 ≫ 我方
+    if res.get("result") == "Defeat":
+        last = snaps[-1]
+        enemy = sum(last["enemies"][0]["visible"]["army"].values())
+        own = sum(last["army"].values())
+        if enemy >= max(2 * own, own + 10):
+            issues.append(f"overrun(终局兵力悬殊 敌{enemy} vs 我{own})")
+    return issues or ["clean(未检出明显问题)"]
 
 
 def _aggregate(games: list[dict], series_dir: Path, args: argparse.Namespace) -> dict:
@@ -173,7 +245,9 @@ def main() -> int:
     ap.add_argument("-n", type=int, default=10, help="局数")
     ap.add_argument("--tag", required=True, help="系列名(bench/<tag>/ 目录)")
     ap.add_argument("--realtime", action="store_true",
-                    help="REALTIME=True 跑(慢,可排查 headless 不稳时用)")
+                    help="REALTIME=True 跑(慢,可观战/排查 headless 不稳时用)")
+    ap.add_argument("--replay", action="store_true",
+                    help="每局存回放(SAVE_REPLAY,双击 .SC2Replay 看完整战况)")
     ap.add_argument("--timeout", type=int, default=1800, help="单局超时秒数")
     args = ap.parse_args()
 
@@ -200,10 +274,35 @@ def main() -> int:
               f"({time.time() - t0:.0f}s)", flush=True)
 
     summary = _aggregate(games, series_dir, args)
+
+    # 单局自动复盘(Q2/Q4:每局找「做得不好的地方」,落 retro.md 供回溯)
+    from collections import Counter
+    issue_counts: Counter = Counter()
+    retro = [f"# {args.tag} 复盘\n"]
+    for i, res in enumerate(games, 1):
+        result = res.get("result") or "ERROR"
+        issues = [] if res.get("result") is None else _postmortem(
+            series_dir / f"game_{i:02d}", res
+        )
+        retro.append(f"- game_{i:02d} {result}: "
+                     + ("; ".join(issues) if issues else "-"))
+        for tag in issues:
+            issue_counts[tag.split("(")[0]] += 1
+    retro.append("\n## 问题频次\n")
+    for tag, n in issue_counts.most_common():
+        retro.append(f"- {tag} × {n}")
+    (series_dir / "retro.md").write_text(
+        "\n".join(retro) + "\n", encoding="utf-8"
+    )
+    summary["issue_counts"] = dict(issue_counts)
+
     (series_dir / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     _print_table(summary)
+    if issue_counts:
+        print("复盘问题: " + " ".join(
+            f"{t}×{n}" for t, n in issue_counts.most_common()))
     # 有异常局返回 1(便于外部脚本感知),否则 0;胜负不影响返回码
     return 1 if summary["errors"] else 0
 
