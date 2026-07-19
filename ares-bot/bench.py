@@ -63,12 +63,19 @@ def _apply_graphics_settings() -> None:
 
 
 def _hide_sc2_windows() -> None:
-    """把所有 SC2 进程窗口藏起来(并行多实例全藏)。后台对局不弹窗;
+    """把所有 SC2 进程窗口强制退出全屏并隐藏(并行多实例)。
+    macOS 会记住 App 上次的全屏状态并在下次启动时恢复——所以每局都要显式
+    AXFullScreen=false,不能只"不设 true"(Q:窗口模式)。隐藏后后台对局不弹窗;
     司令想看时点 Dock 图标即可,只看不动不污染对局。"""
     subprocess.run(
         ["osascript", "-e",
          'tell application "System Events" to repeat with p in '
-         '(processes whose name contains "SC2") to set visible of p to false'],
+         '(processes whose name contains "SC2")\n'
+         'try\n'
+         'set value of attribute "AXFullScreen" of window 1 of p to false\n'
+         'end try\n'
+         'set visible of p to false\n'
+         'end repeat'],
         check=False, capture_output=True,
     )
 
