@@ -40,8 +40,9 @@ _HIGH_VALUE_CASTERS = frozenset({
 })
 # caster 威胁半径(发现就 blink 拉开躲风暴/真菌)
 _CASTER_THREAT_DIST: float = 9.0
-# 进攻型 blink:目标残血阈值(血+盾低于此 → blink 上去收)
-_BLINK_KILL_HP: float = 80.0
+# 进攻型 blink:目标残血阈值(血+盾低于此 → blink 上去收)。
+# C2 实测调优:80 → 0(关掉残血贴脸触发——坦克阵里贴脸=送;切高价值 caster 保留)
+_BLINK_KILL_HP: float = 0.0
 # blink 距离(追猎 blink 约 7.5;只对射程外、blink 内的残血目标贴脸)
 _BLINK_MIN_DIST: float = 6.0
 _BLINK_MAX_DIST: float = 7.5

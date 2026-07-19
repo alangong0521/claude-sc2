@@ -30,6 +30,8 @@
 | C3b | 2026-07-19 | 「地面流到点自动开二矿，经济撑起消耗战」 | flows.yml `auto_expand: {at: 210, to: 2}`（仅 stalker）+ `production_manager._auto_expand` | c3b-expand-smoke（N=4） | 0-4，但局面质变：281s 二矿、42 农民、兵力反复到 13、时长 661→1125s；输给对方后期 40-60 大军的波次消耗 | **留**（经济约束消除；绑约束移到「中后期决战质量」） |
 | C3c | 2026-07-19 | 「集结阈值 8→14，减少中期失血，攒到能打赢的体量再接战」 | flows.yml stalker `rally_min_army: 14` | c3c-rally14-smoke（N=4） | 0-4；兵力卡在 10 永远到不了 14——诊断出**第二根停产因**：SpawnController 配比死锁（7:3 精确配比点双方都 ≥ 目标 → 全停产），存款又堆到 4045 | **留 14**（阈值本身无辜，死锁由 C3d 解） |
 | C3d | 2026-07-19 | 「freeflow 解除配比死锁，产能不再卡在配比点，兵力上限由经济决定」 | flows.yml stalker `freeflow: true` + `SpawnController(freeflow_mode=...)` 配置化 | c3d-freeflow-smoke（N=4） | 0-4，但兵力破死锁：10→15→17→**21**（643s），打上真正的团战；配比滑向纯追猎（无前排）；输给 31-38 大军的决战质量 | **留**（第二个停产根因消除；绑约束移到「兵种构成天花板」——纯追猎+狂热者无溅射，打不动 bio+坦克） |
+| C5a | 2026-07-19 | 「spawn 优先级反转（zealot p0）让狂热者先出，保住前排吸收伤害，追猎少死」 | flows.yml stalker spawn 优先级反转（ZEALOT p0 / STALKER p1） | c5a-zealot-prio（N=4） | 0-4，且机制反噬：狂热者永远可负担 → 占满全部折跃位，**全程 0 追猎**（气堆到 4190 没用）；21 纯狂热者被坦克风筝团灭 | **滚**（已回滚优先级；教训：freeflow 下首优先兵种若永远可负担会饿死其他兵种） |
+| C2 | 2026-07-19 | 「关掉进攻型 blink（_BLINK_KILL_HP 80→0）后追猎不贴脸送，交换比改善」 | `stalker_offensive.py` `_BLINK_KILL_HP` 80→0（caster 切后排保留） | c2-blinkoff（N=4） | 0-4，但指标全面改善：时长 958→1054s、存款峰值 1410→1030、trickle ×4→×2、兵力峰值 20-28 | **留**（送死减少；胜率未动 → 构成天花板锤实：纯追猎/狂热者无溅射，调参救不了，正路是 robo-colossus / chargelot-archon 的溅射） |
 
 ### 后续假设候选（按优先级）
 
