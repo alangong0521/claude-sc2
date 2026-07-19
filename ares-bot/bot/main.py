@@ -71,6 +71,15 @@ class MyBot(AresBot):
 
         await self.production_manager.update(iteration)
 
+        # Q5 早负判负(bench 省垃圾时间):前 10 分钟基地全没 → 投降离场。
+        # 与 _ensure_townhall 互补:10 分钟后才谈重建;早期被打穿没有翻盘点。
+        if self.townhalls.amount == 0 and self.time < 600:
+            self._events.append(
+                {"t": round(self.time, 1), "msg": "前10分钟基地全失,判负离场(Q5)"}
+            )
+            steer.publish_state(self._steer_snapshot())  # bench 拿最后状态
+            await self._client.leave()
+
         # 参谋长接缝：每几秒发布战况、读最新命令
         if self.time - self._last_steer >= _STEER_EVERY:
             self._last_steer = self.time

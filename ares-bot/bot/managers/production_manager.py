@@ -470,12 +470,20 @@ class ProductionManager(Manager):
             self._forward_pylon_built = True
 
     def _should_build_defense(self, order: dict) -> bool:
-        """F2: 是否铺防御塔(B+F+Cannon)。判据: 司令下令 defend=yes / 中后期(>6分钟)自动铺。"""
+        """F2: 是否铺防御塔(B+F+Cannon)。判据: 司令下令 defend=yes / 中后期(>6分钟)自动铺 /
+        rush 预警(Q6:6 分钟内 ≥2 个敌作战单位压到家门口 40 格 → 提前铺,农民侦查不算)。"""
         if order.get("defend") == "yes":
             return True
         if self.ai.time > 360:  # 6 分钟后自动铺防御
             return True
-        return False
+        home = self.ai.start_location
+        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        attackers = sum(
+            1 for u in self.ai.enemy_units
+            if not u.is_structure and u.type_id not in workers
+            and u.position.distance_to(home) < 40
+        )
+        return attackers >= 2
 
     def _resolve_buildable(self, name: str) -> UnitID | None:
         """build=<名> → UnitID。先走 levers.resolve_build_name 归一(复用 CLI 同一份逻辑),

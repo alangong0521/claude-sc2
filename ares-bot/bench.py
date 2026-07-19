@@ -83,22 +83,33 @@ def _read_result(game_dir: Path) -> dict | None:
 
 
 def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None:
-    """打第 i 局,返回结果 dict;无结果 → None。--map random 时每局重抽图。"""
+    """打第 i 局,返回结果 dict;无结果 → None。--map random 时每局重抽图。
+    开局 ~75s 后把 SC2 窗口激活一次(macOS 后台拉起的窗口默认不聚焦,
+    司令点小地图前不用再手动点窗口,Q1)。"""
     game_dir = series_dir / f"game_{i:02d}"
     game_dir.mkdir(parents=True, exist_ok=True)
     map_name = _pick_map(args.map)
     (game_dir / "map.txt").write_text(map_name, encoding="utf-8")
     log_path = game_dir / "run.log"
     with log_path.open("w", encoding="utf-8") as logf:
-        subprocess.run(
+        proc = subprocess.Popen(
             ["poetry", "run", "python", "run.py"],
             cwd=_AREAS,
             env=_game_env(args, game_dir, map_name),
             stdout=logf,
             stderr=subprocess.STDOUT,
-            timeout=args.timeout,
-            check=False,
         )
+        try:
+            proc.wait(timeout=75)
+        except subprocess.TimeoutExpired:
+            # 窗口已起来(约 60-90s),激活一次让司令能直接点小地图
+            subprocess.run(
+                ["osascript", "-e",
+                 'tell application "System Events" to set frontmost of '
+                 'first process whose name contains "SC2" to true'],
+                check=False, capture_output=True,
+            )
+        proc.wait(timeout=args.timeout)
     if args.replay:
         # run.py 把回放写到 ares-bot/replays/(固定文件名,每局覆盖) → 挪进本局目录
         replays = sorted(
