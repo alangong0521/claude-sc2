@@ -36,6 +36,42 @@ _PROXY_KEYS = (
 _MAPS_DIR = Path("/Applications/StarCraft II/Maps")
 _MAP_EXCLUDE = {"CactusValleyLE"}  # 4 人图
 
+# SC2 画质文件(SC2 退出时会重写它,必须每局开局前重设才不回退,Q5)
+_VARS_TXT = (
+    Path.home()
+    / "Library/Application Support/Blizzard/StarCraft II/Variables.txt"
+)
+
+
+def _apply_graphics_settings() -> None:
+    """每局开局前重写 SC2 画质(720P 窗口 + 全低)。文件不存在/写不动就静默跳过。"""
+    import re
+    try:
+        text = (
+            _VARS_TXT.read_text(encoding="utf-8", errors="ignore")
+            if _VARS_TXT.exists() else ""
+        )
+        text = re.sub(r"(?m)^width=.*$", "width=1280", text)
+        if re.search(r"(?m)^height=", text):
+            text = re.sub(r"(?m)^height=.*$", "height=720", text)
+        else:
+            text += "\nheight=720\n"
+        text = re.sub(r"(?m)^(GraphicsOption[A-Za-z]+)=[2-5]", r"\g<1>=1", text)
+        _VARS_TXT.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _hide_sc2_windows() -> None:
+    """把所有 SC2 进程窗口藏起来(并行多实例全藏)。后台对局不弹窗;
+    司令想看时点 Dock 图标即可,只看不动不污染对局。"""
+    subprocess.run(
+        ["osascript", "-e",
+         'tell application "System Events" to repeat with p in '
+         '(processes whose name contains "SC2") to set visible of p to false'],
+        check=False, capture_output=True,
+    )
+
 
 def _pick_map(requested: str) -> str:
     """--map random → 每局从 1v1 图池随机一张;否则原样返回。"""
@@ -92,6 +128,7 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
     (game_dir / "map.txt").write_text(map_name, encoding="utf-8")
     log_path = game_dir / "run.log"
     with log_path.open("w", encoding="utf-8") as logf:
+        _apply_graphics_settings()  # Q5:开局前重设 720P+全低(SC2 退出会回写)
         proc = subprocess.Popen(
             ["poetry", "run", "python", "run.py"],
             cwd=_AREAS,
@@ -99,18 +136,20 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
             stdout=logf,
             stderr=subprocess.STDOUT,
         )
-        try:
-            proc.wait(timeout=75)
-        except subprocess.TimeoutExpired:
-            # 窗口已起来(约 60-90s):立即隐藏——后台对局永不抢焦点/弹窗,
-            # 司令想看时点 Dock 图标(窗口模式,Q2/Q3)
-            subprocess.run(
-                ["osascript", "-e",
-                 'tell application "System Events" to set visible of '
-                 '(first process whose name contains "SC2") to false'],
-                check=False, capture_output=True,
-            )
-        proc.wait(timeout=args.timeout)
+        # SC2 窗口一出现就藏(闪屏压到 ~2s);藏过一次就停手——
+        # 之后司令若点 Dock 主动观察,不再替他藏(Q3)
+        t0 = time.time()
+        hidden = False
+        while proc.poll() is None:
+            if not hidden and subprocess.run(
+                ["pgrep", "-x", "SC2"], capture_output=True
+            ).returncode == 0:
+                _hide_sc2_windows()
+                hidden = True
+            if time.time() - t0 > args.timeout:
+                proc.kill()
+                raise subprocess.TimeoutExpired(proc.args, args.timeout)
+            time.sleep(2)
     if args.replay:
         # run.py 把回放写到 ares-bot/replays/(固定文件名,每局覆盖) → 挪进本局目录
         replays = sorted(
