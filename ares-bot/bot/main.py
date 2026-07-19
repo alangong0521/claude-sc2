@@ -57,6 +57,8 @@ class MyBot(AresBot):
         self._player_ctrl: dict[int, dict] = {}
         # 闲置农民清扫的时间戳(每 2 游戏秒扫一次)
         self._last_idle_sweep: float = -10.0
+        # 敌方打出 gg(投降意向)检测,一局只记一次
+        self._enemy_gg: bool = False
 
     async def on_step(self, iteration: int) -> None:
         await super(MyBot, self).on_step(iteration)
@@ -85,6 +87,18 @@ class MyBot(AresBot):
             self._last_steer = self.time
             steer.publish_state(self._steer_snapshot())
             self.steer_order = steer.read_order()
+
+        # 敌投降检测(司令要求):AI 聊天打出 gg → 记事件,bench 收到后帮点"接受投降"提前终局
+        if not self._enemy_gg:
+            for _msg in self.state.chat:
+                if _msg.player_id != self.player_id and _msg.message.strip().lower() in (
+                    "gg", "ggwp", "gg wp", "g g",
+                ):
+                    self._enemy_gg = True
+                    self._events.append(
+                        {"t": round(self.time, 1), "msg": "敌方打出gg(投降意向)"}
+                    )
+                    break
 
     def _handle_scout(self) -> None:
         """⑦侦察·派农民：scout=on 只派**一个** probe 去敌方主基探查。

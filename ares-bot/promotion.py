@@ -2,18 +2,20 @@
 """难度档位晋升 runner —— 流派打穿「全种族 × 全风格」矩阵才晋级下一档(Q1 司令定)。
 
 见 docs/bot-self-tuning-plan.md §6。矩阵 = 3 族 × 5 风格 = 15 组合
-(RandomBuild 是元风格,引入额外方差,不计入)。每组合 best-of-N(默认 3,≥2 胜通过);
+(RandomBuild 是元风格,引入额外方差,不计入)。
+组合 = best-of-N(默认 3,≥2 胜通过),**逐局打、提前锁定**(司令规约):
+连胜 pass_mark 局立即跳过后续局;输到数学上不可能过也提前停。
 未过组合加打一轮(再 N 局,两轮合计 ≥N 胜通过);仍不过 → 标「疑似相克」记录在案、
 不拦晋级(留给司令复核);一轮矩阵失败组合 >2 个 = 整体打不穿,停在该档。
 
 档位阶梯(python-sc2 Difficulty,无 Elite):
   Medium → MediumHard → Hard → Harder → VeryHard → CheatVision → CheatMoney → CheatInsane
 
-断点续跑:已存在 bench/<tag>/summary.json 的组合直接读结果不重打;
+断点续跑:每局一个 tag(bench/<tag>/summary.json),已打的局直接读结果不重打;
 流派当前档位与晋级史存 bench/promotion.json。
 
 用法(在 ares-bot/ 下):
-  poetry run python promotion.py --flow tempest --start Medium
+  poetry run python promotion.py --flow tempest --start MediumHard
 """
 from __future__ import annotations
 
@@ -53,16 +55,37 @@ def _series_result(tag: str) -> tuple[int, int] | None:
 
 
 def _run_series(args: argparse.Namespace, diff: str, race: str, build: str,
-                tag: str) -> tuple[int, int]:
+                tag: str, n: int) -> tuple[int, int]:
     print(f"[promo] 打 {tag} ...", flush=True)
     subprocess.run(
         ["poetry", "run", "python", "bench.py",
          "--flow", args.flow, "--diff", diff, "--race", race,
          "--ai-build", build, "--map", args.map,
-         "-n", str(args.n), "--tag", tag],
+         "-n", str(n), "--tag", tag],
         cwd=_AREAS, check=False,
     )
     return _series_result(tag) or (0, 0)
+
+
+def _play_combo(args: argparse.Namespace, diff: str, race: str, build: str,
+                tag_base: str, pass_mark: int) -> tuple[int, int]:
+    """打一个组合(best-of-N,逐局):已打的局跳过;连胜 pass_mark 局提前锁定,
+    输到数学上不可能过也提前停(司令:连胜跳过第3局,有输才打满)。"""
+    wins = games = 0
+    for g in range(1, args.n + 1):
+        tag = f"{tag_base}-g{g}"
+        got = _series_result(tag)
+        if got is None or got[1] < 1:
+            got = _run_series(args, diff, race, build, tag, n=1)
+        wins += got[0]
+        games += 1
+        if wins >= pass_mark:
+            print(f"[promo] {race}/{build} {wins}-{games - wins} 提前锁定", flush=True)
+            break
+        if games - wins >= (args.n - pass_mark + 1):
+            print(f"[promo] {race}/{build} {wins}-{games - wins} 提前出局", flush=True)
+            break
+    return wins, games
 
 
 def _load_state() -> dict:
@@ -82,7 +105,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--flow", required=True, help="flows.yml 流派名")
-    ap.add_argument("--start", default="Medium", help="起始档位(默认 Medium)")
+    ap.add_argument("--start", default="MediumHard", help="起始档位(默认 MediumHard)")
     ap.add_argument("-n", type=int, default=3, help="每组合局数(默认 3,≥2 胜通过)")
     ap.add_argument("--map", default="random", help="地图(默认 random 每局随机 1v1)")
     args = ap.parse_args()
@@ -99,18 +122,17 @@ def main() -> int:
     idx = LADDER.index(tier)
     while idx < len(LADDER):
         diff = LADDER[idx]
-        print(f"\n===== {args.flow} @ {diff} 矩阵(15 组合 × {args.n} 局)=====",
+        print(f"\n===== {args.flow} @ {diff} 矩阵(15 组合 × ≤{args.n} 局)=====",
               flush=True)
         history = flow_state["history"].setdefault(diff, {})
         failed: list[tuple[str, str]] = []
 
         for race in RACES:
             for build in BUILDS:
-                tag = _tag(args.flow, diff, race, build)
-                got = _series_result(tag)
-                if got is None or got[1] < args.n:
-                    got = _run_series(args, diff, race, build, tag)
-                wins, games = got
+                tag_base = _tag(args.flow, diff, race, build)
+                wins, games = _play_combo(
+                    args, diff, race, build, tag_base, pass_mark
+                )
                 ok = wins >= pass_mark
                 history[f"{race}/{build}"] = [wins, games, "pass" if ok else "fail"]
                 print(f"[promo] {diff} {race}/{build}: {wins}/{games} "
@@ -122,13 +144,11 @@ def main() -> int:
         # 失败组合加打一轮(tag 加 -r2,两轮合计 ≥n 胜通过;仍不过记「疑似相克」)
         counters = []
         for race, build in failed:
-            tag2 = _tag(args.flow, diff, race, build, suffix="-r2")
-            got2 = _series_result(tag2)
-            if got2 is None or got2[1] < args.n:
-                got2 = _run_series(args, diff, race, build, tag2)
             key = f"{race}/{build}"
-            total_w = history[key][0] + got2[0]
-            total_g = history[key][1] + got2[1]
+            tag_base2 = _tag(args.flow, diff, race, build, suffix="-r2")
+            w2, g2 = _play_combo(args, diff, race, build, tag_base2, pass_mark)
+            total_w = history[key][0] + w2
+            total_g = history[key][1] + g2
             if total_w >= args.n:
                 history[key] = [total_w, total_g, "pass-retry"]
                 print(f"[promo] {key} 重打后合计 {total_w}/{total_g} PASS", flush=True)

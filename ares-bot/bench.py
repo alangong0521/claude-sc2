@@ -63,19 +63,84 @@ def _apply_graphics_settings() -> None:
 
 
 def _hide_sc2_windows() -> None:
-    """把所有 SC2 进程窗口强制退出全屏并隐藏(并行多实例)。
-    macOS 会记住 App 上次的全屏状态并在下次启动时恢复——所以每局都要显式
-    AXFullScreen=false,不能只"不设 true"(Q:窗口模式)。隐藏后后台对局不弹窗;
-    司令想看时点 Dock 图标即可,只看不动不污染对局。"""
+    """把**最新启动的**那个 SC2 进程强制退出全屏并隐藏。
+    只藏新开局的一个——别误藏司令正在观察的另一局(并行车道场景)。
+    macOS 会记住 App 上次的全屏状态并恢复,所以每局都要显式 AXFullScreen=false。"""
+    newest = subprocess.run(
+        ["pgrep", "-n", "-x", "SC2"], capture_output=True, text=True
+    ).stdout.strip()
+    if not newest:
+        return
+    pid = newest.splitlines()[0]
     subprocess.run(
         ["osascript", "-e",
-         'tell application "System Events" to repeat with p in '
-         '(processes whose name contains "SC2")\n'
-         'try\n'
-         'set value of attribute "AXFullScreen" of window 1 of p to false\n'
-         'end try\n'
-         'set visible of p to false\n'
-         'end repeat'],
+         f'tell application "System Events"\n'
+         f'set p to first process whose unix id is {pid}\n'
+         f'try\n'
+         f'set value of attribute "AXFullScreen" of window 1 of p to false\n'
+         f'end try\n'
+         f'set visible of p to false\n'
+         f'end tell'],
+        check=False, capture_output=True,
+    )
+
+
+def _surrender_detected(game_dir: Path) -> bool:
+    """最新快照的 events 里有「敌方打出gg」→ True(bot 侧 gg 检测,main.py)。"""
+    snaps = sorted(game_dir.glob("state_*.json"), key=os.path.getmtime)
+    if not snaps:
+        return False
+    try:
+        s = json.loads(snaps[-1].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return any("投降" in e.get("msg", "") for e in s.get("events", []))
+
+
+def _sc2_pid_for(proc_pid: int) -> str | None:
+    """找本局 run.py 进程树下的 SC2 进程(并行车道时别点错窗口)。"""
+    out = subprocess.run(["ps", "-axo", "pid,ppid,comm"],
+                         capture_output=True, text=True).stdout
+    parent: dict[str, tuple[str, str]] = {}
+    for line in out.splitlines()[1:]:
+        parts = line.split(None, 2)
+        if len(parts) == 3:
+            parent[parts[0]] = (parts[1], parts[2])
+    for pid, (ppid, comm) in parent.items():
+        if not comm.endswith("SC2"):
+            continue
+        p = ppid
+        while p in parent:
+            if p == str(proc_pid):
+                return pid
+            p = parent[p][0]
+    return None
+
+
+def _accept_surrender(sc2_pid: str) -> None:
+    """敌打出 gg(=弹了投降确认框):显窗 → 合成点击 Yes(窗口右上 0.78,0.19 处)
+    → 再藏回。提前终局,司令要求(Q:gg 后直接判我方胜)。"""
+    geom = subprocess.run(
+        ["osascript", "-e",
+         f'tell application "System Events" to tell (first process whose unix id '
+         f'is {sc2_pid}) to get {{position, size}} of window 1'],
+        capture_output=True, text=True,
+    ).stdout
+    nums = [float(x) for x in geom.replace("\n", "").split(",") if x.strip()]
+    if len(nums) != 4:
+        return
+    x, y, w, h = nums
+    yes = (x + w * 0.78, y + h * 0.19)
+    subprocess.run(
+        ["osascript", "-e",
+         f'tell application "System Events" to click at '
+         f'{{{yes[0]:.0f}, {yes[1]:.0f}}}'],
+        check=False, capture_output=True,
+    )
+    subprocess.run(
+        ["osascript", "-e",
+         f'tell application "System Events" to set visible of '
+         f'(first process whose unix id is {sc2_pid}) to false'],
         check=False, capture_output=True,
     )
 
@@ -144,15 +209,23 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
             stderr=subprocess.STDOUT,
         )
         # SC2 窗口一出现就藏(闪屏压到 ~2s);藏过一次就停手——
-        # 之后司令若点 Dock 主动观察,不再替他藏(Q3)
+        # 之后司令若点 Dock 主动观察,不再替他藏(Q3)。
+        # 同时每 ~10s 监视敌投降:AI 打出 gg → 帮点"接受投降"提前终局(Q:gg 即判胜)
         t0 = time.time()
         hidden = False
+        last_gg_check = 0.0
         while proc.poll() is None:
             if not hidden and subprocess.run(
                 ["pgrep", "-x", "SC2"], capture_output=True
             ).returncode == 0:
                 _hide_sc2_windows()
                 hidden = True
+            if time.time() - last_gg_check > 10 and _surrender_detected(game_dir):
+                last_gg_check = time.time()
+                sc2_pid = _sc2_pid_for(proc.pid)
+                if sc2_pid:
+                    print(f"[bench] 敌方打出 gg,帮点接受投降(game {i:02d})", flush=True)
+                    _accept_surrender(sc2_pid)
             if time.time() - t0 > args.timeout:
                 proc.kill()
                 raise subprocess.TimeoutExpired(proc.args, args.timeout)
