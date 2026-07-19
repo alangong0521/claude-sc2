@@ -102,15 +102,8 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
         try:
             proc.wait(timeout=75)
         except subprocess.TimeoutExpired:
-            # 窗口已起来(约 60-90s):设全屏(司令想看时就是习惯的全屏布局),
-            # 然后立刻隐藏——后台对局永不抢焦点/弹窗,除非司令自己点 Dock 图标看(Q3)
-            subprocess.run(
-                ["osascript", "-e",
-                 'tell application "System Events" to set value of attribute '
-                 '"AXFullScreen" of window 1 of (first process whose name '
-                 'contains "SC2") to true'],
-                check=False, capture_output=True,
-            )
+            # 窗口已起来(约 60-90s):立即隐藏——后台对局永不抢焦点/弹窗,
+            # 司令想看时点 Dock 图标(窗口模式,Q2/Q3)
             subprocess.run(
                 ["osascript", "-e",
                  'tell application "System Events" to set visible of '
