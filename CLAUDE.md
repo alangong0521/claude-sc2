@@ -47,7 +47,7 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 - **headless `websocket 超时`**——SC2 更新中 / 冷启动慢会导致；用 REALTIME 或等 SC2 ready。headless 本环境不稳，优先 REALTIME。
 - **SC2 补丁日首发失败**（2026-07-18 实证）：当天补丁（如 Base97563）后 SC2 二进制能起进程但**不开 websocket、不出窗口、静默退出**，新旧 build 都一样 → 不是 bot 问题，去 Battle.net 让它完成更新 / 「扫描和修复」，确认手动能进游戏后再跑 bench。排查手法：直启二进制 `-listen 127.0.0.1 -port <p>` + `lsof -iTCP:<p> -sTCP:LISTEN`；多实例互斥会互相踢，先 `pkill -9 -x SC2` 再测。
 - **idle 农民**：ares 框架层 `BuildStructure.execute` 不查 `can_afford`（bot 层加守卫根治，不改框架）。另有 `main._handle_idle_workers` 每 2 秒兜底清扫无命令农民（跳过侦查/司令接管）。
-- **bot 局小地图点击"失灵"**（2026-07-19 半天排查结案）：不是 bot/ares 问题——bot 局窗口未成为 key window 时 macOS 把点击当"激活"吞掉；叠加投降弹窗（模态框挡输入）/小窗口点偏。判别手法：**手动开一局 vs AI 能点 = bot 局特有**；解法：先点主画面任意处激活+消模态，再点小地图；AppleScript `frontmost` + 合成点击可立即解锁。
+- **bot 局小地图点击"失灵"**（2026-07-19 半天排查结案）：不是 bot/ares 问题——两个独立成因：①窗口未成为 key window 时 macOS 把点击当"激活"吞掉（先点主画面再点小地图）；②**AI 投降弹窗是模态框,弹出期封锁全部 UI 输入**（看到 "would like to surrender" 先点 Yes）。注意 AI 投降有两种：打 gg 聊天（bench 已自动点 Yes 终局）和**静默弹窗**（接口探不到,只能手动点/图像识别）。判别手法：手动开一局 vs AI 能点 = bot 局特有。
 - **warpgate 必须自己变形**：`SpawnController.execute` 在 WARPGATERESEARCH 完成后**停产等 gateway 变形**（`return False`），而 ares 没有变形行为——不自己下 `MORPH_WARPGATE` 就永久停产（`production_manager._morph_gateways` 根治）。
 - **多兵种 SpawnController 必开 freeflow**：配比是**上限**不是目标——精确配比点全兵种都 ≥ 目标 → 全停产（配比死锁）；且 freeflow 下**首优先兵种若永远可负担会饿死其他兵种**（C5a 实证：zealot p0 → 0 追猎）。单兵种流派靠 `over_produce_on_low_tech` 豁免不用开。
 - **steer 一次性 vs 粘性**：`build`/`expand`/`scout` 一次性（重下 no-op，要 `clear` 再下）；其余粘性。`clear` 清**全部**字段（无单 key clear）。
