@@ -118,19 +118,24 @@ def _sc2_pid_for(proc_pid: int) -> str | None:
 
 
 def _accept_surrender(sc2_pid: str) -> None:
-    """敌打出 gg(=弹了投降确认框):显窗 → 合成点击 Yes(窗口右上 0.78,0.19 处)
-    → 再藏回。提前终局,司令要求(Q:gg 后直接判我方胜)。"""
+    """敌打出 gg(=弹了投降确认框):显窗置顶 → 合成点击 Yes(窗口右上 0.745,0.175 处)
+    → 再藏回。提前终局,司令要求(Q:gg 后直接判我方胜)。
+    注意:必须先显窗——bench 开局会把窗口藏起来,不显示的话点击落在桌面/终端上。"""
     geom = subprocess.run(
         ["osascript", "-e",
          f'tell application "System Events" to tell (first process whose unix id '
-         f'is {sc2_pid}) to get {{position, size}} of window 1'],
+         f'is {sc2_pid})\n'
+         f'set visible of it to true\n'
+         f'set frontmost of it to true\n'
+         f'delay 0.3\n'
+         f'get {{position, size}} of window 1'],
         capture_output=True, text=True,
     ).stdout
     nums = [float(x) for x in geom.replace("\n", "").split(",") if x.strip()]
     if len(nums) != 4:
         return
     x, y, w, h = nums
-    yes = (x + w * 0.78, y + h * 0.19)
+    yes = (x + w * 0.745, y + h * 0.175)
     subprocess.run(
         ["osascript", "-e",
          f'tell application "System Events" to click at '
