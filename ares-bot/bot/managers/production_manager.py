@@ -147,6 +147,7 @@ class ProductionManager(Manager):
         self._auto_expand(macro_plan)
         # 按流派配置扩产能(矿富余追加产兵建筑,治"矿堆花不出去")
         self._build_extra_production(structures_dict)
+        self._spend_bank()  # Q3:存款淤积时换成开矿/追加产能,经济优势→战场优势
         self._build_forward_pylon()  # F1: 前线水晶塔(投送),各流派共用
         self._chrono_structures()
         # 升级交 ares UpgradeController（自动建 FORGE/TWILIGHTCOUNCIL 等前置 + 研究 + 打日志）。
@@ -448,6 +449,35 @@ class ProductionManager(Manager):
             self.ai.register_behavior(
                 BuildStructure(self.ai.start_location, sid)
             )
+
+    def _spend_bank(self) -> None:
+        """滚雪球(Q3,司令要求):前 20 分钟存款淤积(>800)时把钱换成战场优势——
+        能开矿先开(基地<4,钱生钱),否则突破流派常规上限追加产兵建筑(存款越多补得越多)。
+        治"经济优势大但钱花不完,没转化成兵力"。"""
+        if self.ai.time > 1200 or self.ai.minerals < 800:
+            return
+        if self.ai.townhalls.amount < 4 and self.ai.can_afford(UnitID.NEXUS):
+            self.ai.register_behavior(
+                ExpansionController(
+                    to_count=self.ai.townhalls.amount + 1, max_pending=1
+                )
+            )
+            return
+        ep = self._flow.extra_production
+        if ep is None:
+            return
+        sid = getattr(UnitID, ep.id_name, None)
+        if sid is None or not self.ai.can_afford(sid):
+            return
+        have = (
+            len(self.manager_mediator.get_own_structures_dict[sid])
+            + self.manager_mediator.get_building_counter[sid]
+        )
+        if sid == UnitID.GATEWAY:  # warpgate 也是产能
+            have += len(self.manager_mediator.get_own_structures_dict[UnitID.WARPGATE])
+        if have < min(12, ep.base + self.ai.townhalls.ready.amount
+                      + self.ai.minerals // 800):
+            self.ai.register_behavior(BuildStructure(self.ai.start_location, sid))
 
     def _front_point(self) -> Point2:
         """F1: 前线折跃点 —— 敌我之间偏敌 60%。让 WarpInManager 优先把兵折跃到前线

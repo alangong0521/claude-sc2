@@ -102,11 +102,19 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
         try:
             proc.wait(timeout=75)
         except subprocess.TimeoutExpired:
-            # 窗口已起来(约 60-90s),激活一次让司令能直接点小地图
+            # 窗口已起来(约 60-90s):置前 + 全屏(macOS 后台拉起的窗口默认不聚焦且小,
+            # 司令点小地图会点到窗外;全屏后小地图回到他习惯的左下角,Q1)
             subprocess.run(
                 ["osascript", "-e",
-                 'tell application "System Events" to set frontmost of '
-                 'first process whose name contains "SC2" to true'],
+                 'tell application "System Events" to set sc2p to first process '
+                 'whose name contains "SC2" to set frontmost of sc2p to true'],
+                check=False, capture_output=True,
+            )
+            subprocess.run(
+                ["osascript", "-e",
+                 'tell application "System Events" to set value of attribute '
+                 '"AXFullScreen" of window 1 of (first process whose name '
+                 'contains "SC2") to true'],
                 check=False, capture_output=True,
             )
         proc.wait(timeout=args.timeout)
