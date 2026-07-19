@@ -57,7 +57,7 @@ flows:
     chrono: {targets: [GATEWAY, TWILIGHTCOUNCIL], when: always}
     one_off: []
     rally_min_army: 14
-    auto_expand: {at: 210, to: 2}
+    auto_expand: {at: 150, to: 2, when_workers: 18}
     freeflow: true
 
   # 航母黄金舰队(新,待跑局验证):科技链与暴风舰完全相同,航母主 C、暴风舰副 C

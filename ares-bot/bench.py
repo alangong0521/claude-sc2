@@ -32,8 +32,24 @@ _PROXY_KEYS = (
     "http_proxy", "https_proxy", "all_proxy",
 )
 
+# 随机 1v1 地图池(--map random):从 SC2 Maps 目录取,排除已知的 >2 人图
+_MAPS_DIR = Path("/Applications/StarCraft II/Maps")
+_MAP_EXCLUDE = {"CactusValleyLE"}  # 4 人图
 
-def _game_env(args: argparse.Namespace, game_dir: Path) -> dict:
+
+def _pick_map(requested: str) -> str:
+    """--map random → 每局从 1v1 图池随机一张;否则原样返回。"""
+    if requested.lower() != "random":
+        return requested
+    import random
+    pool = [
+        p.stem for p in _MAPS_DIR.glob("*.SC2Map")
+        if p.stem not in _MAP_EXCLUDE
+    ]
+    return random.choice(pool) if pool else "AbyssalReefLE"
+
+
+def _game_env(args: argparse.Namespace, game_dir: Path, map_name: str) -> dict:
     env = dict(os.environ)
     for k in _PROXY_KEYS:
         env.pop(k, None)
@@ -41,7 +57,7 @@ def _game_env(args: argparse.Namespace, game_dir: Path) -> dict:
     env["no_proxy"] = "127.0.0.1,localhost"
     env.update({
         "BUILD": args.flow,
-        "MAP": args.map,
+        "MAP": map_name,
         "DIFF": args.diff,
         "OPPONENT_RACE": args.race,
         "AI_BUILD": args.ai_build,
@@ -67,15 +83,17 @@ def _read_result(game_dir: Path) -> dict | None:
 
 
 def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None:
-    """打第 i 局,返回结果 dict;无结果 → None。"""
+    """打第 i 局,返回结果 dict;无结果 → None。--map random 时每局重抽图。"""
     game_dir = series_dir / f"game_{i:02d}"
     game_dir.mkdir(parents=True, exist_ok=True)
+    map_name = _pick_map(args.map)
+    (game_dir / "map.txt").write_text(map_name, encoding="utf-8")
     log_path = game_dir / "run.log"
     with log_path.open("w", encoding="utf-8") as logf:
         subprocess.run(
             ["poetry", "run", "python", "run.py"],
             cwd=_AREAS,
-            env=_game_env(args, game_dir),
+            env=_game_env(args, game_dir, map_name),
             stdout=logf,
             stderr=subprocess.STDOUT,
             timeout=args.timeout,

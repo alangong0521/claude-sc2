@@ -55,6 +55,8 @@ class MyBot(AresBot):
         self._enemy_seen_types: dict[str, set] = {}
         # 人机共驾·让权：tag -> {"until": 归还时间, "role": 接管前的原 role 名}
         self._player_ctrl: dict[int, dict] = {}
+        # 闲置农民清扫的时间戳(每 2 游戏秒扫一次)
+        self._last_idle_sweep: float = -10.0
 
     async def on_step(self, iteration: int) -> None:
         await super(MyBot, self).on_step(iteration)
@@ -65,6 +67,7 @@ class MyBot(AresBot):
         self._handle_player_control()  # 人机共驾：先处理让权，Mining/production 随后自动跳过被接管单位
         self.register_behavior(Mining())
         self._handle_scout()
+        self._handle_idle_workers()
 
         await self.production_manager.update(iteration)
 
@@ -110,6 +113,23 @@ class MyBot(AresBot):
             w.move(enemy_main)
             self._scout_tag = w.tag
             self._scout_done = True
+
+    def _handle_idle_workers(self) -> None:
+        """闲置农民清扫(司令观察实证):除被司令接管(PERSISTENT_BUILDER)/侦查(SCOUTING)
+        的之外,任何无命令农民立刻派回最近矿脉,role 归 GATHERING。
+        ares Mining 只管 GATHERING role,建造卡死/被打散的农民会闲置漏网,这里兜底,
+        每 2 游戏秒扫一次。正在跑路的建造农民有命令不在 workers.idle 里,不受影响。"""
+        if self.time - self._last_idle_sweep < 2.0:
+            return
+        self._last_idle_sweep = self.time
+        if not self.mineral_field:
+            return
+        for w in self.workers.idle:
+            role = self._current_role(w.tag)
+            if role in (UnitRole.SCOUTING.name, UnitRole.PERSISTENT_BUILDER.name):
+                continue
+            self.mediator.assign_role(tag=w.tag, role=UnitRole.GATHERING)
+            w.gather(self.mineral_field.closest_to(w))
 
     def _current_role(self, tag: int) -> str | None:
         """反查某单位当前的 role 名（用于接管前记住、归还时恢复）。"""
@@ -343,6 +363,7 @@ class MyBot(AresBot):
             "result": getattr(game_result, "name", str(game_result)),
             "game_time": round(self.time, 1),
             "flow": os.environ.get("BUILD", "tempest"),
+            "map": os.environ.get("MAP", ""),
             "army": dict(army),
             "bases": self.townhalls.amount,
             "workers": self.workers.amount,

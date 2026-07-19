@@ -50,9 +50,11 @@ class ChronoConfig:
 
 @dataclass(frozen=True)
 class AutoExpand:
-    """自动开矿:到 at 秒把基地扩到 to 个(缺省不开,司令 expand=yes 杠杆不受影响)。"""
+    """自动开矿:满足触发条件把基地扩到 to 个(缺省不开,司令 expand=yes 不受影响)。
+    触发 = at 秒到达 或 农民数 ≥ when_workers(爆仓前尽早开),先满足先触发。"""
     at: float = 0.0
     to: int = 2
+    when_workers: int = 0   # >0:农民达到它也触发(0=只看时间)
 
 
 @dataclass
@@ -120,7 +122,8 @@ class FlowConfig:
         auto_expand = None
         if ae_raw:
             auto_expand = AutoExpand(
-                float(ae_raw.get("at", 0.0)), int(ae_raw.get("to", 2))
+                float(ae_raw.get("at", 0.0)), int(ae_raw.get("to", 2)),
+                int(ae_raw.get("when_workers", 0)),
             )
         return cls(
             name=name, spawn=spawn, core_structures=core, upgrades=upgrades,

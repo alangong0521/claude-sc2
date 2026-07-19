@@ -141,6 +141,7 @@ class ProductionManager(Manager):
         ] = self.manager_mediator.get_own_structures_dict
 
         self._build_probes(self.ai.ready_townhalls)
+        self._ensure_townhall()  # Q4:保底主基地(被打爆到 0 且有矿区价值时重建)
         await self._build_flow_structures(building_counter, structures_dict)
         self._morph_gateways()
         self._auto_expand(macro_plan)
@@ -247,15 +248,43 @@ class ProductionManager(Manager):
         self._build_zerg_queens()
 
     def _auto_expand(self, macro_plan: MacroPlan) -> None:
-        """C3b 自动开矿(flows.yml auto_expand,缺省关):到 at 秒把基地扩到 to 个。
-        地面消耗流的命脉(B2/C1 实证 stalker 全程单矿打不起消耗战);天空流不开。
-        与司令 expand=yes 杠杆不冲突:到数后 ExpansionController 自然不再动作。"""
+        """自动开矿(flows.yml auto_expand,缺省关):满足触发把基地扩到 to 个。
+        触发 = 到 at 秒 或 农民 ≥ when_workers(爆仓前尽早开,Q3 司令要求),先满足先触发。
+        地面消耗流的命脉;天空流不开。与司令 expand=yes 杠杆不冲突:到数后自然停。"""
         ae = self._flow.auto_expand
-        if ae is None or self.ai.time < ae.at:
+        if ae is None or self.ai.townhalls.amount >= ae.to:
             return
-        if self.ai.townhalls.amount >= ae.to:
+        triggered = self.ai.time >= ae.at or (
+            ae.when_workers and self.ai.supply_workers >= ae.when_workers
+        )
+        if not triggered:
             return
         macro_plan.add(ExpansionController(to_count=ae.to, max_pending=1))
+
+    def _ensure_townhall(self) -> None:
+        """保底主基地(Q4,全流派):基地被打爆到 0 时,出生点矿区还有价值(有矿)且脚下
+        没敌军 → 立刻重建。没基地=没农民=慢性死亡;在建/已有/矿干/被压则 no-op。"""
+        if self.ai.townhalls.amount > 0:
+            return
+        if self.manager_mediator.get_building_counter[UnitID.NEXUS] > 0:
+            return
+        if not self.ai.can_afford(UnitID.NEXUS):
+            return
+        minerals_left = sum(
+            mf.mineral_contents
+            for mf in self.ai.mineral_field.closer_than(10, self.ai.start_location)
+        ) if self.ai.mineral_field else 0
+        if minerals_left <= 0:
+            return  # 主矿已干,没重建价值(扩张交给 ExpansionController 找新矿)
+        if any(
+            not u.is_structure
+            and u.position.distance_to(self.ai.start_location) < 15
+            for u in self.ai.enemy_units
+        ):
+            return  # 出生点被压着,重建白送
+        self.ai.register_behavior(
+            BuildStructure(self.ai.start_location, UnitID.NEXUS)
+        )
 
     def _build_zerg_queens(self) -> None:
         """每个巢穴配一只女王(需孵化池;由 TechUp/ZERGLING 或 build 杠杆先造出)。
