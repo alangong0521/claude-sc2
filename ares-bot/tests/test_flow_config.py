@@ -134,5 +134,88 @@ class TestShippedFlowsUnchanged(unittest.TestCase):
                              f"{name} 有升级名解析不出")
 
 
+class TestPivotRushCannons(unittest.TestCase):
+    """E1 实验开关:pivot.rush_cannons(臂 B 纯叉子不铺塔)的配置解析。"""
+
+    def test_default_true_keeps_arm_a(self):
+        fc = FlowConfig.from_dict("x", {"spawn": {}, "pivot": {"rush_zealots": 4}})
+        self.assertTrue(fc.pivot.rush_cannons)  # 缺省 = 现状臂 A(4叉+铺塔)
+
+    def test_explicit_false_arm_b(self):
+        fc = FlowConfig.from_dict("x", {"spawn": {}, "pivot": {
+            "rush_zealots": 4, "rush_cannons": False,
+        }})
+        self.assertEqual(fc.pivot.rush_zealots, 4)
+        self.assertFalse(fc.pivot.rush_cannons)  # 臂 B:出叉子但不铺塔
+
+    def test_zero_zealots_arm_c(self):
+        fc = FlowConfig.from_dict("x", {"spawn": {}, "pivot": {"rush_zealots": 0}})
+        self.assertEqual(fc.pivot.rush_zealots, 0)
+        self.assertTrue(fc.pivot.rush_cannons)  # 臂 C:只铺塔憋航母
+
+    def test_no_pivot_block(self):
+        fc = FlowConfig.from_dict("x", {"spawn": {}})
+        self.assertIsNone(fc.pivot)
+
+    def test_save_up_default_off_and_parse(self):
+        # O5:save_up 缺省 0=关;carrier 块显式 250
+        self.assertEqual(FlowConfig.from_dict("x", {"spawn": {}}).save_up, 0)
+        fc = FlowConfig.from_dict("x", {"spawn": {}, "save_up": 250})
+        self.assertEqual(fc.save_up, 250)
+
+    def test_auto_expand_dynamic_fields(self):
+        # E2:动态字段缺省 0(旧式 at/to 用法兼容),配了 max_bases 走动态
+        old = FlowConfig.from_dict("x", {"spawn": {}, "auto_expand": {
+            "at": 150, "to": 2, "when_workers": 18,
+        }})
+        self.assertEqual((old.auto_expand.at, old.auto_expand.to), (150.0, 2))
+        self.assertEqual(old.auto_expand.max_bases, 0)
+        self.assertEqual(old.auto_expand.advantage_supply, 0)
+        dyn = FlowConfig.from_dict("x", {"spawn": {}, "auto_expand": {
+            "max_bases": 4, "when_workers": 22, "advantage_supply": 12,
+        }})
+        self.assertEqual(
+            (dyn.auto_expand.max_bases, dyn.auto_expand.when_workers,
+             dyn.auto_expand.advantage_supply),
+            (4, 22, 12),
+        )
+
+    def test_expansion_cannons_parse(self):
+        self.assertIsNone(FlowConfig.from_dict("x", {"spawn": {}}).expansion_cannons)
+        fc = FlowConfig.from_dict("x", {"spawn": {}, "expansion_cannons": {
+            "min": 3, "max": 8,
+        }})
+        self.assertEqual((fc.expansion_cannons.min, fc.expansion_cannons.max), (3, 8))
+
+    def test_carrier_e2_shipped(self):
+        _yaml_or_skip(self)
+        fc = FlowConfig.load("carrier")
+        self.assertEqual(
+            (fc.auto_expand.max_bases, fc.auto_expand.when_workers,
+             fc.auto_expand.advantage_supply),
+            (4, 22, 12),
+        )
+        self.assertEqual(
+            (fc.expansion_cannons.min, fc.expansion_cannons.max), (3, 8)
+        )
+        # stalker 旧式 auto_expand 不受影响(冻结块)
+        sk = FlowConfig.load("stalker")
+        self.assertEqual((sk.auto_expand.to, sk.auto_expand.max_bases), (2, 0))
+
+    def test_carrier_save_up_shipped(self):
+        _yaml_or_skip(self)
+        self.assertEqual(FlowConfig.load("carrier").save_up, 250)
+        # tempest 单兵种不需要憋气,保持关
+        self.assertEqual(FlowConfig.load("tempest").save_up, 0)
+
+    def test_shipped_flows_pivot_default_true(self):
+        """已发货流派(tempest/carrier 带 pivot 块)缺省 rush_cannons=True,行为不变。"""
+        _yaml_or_skip(self)
+        for name in ("tempest", "carrier"):
+            fc = FlowConfig.load(name)
+            self.assertIsNotNone(fc.pivot)
+            self.assertTrue(fc.pivot.rush_cannons, f"{name} rush_cannons 缺省应为 True")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

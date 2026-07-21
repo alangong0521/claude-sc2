@@ -50,21 +50,37 @@ class ChronoConfig:
 
 @dataclass(frozen=True)
 class AutoExpand:
-    """自动开矿:满足触发条件把基地扩到 to 个(缺省不开,司令 expand=yes 不受影响)。
-    触发 = at 秒到达 或 农民数 ≥ when_workers(爆仓前尽早开),先满足先触发。"""
+    """自动开矿(缺省不开,司令 expand=yes 不受影响)。两种模式:
+    旧式(stalker):at 秒到达 或 农民数 ≥ when_workers 触发,一次扩到 to 个;
+    动态(carrier,配了 max_bases):爆仓(农民 ≥ when_workers×当前基地数)或
+    前线优势(我方 army supply ≥ 敌可见 army supply + advantage_supply)时
+    逐矿 +1,上限 max_bases,rush_active 期间不开。"""
     at: float = 0.0
     to: int = 2
-    when_workers: int = 0   # >0:农民达到它也触发(0=只看时间)
+    when_workers: int = 0      # 旧式:触发农民数(0=只看时间);动态:每矿饱和农民数
+    max_bases: int = 0         # >0 走动态模式,基地数上限
+    advantage_supply: int = 0  # 动态:我方 army supply 领先敌可见 army supply 此值 → 提前开
+
+
+@dataclass(frozen=True)
+class ExpansionCannons:
+    """分矿塔防估算:photon_cannons_per_base = clamp(min, min + 敌可见作战单位//4, max)。
+    min 是保守线(给回援争取时间),max 封顶防塔烧钱拖垮经济。"""
+    min: int = 3
+    max: int = 8
 
 
 @dataclass(frozen=True)
 class PivotConfig:
     """自适应 pivot(反rush/反空军):对面爆空军 → spawn 混入 anti_air_units;
-    rush 检测成立 → 先出 rush_zealots 个叉子顶 + 全军守家,威胁解除自动恢复。"""
+    rush 检测成立 → 先出 rush_zealots 个叉子顶 + 全军守家,威胁解除自动恢复。
+    rush_cannons(E1 实验开关):rush 预警时是否提前铺塔(默认 true=现状臂 A;
+    false=臂 B 纯叉子不铺塔;臂 C 纯塔 = rush_zealots: 0 + rush_cannons: true)。"""
     anti_air_units: tuple[str, ...] = ()
     anti_air_proportion: float = 0.0
     anti_air_trigger: int = 3
     rush_zealots: int = 0
+    rush_cannons: bool = True
 
 
 @dataclass
@@ -81,6 +97,8 @@ class FlowConfig:
     auto_expand: AutoExpand | None = None  # 自动开矿(None=关)
     freeflow: bool = False       # SpawnController.freeflow_mode:不按配比卡产(多兵种流派必开)
     pivot: PivotConfig | None = None  # 自适应机制(反rush/反空军),None=关
+    save_up: int = 0             # O5 憋气机制:p0 气缺口 ≤N 时截断低优先生成攒气(0=关)
+    expansion_cannons: ExpansionCannons | None = None  # 分矿塔数区间(None=固定 2)
 
     @classmethod
     def from_dict(cls, name: str, data: dict) -> "FlowConfig":
@@ -135,6 +153,14 @@ class FlowConfig:
             auto_expand = AutoExpand(
                 float(ae_raw.get("at", 0.0)), int(ae_raw.get("to", 2)),
                 int(ae_raw.get("when_workers", 0)),
+                int(ae_raw.get("max_bases", 0)),
+                int(ae_raw.get("advantage_supply", 0)),
+            )
+        ec_raw = data.get("expansion_cannons")
+        expansion_cannons = None
+        if ec_raw:
+            expansion_cannons = ExpansionCannons(
+                int(ec_raw.get("min", 3)), int(ec_raw.get("max", 8)),
             )
         pv_raw = data.get("pivot") or {}
         pivot = None
@@ -146,6 +172,7 @@ class FlowConfig:
                 anti_air_proportion=float(pv_raw.get("anti_air_proportion", 0.0)),
                 anti_air_trigger=int(pv_raw.get("anti_air_trigger", 3)),
                 rush_zealots=int(pv_raw.get("rush_zealots", 0)),
+                rush_cannons=bool(pv_raw.get("rush_cannons", True)),
             )
         return cls(
             name=name, spawn=spawn, core_structures=core, upgrades=upgrades,
@@ -155,6 +182,8 @@ class FlowConfig:
             auto_expand=auto_expand,
             freeflow=bool(data.get("freeflow", False)),
             pivot=pivot,
+            save_up=int(data.get("save_up", 0) or 0),
+            expansion_cannons=expansion_cannons,
         )
 
     @classmethod

@@ -6,9 +6,10 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 - `ares-bot/ares-sc2/`：ares 框架（本地子包，**尽量不改，用其原语**）
 - `steer_cli.py` / `bot/steer_vocab.py`：参谋长指挥 CLI + 命令词表（单一真相源）
 - 参谋长玩法见 `.claude/skills/sc2-claude/SKILL.md`；流派档案见 `ares-bot/build_meta.md`
+- `docs/battle-log.md`：司令观战问题记录，局中只记录，**打完统一优化**
 
 ## 流派（BUILD env，开局前锁定）
-`BUILD=tempest|stalker|carrier`，**启动参数**，不能局中换。流派配置在 `ares-bot/flows.yml`（spawn/科技链/升级/chrono/追加产能/一次性建造，单一真相源），加载/校验在 `bot/flow_config.py`。
+`BUILD=tempest|stalker|carrier`，**启动参数**，不能局中换。流派配置在 `ares-bot/flows.yml`（spawn/科技链/升级/chrono/追加产能/一次性建造/save_up 憋气/动态开矿/分矿塔数，单一真相源），加载/校验在 `bot/flow_config.py`。
 - `run.py` 在 `import bot.main` **之前** setdefault BUILD 并调 `FlowConfig.load` 归一（未知名警告并回退 tempest）；`production_manager` 在 `__init__` 才读，不再模块级锁定。
 - 切换：`BUILD=carrier poetry run python run.py`（在 `ares-bot/` 下）。
 
@@ -19,7 +20,7 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 - **`bot/steer_vocab.py`** — 命令词表（`FIELDS` + `_FIELD_VALUES`），bot 和 steer_cli 共用，加命令只改这里。
 
 ## ares 原语（优先复用，不改框架）
-- `UpgradeController(upgrades, base_location)` — 自动 `TechUp` 建科技建筑 + 研究 + 打 `logger.info`。
+- `UpgradeController(upgrades, base_location)` — 研究升级 + 打 `logger.info`。**神族路径用 `auto_tech_up_enabled=False`**：前置科技建筑改由 `_build_core_structure`（can_afford 守卫）补建，否则 ares `TechUp` 不查存款就把农民钉在建造点干等（O1 实证）。
 - `ProtossStaticDefence(photon_cannons_per_base, shield_batteries_per_base, ...)` — 自动每基地铺 pylon+光子炮+护盾电池 + 建 forge。
 - `SpawnController(army_composition_dict, spawn_target=)` — 造兵，`spawn_target` 控折跃位置（WarpInManager 按距离选最近电源）。
 - `TechUp(desired_tech)` — 自动补兵种所需科技建筑。
@@ -40,16 +41,41 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 - **F2 防御塔**：注册 `ProtossStaticDefence(photon_cannons_per_base=2, shield_batteries_per_base=1)`，`_should_build_defense`（`defend=yes` 手动 / >6 分钟自动）。steer_vocab 加 `defend` 字段。
 - **F3 微操 6 项**（`stalker_offensive.py`）：①blink 帧先 `AttackTarget` ②够不着改 `PathUnitToTarget` 追击（原 StutterUnitBack 后撤是 bug）③全队集火同一 target ④进攻型 blink（残血/高价值 caster 贴脸）⑤blink 躲技能（检测 HIGHTEMPLAR/INFESTOR 等）⑥射程点杀保持阵型。门限改 `@dataclass` 字段，默认 `focus=weakest`。
 
+## 开局流程（每次跑局前必做）
+
+启动前检查清单（每次跑局前必做）：
+
+1. **血条设置**：确认 `~/Library/Application Support/Blizzard/StarCraft II/Variables.txt` 里
+   `displayunitstatus=Damaged`（不是就改过来再启动；客户端有时会被局内操作改回别的值）。
+2. **请示司令**：用结构化提问逐项确认五项（AskUserQuestion，每项给选项），按选项组装环境变量启动。
+   提问工具每题限 4 个选项，**难度和风格必须列全，用两段问法**：
+   - 难度（从 Hard 起步往上问全）：第 1 题 `Hard / Harder / VeryHard / Cheat 档`，
+     选 Cheat 档再问第 2 题 `CheatVision / CheatMoney / CheatInsane`；
+     司令想要更低难度走 Other 自填。
+   - 风格（5 种 + 随机列全）：第 1 题 `Macro / Rush / Timing / 其他`，
+     选其他再问第 2 题 `Power / Air / 随机(RandomBuild)`。
+
+| 项 | 环境变量 | 选项 |
+|---|---|---|
+| 流派 | `BUILD` | `tempest`（最强，认证至 CheatInsane）/ `carrier`（认证至 VeryHard）/ `stalker`（攻坚中，0 胜率） |
+| 难度 | `DIFF` | Hard / Harder / VeryHard / CheatVision / CheatMoney / CheatInsane（更低档 VeryEasy~MediumHard 不常问，司令自填） |
+| 对手种族 | `OPPONENT_RACE` | Terran / Zerg / Protoss / Random |
+| 对手风格 | `AI_BUILD` | Macro / Rush / Timing / Power / Air / RandomBuild（随机） |
+| 地图 | `MAP` | 随机（**排除 HonorgroundsLE**）/ AbyssalReefLE（baseline 固定图）/ BelShirVestigeLE / CactusValleyLE（4 人混战图）/ NewkirkPrecinctTE / PaladinoTerminalLE / ProximaStationLE（⚠️ HonorgroundsLE 会崩 PlacementManager，勿选） |
+
+示例：`REALTIME=True BUILD=carrier MAP=AbyssalReefLE DIFF=Medium OPPONENT_RACE=Random AI_BUILD=Macro poetry run python run.py`
+
 ## 约束 / 踩过的坑
 - **升级改动走 `flows.yml` 的 flow.upgrades**（神族生产已不读 `DESIRED_UPGRADES`，该常量已删）；`army_composition.yml` 的 protoss.upgrades 仍被 `tests/test_army_config.py::test_shipped_protoss_upgrades_unchanged` 锁（T/Z 路径还在读它）；flows.yml 的 tempest/stalker 块被 `tests/test_flow_config.py` 的 shipped 测试冻结。
 - **spawn 比例和必须 ≈ 1.0**——`flows.yml` 与 `army_composition.yml` 同一约束（加载时各自校验）。
 - **ares-sc2 是本地包**——`import ares` 需 `sys.path` 加 `ares-sc2/src`（`run.py:14-16`）；离线编译检查也要加。
 - **headless `websocket 超时`**——SC2 更新中 / 冷启动慢会导致；用 REALTIME 或等 SC2 ready。headless 本环境不稳，优先 REALTIME。
 - **SC2 补丁日首发失败**（2026-07-18 实证）：当天补丁（如 Base97563）后 SC2 二进制能起进程但**不开 websocket、不出窗口、静默退出**，新旧 build 都一样 → 不是 bot 问题，去 Battle.net 让它完成更新 / 「扫描和修复」，确认手动能进游戏后再跑 bench。排查手法：直启二进制 `-listen 127.0.0.1 -port <p>` + `lsof -iTCP:<p> -sTCP:LISTEN`；多实例互斥会互相踢，先 `pkill -9 -x SC2` 再测。
-- **idle 农民**：ares 框架层 `BuildStructure.execute` 不查 `can_afford`（bot 层加守卫根治，不改框架）。另有 `main._handle_idle_workers` 每 2 秒兜底清扫无命令农民（跳过侦查/司令接管）。
+- **idle 农民**：ares 框架层 `BuildStructure`/`TechUp` 不查 `can_afford`（bot 层加守卫根治：BuildStructure 注册点 + 升级前置建筑全走 `_build_core_structure`）。另有 `main._handle_idle_workers` 每 1 游戏秒兜底清扫（跳过侦查/司令接管/building_tracker 里的建造工人——扫了会和 BuildingManager 对抢）。**司令接管**靠的是 PERSISTENT_BUILDER role + `release_from_build_tracker` 摘除 ares building_tracker（BuildingManager 无视 role，只换 role 抢不回单位，O2 实证）。
 - **bot 局小地图点击"失灵"**（2026-07-19 结案）：四层叠加——①窗口非键窗时点击被当"激活"吞掉（先点主画面）；②AI 投降弹窗是模态框挡全部输入（gg 聊天型 bench 自动点 Yes；静默型手动点）；③全速模拟下离散点击被间歇性丢弃；④**主因:并行车道新局开窗每几分钟抢一次键窗,观看窗口被降级,点击被当激活吞掉(开窗期失灵、安静期好使)**。**观察方案:`sc2cam <left|right|top|bottom|center>`(~/.kimi-code/bin/,合成点击切镜头,可靠),或边缘平移(可在游戏内调低滚动速度)**。判别手法：手动开一局 vs AI 能点 = bot 局特有。
 - **warpgate 必须自己变形**：`SpawnController.execute` 在 WARPGATERESEARCH 完成后**停产等 gateway 变形**（`return False`），而 ares 没有变形行为——不自己下 `MORPH_WARPGATE` 就永久停产（`production_manager._morph_gateways` 根治）。
-- **多兵种 SpawnController 必开 freeflow**：配比是**上限**不是目标——精确配比点全兵种都 ≥ 目标 → 全停产（配比死锁）；且 freeflow 下**首优先兵种若永远可负担会饿死其他兵种**（C5a 实证：zealot p0 → 0 追猎）。单兵种流派靠 `over_produce_on_low_tech` 豁免不用开。
+- **多兵种 SpawnController 必开 freeflow**：配比是**上限**不是目标——精确配比点全兵种都 ≥ 目标 → 全停产（配比死锁）；且 freeflow 下**首优先兵种若永远可负担会饿死其他兵种**（C5a 实证：zealot p0 → 0 追猎）。单兵种流派靠 `over_produce_on_low_tech` 豁免不用开。freeflow 的镜像坑：p0 **买不起**就 fall-through 喂饱 p1（O5 实证：风暴吃光气攒不出航母）→ carrier 用 `save_up` 憋气机制（`production_plans.save_up_spawn`）截断。
+- **carrier 动态多矿（E2）**：`auto_expand` 配 `max_bases` 走动态模式——爆仓（农民 ≥ `when_workers`×基地数）或前线优势（我方 army supply ≥ 敌可见 + `advantage_supply`）逐矿 +1，rush 期间不开；`expansion_cannons` 让 `ProtossStaticDefence` 塔数动态（`min + 敌可见作战单位//4`，封顶 `max`，每帧重算）；星门追加有气体闸门（目标 = min(cap, 满采气基地数 + 1)，满采=该基地 2 个 ready assimilator；+1 因气有存款可爆兵、风暴耗气更慢——司令 2026-07-21 口径）。旧式 `auto_expand {at,to,when_workers}`（stalker）不受影响。
 - **steer 一次性 vs 粘性**：`build`/`expand`/`scout` 一次性（重下 no-op，要 `clear` 再下）；其余粘性。`clear` 清**全部**字段（无单 key clear）。
 
 ## 验证

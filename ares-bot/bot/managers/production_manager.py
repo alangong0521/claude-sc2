@@ -30,7 +30,15 @@ from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
 from sc2.units import Units
 
-from bot.production_plans import gas_target, worker_target
+from bot.production_plans import (
+    expansion_cannon_count,
+    gas_gated_stargate_target,
+    gas_target,
+    save_up_spawn,
+    should_expand_dynamic,
+    upgrade_tech_buildings,
+    worker_target,
+)
 
 if TYPE_CHECKING:
     from ares import AresBot
@@ -130,10 +138,19 @@ class ProductionManager(Manager):
         self.ai.register_behavior(macro_plan)
 
         # F2: 按局势铺防御塔(B+F+Cannon)——框架自动建 forge + 光子炮 + 护盾电池并补前置科技。
+        # E2: 配了 expansion_cannons 的流派塔数动态化(min + 敌可见作战单位//4,封顶 max),
+        # 每帧重算重注册,ProtossStaticDefence 参数本就支持每帧变。
         if self._should_build_defense(_order):
+            ec = self._flow.expansion_cannons
+            cannons = (
+                2 if ec is None
+                else expansion_cannon_count(
+                    ec.min, ec.max, self._visible_enemy_army_count()
+                )
+            )
             self.ai.register_behavior(
                 ProtossStaticDefence(
-                    photon_cannons_per_base=2,
+                    photon_cannons_per_base=cannons,
                     shield_batteries_per_base=1,
                 )
             )
@@ -156,11 +173,23 @@ class ProductionManager(Manager):
         self._spend_bank()  # Q3:存款淤积时换成开矿/追加产能,经济优势→战场优势
         self._build_forward_pylon()  # F1: 前线水晶塔(投送),各流派共用
         self._chrono_structures()
-        # 升级交 ares UpgradeController（自动建 FORGE/TWILIGHTCOUNCIL 等前置 + 研究 + 打日志）。
+        # 升级：研究交 ares UpgradeController，但前置科技建筑不走它的 auto tech-up ——
+        # ares TechUp 不查 can_afford 就派农民（O1 实证：开局每帧刷 Building FORGE
+        # for PROTOSSSHIELDSLEVEL1，农民钉在建造点干等 150 矿）。研究建筑里 core_structures
+        # 没覆盖的（如 FORGE），改由带 can_afford 守卫的 _build_core_structure 补建；
+        # 已覆盖的走 _build_flow_structures（保留 FLEETBEACON 需就绪星门的特判）。
         _upgrades = self._flow.upgrade_ids()
         if _upgrades:
+            _covered = set(self._flow.core_structure_ids())
+            for _tech_building in upgrade_tech_buildings(_upgrades):
+                if _tech_building not in _covered:
+                    await self._build_core_structure(_tech_building)
             self.ai.register_behavior(
-                UpgradeController(_upgrades, base_location=self.ai.start_location)
+                UpgradeController(
+                    _upgrades,
+                    base_location=self.ai.start_location,
+                    auto_tech_up_enabled=False,
+                )
             )
 
         # one off task to build an oracle（流派配置里 one_off 含 ORACLE 才造；
@@ -265,6 +294,11 @@ class ProductionManager(Manager):
             self.ai.mediator.assign_role(tag=w.tag, role=UnitRole.SCOUTING)
             w.move(enemy_main)
 
+    @property
+    def rush_active(self) -> bool:
+        """rush 检测是否成立。combat 守家、O4 侦查农民撤回都读它。"""
+        return self._rush_active
+
     def _update_rush_state(self) -> None:
         """pivot·rush 检测与解除。判据(2026-07 初版):
         ≥2 敌作战单位压到家 40 格内(沿用 F2) 或 4 分钟前敌可见兵力 ≥6(兵力异常=快攻)。
@@ -323,15 +357,61 @@ class ProductionManager(Manager):
                     spawn[uid] = {
                         "proportion": pv.anti_air_proportion, "priority": 0,
                     }
+            return self._apply_save_up(spawn)
+        return self._apply_save_up(self._flow.spawn_dict())
+
+    def _apply_save_up(self, spawn: dict) -> dict:
+        """O5 憋气机制(方案 b):spawn dict 喂 SpawnController 前过 save_up_spawn。
+        freeflow 下 p0(航母)买不起就会被 p1(风暴)fall-through 吃掉每一滴气,
+        永远攒不出 250 气 —— 这里按占比/气缺口动态截断低优先兵种。
+        阈值 = flows.yml 的 save_up(气缺口,0=关);单兵种配方无需处理直接返回。"""
+        gap = self._flow.save_up
+        if not gap or len(spawn) < 2:
             return spawn
-        return self._flow.spawn_dict()
+        return save_up_spawn(
+            spawn,
+            counts={
+                uid: self.manager_mediator.get_own_unit_count(unit_type_id=uid)
+                for uid in spawn
+            },
+            affordable={uid: self.ai.can_afford(uid) for uid in spawn},
+            gas_gap={
+                uid: max(0, self.ai.calculate_cost(uid).vespene - self.ai.vespene)
+                for uid in spawn
+            },
+            buildable={uid: self.ai.tech_ready_for_unit(uid) for uid in spawn},
+            max_gas_gap=gap,
+        )
 
     def _auto_expand(self, macro_plan: MacroPlan) -> None:
-        """自动开矿(flows.yml auto_expand,缺省关):满足触发把基地扩到 to 个。
-        触发 = 到 at 秒 或 农民 ≥ when_workers(爆仓前尽早开,Q3 司令要求),先满足先触发。
-        地面消耗流的命脉;天空流不开。与司令 expand=yes 杠杆不冲突:到数后自然停。"""
+        """自动开矿(flows.yml auto_expand,缺省关)。两种模式:
+        旧式(stalker,没配 max_bases):到 at 秒 或 农民 ≥ when_workers 触发,一次扩到 to 个;
+        动态(carrier,配了 max_bases):爆仓(农民 ≥ when_workers×当前基地数)或
+        前线优势(我方 army supply ≥ 敌可见 army supply + advantage_supply)时逐矿 +1,
+        rush_active 期间不开(E2,司令:有能力开到 4 矿,不设死 2 矿)。
+        与司令 expand=yes 杠杆不冲突:到数后自然停。"""
         ae = self._flow.auto_expand
-        if ae is None or self.ai.townhalls.amount >= ae.to:
+        if ae is None:
+            return
+        if ae.max_bases:
+            if should_expand_dynamic(
+                bases=self.ai.townhalls.amount,
+                max_bases=ae.max_bases,
+                nexus_pending=self.manager_mediator.get_building_counter[UnitID.NEXUS],
+                supply_workers=self.ai.supply_workers,
+                workers_per_base=ae.when_workers,
+                own_army_supply=self.ai.supply_used - self.ai.supply_workers,
+                enemy_army_supply=self._visible_enemy_army_supply(),
+                advantage_supply=ae.advantage_supply,
+                rush_active=self._rush_active,
+            ):
+                macro_plan.add(
+                    ExpansionController(
+                        to_count=self.ai.townhalls.amount + 1, max_pending=1
+                    )
+                )
+            return
+        if self.ai.townhalls.amount >= ae.to:
             return
         triggered = self.ai.time >= ae.at or (
             ae.when_workers and self.ai.supply_workers >= ae.when_workers
@@ -339,6 +419,23 @@ class ProductionManager(Manager):
         if not triggered:
             return
         macro_plan.add(ExpansionController(to_count=ae.to, max_pending=1))
+
+    def _visible_enemy_army_supply(self) -> float:
+        """敌可见作战单位的 supply 合计(E2 优势判据;排除农民/建筑,与 rush 判据同源)。"""
+        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        return sum(
+            self.ai.calculate_supply_cost(u.type_id)
+            for u in self.ai.enemy_units
+            if not u.is_structure and u.type_id not in workers
+        )
+
+    def _visible_enemy_army_count(self) -> int:
+        """敌可见作战单位数(E2 分矿塔数估算;口径同 _visible_enemy_army_supply)。"""
+        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        return sum(
+            1 for u in self.ai.enemy_units
+            if not u.is_structure and u.type_id not in workers
+        )
 
     def _ensure_townhall(self) -> None:
         """保底主基地(Q4,全流派):基地被打爆到 0 时,出生点矿区还有价值(有矿)且脚下
@@ -505,7 +602,11 @@ class ProductionManager(Manager):
     def _build_extra_production(self, structures_dict: dict[UnitID, list[Unit]]) -> None:
         """矿有富余时按流派配置追加产兵建筑（治"矿堆花不出去"）。
         得先有第一个同类建筑（核心科技就位）才追加。GATEWAY 特例:升级成 WARPGATE
-        后类型变了,两者都算产能。"""
+        后类型变了,两者都算产能。
+        E2 气体闸门:星门目标数 = min(cap, 满采气基地数 + 1)——1 个满采气基地(2 个
+        ready assimilator)≈ 养 1 个星门全力产航母;+1 是司令口径(气有存款可爆兵、
+        风暴耗气更慢,产能可略超稳态气收入)。超出的不加
+        (单矿 cap 6 是摆设,瓶颈是气;存款改由 _spend_bank/动态开矿去开矿)。"""
         ep = self._flow.extra_production
         if ep is None:
             return
@@ -517,7 +618,15 @@ class ProductionManager(Manager):
             have_structures += structures_dict[UnitID.WARPGATE]
         if not have_structures:
             return
-        desired = min(ep.cap, ep.base + self.ai.townhalls.ready.amount)
+        if sid == UnitID.STARGATE:
+            gas_per_base = [
+                self.ai.gas_buildings.filter(lambda g: g.is_ready)
+                .closer_than(12, th).amount
+                for th in self.ai.townhalls.ready
+            ]
+            desired = gas_gated_stargate_target(ep.cap, gas_per_base)
+        else:
+            desired = min(ep.cap, ep.base + self.ai.townhalls.ready.amount)
         have = len(have_structures) + self.manager_mediator.get_building_counter[sid]
         if (
             have < desired
@@ -579,11 +688,16 @@ class ProductionManager(Manager):
 
     def _should_build_defense(self, order: dict) -> bool:
         """F2: 是否铺防御塔(B+F+Cannon)。判据: 司令下令 defend=yes / 中后期(>6分钟)自动铺 /
-        rush 预警(Q6:6 分钟内 ≥2 个敌作战单位压到家门口 40 格 → 提前铺,农民侦查不算)。"""
+        rush 预警(Q6:6 分钟内 ≥2 个敌作战单位压到家门口 40 格 → 提前铺,农民侦查不算)。
+        E1: rush 预警这条受 pivot.rush_cannons 开关控制(false = 臂 B 纯叉子不铺塔;
+        defend=yes 和 6 分钟自动铺不受影响,司令始终能手动铺)。"""
         if order.get("defend") == "yes":
             return True
         if self.ai.time > 360:  # 6 分钟后自动铺防御
             return True
+        pv = self._flow.pivot
+        if pv is not None and not pv.rush_cannons:
+            return False
         home = self.ai.start_location
         workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
         attackers = sum(

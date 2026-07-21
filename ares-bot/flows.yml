@@ -17,11 +17,27 @@
 #   one_off:          一次性建造(如 ORACLE,需舰队航标+空闲就绪星门,造一个即停)
 #   rally_min_army:   集结阈值(整数,缺省 0=关)。>0 时,兵力低于它且司令没下 stance
 #                     命令,部队先守家攒兵不主动压上(治 trickle-feed 分批送死)
-#   auto_expand:      {at: 秒, to: 基地数}(缺省关)。到点自动把基地扩到 to 个
-#                     (地面消耗流的命脉;天空流不开,维持已验证的单矿打法)
+#   auto_expand:      两种模式(缺省关)。旧式 {at, to, when_workers}:到点扩到 to 个;
+#                     动态 {max_bases, when_workers, advantage_supply}(E2,carrier):
+#                     爆仓(农民 ≥ when_workers×基地数)或前线优势(我方 army supply ≥
+#                     敌可见 + advantage_supply)时逐矿 +1,上限 max_bases,rush 期间不开
+#   expansion_cannons: {min, max}(缺省无=固定 2 塔/矿)。E2 分矿塔数动态:
+#                     photon_cannons_per_base = clamp(min, min + 敌可见作战单位//4, max)
 #   freeflow:         true|false(缺省 false)。true = SpawnController 不按配比卡产
 #                     (配比只当优先序不当上限)——多兵种流派必开,否则兵力在
 #                     精确配比点永久死锁(单兵种流派靠 over_produce 豁免,不用开)
+#   pivot:            自适应机制(缺省关)。字段:
+#                       anti_air_units/anti_air_proportion/anti_air_trigger:
+#                         敌可见空军 ≥trigger 时 spawn 混入对空兵种
+#                       rush_zealots: rush 检测成立时先顶出的叉子数(0=不出叉子,臂 C)
+#                       rush_cannons: true|false(缺省 true)。rush 预警时是否提前铺塔
+#                         —— E1 实验开关:臂 A=4叉+铺塔(默认),臂 B=rush_cannons: false
+#                         (纯叉子不铺塔),臂 C=rush_zealots: 0(只铺塔憋航母)
+#   save_up:          憋气阈值(整数气,缺省 0=关)。O5:freeflow 下 p0 买不起会被
+#                     p1 fall-through 吃掉气,永远攒不出 p0。>0 时:p0 占比落后且
+#                     (买得起 或 气缺口 ≤ 此值) → 截断低优先生成攒气;p0 占比 ≥ 配比
+#                     → p0 让位,p1 照常补位。阈值建议 ≥ p0 气价 - p1 气价
+#                     (航母 250/风暴 175 → 250 即"占比落后就全力攒")
 #
 # ⚠️ tempest/stalker 两块与已验证行为逐位一致,勿轻改(有 shipped 测试冻结,见
 #    tests/test_flow_config.py)。战斗侧指挥不读本文件 —— CombatManager 按
@@ -80,6 +96,11 @@ flows:
     chrono: {targets: [STARGATE], when: primary_pending}
     one_off: [ORACLE]
     freeflow: true
+    save_up: 250                    # O5 憋气:航母占比落后时截断风暴生成,攒气等航母
+    # E2 动态开矿(司令:有能力开到 4 矿):爆仓(农民 ≥ 22×基地数)或
+    # 前线优势(我方 army supply ≥ 敌可见 + 12)时逐矿 +1,rush 期间不开
+    auto_expand: {max_bases: 4, when_workers: 22, advantage_supply: 12}
+    expansion_cannons: {min: 3, max: 8}   # E2 分矿塔数区间:3 + 敌可见作战单位//4,封顶 8
     pivot:                          # 自适应机制(反rush/反空军,2026-07 迭代)
       anti_air_units: [STALKER]
       anti_air_proportion: 0.3

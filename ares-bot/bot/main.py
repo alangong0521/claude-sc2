@@ -4,6 +4,7 @@ from typing import Optional
 
 from ares import AresBot, Hub, ManagerMediator
 from ares.behaviors.macro import Mining
+from ares.consts import ID as TRACKER_ID
 from ares.consts import UnitRole
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
@@ -16,9 +17,46 @@ from bot.managers.production_manager import ProductionManager
 
 # 每隔几游戏秒发布 state.json + 读 orders.json
 _STEER_EVERY: float = 4.0
+
+
+def release_from_build_tracker(mediator, tag: int) -> bool:
+    """把工人从 ares 建造追踪（building_tracker）里摘除 —— 司令接管时调用。
+
+    ares BuildingManager 每帧对 tracker 里的工人下 move/build 命令，**无视 role**
+    （O2 实证：只把工人挪去 PERSISTENT_BUILDER，下一帧又被拉回建造点，司令抢不回来）。
+    摘除后 BuildingManager 彻底放手，生产侧下帧会自动用别的矿工重新派建。
+    镜像 ares `BuildingManager.remove_unit` 的计数维护，但不动 role（接管逻辑自己管）。
+    纯记账操作，可单测。"""
+    tracker: dict = mediator.get_building_tracker_dict
+    if tag not in tracker:
+        return False
+    mediator.get_building_counter[tracker[tag][TRACKER_ID]] -= 1
+    tracker.pop(tag)
+    return True
+
+
+def recall_scouting_workers(ai) -> int:
+    """rush 确认后立即撤回全部侦查农民（O4）—— role 归 GATHERING 并派回最近矿脉。
+
+    scout 是一次性指令（探完才自己回家），rush 征兆确认后农民还留在敌家等于白送。
+    复用 pivot 的 rush 检测信号（production_manager.rush_active），不新造判据。
+    steer scout 和 pivot 早侦查派出的农民都是 SCOUTING role，一处全覆盖。
+    返回撤回数量（0 = 没有侦查农民在外，调用方据此只记一次事件）。纯操作函数，可单测。"""
+    scouts = ai.mediator.get_units_from_role(role=UnitRole.SCOUTING)
+    if not scouts:
+        return 0
+    for s in scouts:
+        ai.mediator.assign_role(tag=s.tag, role=UnitRole.GATHERING)
+        if ai.mineral_field:
+            s.gather(ai.mineral_field.closest_to(s))
+    return len(scouts)
+
+
 # 人机共驾：司令一旦亲手操作某单位，bot 让权 N 游戏秒；期间不再自动指挥它，
 # N 秒内没有新手操 → 自动收回控制权。停放在 PERSISTENT_BUILDER（"不自动重指派"）role，
-# combat/oracle/mining 都按 role 选单位，自然全部跳过它 → 各 manager 零改动。
+# combat/oracle/mining 都按 role 选单位，自然全部跳过它；唯一例外是 ares
+# BuildingManager（按 building_tracker 记账、无视 role）→ 接管时用
+# release_from_build_tracker 把它从 tracker 摘除（O2 修复）。
 _PLAYER_YIELD: float = 3.0
 
 
@@ -55,7 +93,7 @@ class MyBot(AresBot):
         self._enemy_seen_types: dict[str, set] = {}
         # 人机共驾·让权：tag -> {"until": 归还时间, "role": 接管前的原 role 名}
         self._player_ctrl: dict[int, dict] = {}
-        # 闲置农民清扫的时间戳(每 2 游戏秒扫一次)
+        # 闲置农民清扫的时间戳(每 1 游戏秒扫一次)
         self._last_idle_sweep: float = -10.0
         # 敌方打出 gg(投降意向)检测,一局只记一次
         self._enemy_gg: bool = False
@@ -72,6 +110,17 @@ class MyBot(AresBot):
         self._handle_idle_workers()
 
         await self.production_manager.update(iteration)
+
+        # O4: rush 检测成立 → 侦查农民立刻放弃探路回家采矿（rush 局白送农民雪上加霜）。
+        # role 归 GATHERING 后下帧起 recall 返回 0，事件只记一次；
+        # steer scout 的 _scout_tag 一并清掉（防 _handle_scout 把撤回农民再派出去），
+        # _scout_done 置 True 保持"不补派"语义。
+        if self.production_manager.rush_active and recall_scouting_workers(self):
+            self._scout_tag = None
+            self._scout_done = True
+            self._events.append(
+                {"t": round(self.time, 1), "msg": "确认rush,侦查农民撤回(O4)"}
+            )
 
         # Q5 早负判负(bench 省垃圾时间):前 10 分钟基地全没 → 投降离场。
         # 与 _ensure_townhall 互补:10 分钟后才谈重建;早期被打穿没有翻盘点。
@@ -140,16 +189,21 @@ class MyBot(AresBot):
     def _handle_idle_workers(self) -> None:
         """闲置农民清扫(司令观察实证):除被司令接管(PERSISTENT_BUILDER)/侦查(SCOUTING)
         的之外,任何无命令农民立刻派回最近矿脉,role 归 GATHERING。
-        ares Mining 只管 GATHERING role,建造卡死/被打散的农民会闲置漏网,这里兜底,
-        每 2 游戏秒扫一次。正在跑路的建造农民有命令不在 workers.idle 里,不受影响。"""
-        if self.time - self._last_idle_sweep < 2.0:
+        ares Mining 只管 GATHERING role;且矿线饱和时 freed 建造农民在 ares 长距离采矿里
+        找不到"空闲矿脉"拿不到命令 —— 这里兜底,每 1 游戏秒扫一次(O3:2 秒显得"傻等")。
+        跳过 ares building_tracker 里的建造农民:他们是 BuildingManager 的责任,扫了会
+        和 BuildingManager 每帧的 move 命令对抢(O1  ping-pong 根因之一)。"""
+        if self.time - self._last_idle_sweep < 1.0:
             return
         self._last_idle_sweep = self.time
         if not self.mineral_field:
             return
+        tracker = self.mediator.get_building_tracker_dict
         for w in self.workers.idle:
             role = self._current_role(w.tag)
             if role in (UnitRole.SCOUTING.name, UnitRole.PERSISTENT_BUILDER.name):
+                continue
+            if w.tag in tracker:
                 continue
             self.mediator.assign_role(tag=w.tag, role=UnitRole.GATHERING)
             w.gather(self.mineral_field.closest_to(w))
@@ -190,6 +244,11 @@ class MyBot(AresBot):
             if not already:
                 prev = self._current_role(tag)
                 self.mediator.assign_role(tag=tag, role=UnitRole.PERSISTENT_BUILDER)
+                # O2: 若它正被 ares 派去造建筑（在 building_tracker 里），必须从
+                # tracker 摘除 —— 否则 BuildingManager 每帧无视 role 继续给它下
+                # move/build 命令，与司令指令对抢，救不回来。摘除后生产侧下帧自动
+                # 换别的矿工重派同一建筑。
+                release_from_build_tracker(self.mediator, tag)
                 self._player_ctrl[tag] = {"role": prev, "until": now + _PLAYER_YIELD}
                 self._events.append(
                     {"t": round(now, 1), "msg": f"司令接管 {u.type_id.name}"}
