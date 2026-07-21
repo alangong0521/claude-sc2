@@ -64,6 +64,7 @@ promotion.py 逐档打穿「3 族 × 5 风格」矩阵，失败重打一轮，�
 | Q2 | 2026-07-19 | 「闲置农民清扫后无命令农民 ≤ 极个别(远途建造中)」 | `main._handle_idle_workers()`：每 2 游戏秒扫 `workers.idle`（跳过侦查/司令接管），派回最近矿脉 + 归 GATHERING | （待 smoke） | （机制已落地，B4 后续局即生效） | （待填） |
 | Q3 | 2026-07-19 | 「爆仓前尽早开二矿（农民 ≥18 或 150s，先到先触发）」 | flows.yml stalker `auto_expand: {at: 150, to: 2, when_workers: 18}` + `AutoExpand.when_workers` | （待 smoke） | （机制已落地） | （待填） |
 | Q4 | 2026-07-19 | 「基地被打爆到 0 且有矿区价值时自动重建，全局至少 1 基地」 | `production_manager._ensure_townhall()`：0 基地 + 出生点有矿 + 无敌军压场 → 重建（全流派） | （待 smoke） | （机制已落地） | （待填） |
+| A1 | 2026-07-21 | 「pivot 自适应（早侦查/rush 响应包=叉子顶+铺塔+守家/反空军混追猎）能破 Rush 墙和对空墙」 | flows.yml `pivot:` 块 + `_early_scout/_update_rush_state/_effective_spawn` + combat 守家联动 | pivot3-tempest-ci-zerg-rush（N=3）+ pivot3-carrier-vh-protoss-air（N=3） | tempest **1-2**（此前两轮 0/4，首胜 cheat-rush：先出 4 叉顶住再天空体滚雪球）；carrier **3-0 全穿**（此前 0/4，反空军混编直接拆墙） | **留**（两堵墙均破；其余墙组合按 promotion 续打验证） |
 
 ### 后续假设候选（按优先级）
 
