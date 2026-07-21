@@ -74,6 +74,10 @@ class ProductionManager(Manager):
         # 一次性锁定：记下"目标数量"，造到就停；想再造先 clear 再下（同 scout 手感）。
         self._build_key: str | None = None
         self._build_target: int | None = None
+        # pivot 自适应状态(反rush/反空军)
+        self._early_scout_done: bool = False
+        self._rush_active: bool = False
+        self._rush_clear_since: float | None = None
         # 流派配置(flows.yml,神族生产侧单一真相源);Terran/Zerg 路径不走它。
         self._flow: FlowConfig = FlowConfig.load(os.environ.get("BUILD"))
         # 兵种组成注册表(army_composition.yml):Terran/Zerg 路径的 spawn/升级从这里读,
@@ -115,7 +119,7 @@ class ProductionManager(Manager):
         # 否则兵力在精确配比点永久死锁(C3c 诊断出的 stalker 停产第二根因)。
         macro_plan.add(
             SpawnController(
-                army_composition_dict=self._flow.spawn_dict(),
+                army_composition_dict=self._effective_spawn(),
                 spawn_target=self._front_point(),  # F1: 折跃向前线(非主基地),配合前线水晶塔远程投送
                 freeflow_mode=self._flow.freeflow,
             )
@@ -142,6 +146,8 @@ class ProductionManager(Manager):
 
         self._build_probes(self.ai.ready_townhalls)
         self._ensure_townhall()  # Q4:保底主基地(被打爆到 0 且有矿区价值时重建)
+        self._early_scout()      # pivot:2分钟自动派一个探机看对面开局
+        self._update_rush_state()  # pivot:rush 检测/解除(响应包=叉子+塔+守家)
         await self._build_flow_structures(building_counter, structures_dict)
         self._morph_gateways()
         self._auto_expand(macro_plan)
@@ -247,6 +253,78 @@ class ProductionManager(Manager):
         ai.register_behavior(plan)
 
         self._build_zerg_queens()
+
+    # ────────────────────── pivot 自适应(反rush/反空军,2026-07) ──────────────────────
+    def _early_scout(self) -> None:
+        """pivot·早侦查:t≈100s 自动派一个探机看对面开局(看有没有 rush 迹象),到点撤回。"""
+        if self._early_scout_done or self.ai.time < 100:
+            return
+        self._early_scout_done = True
+        enemy_main = self.ai.focused_enemy_start()
+        if w := self.ai.mediator.select_worker(target_position=enemy_main):
+            self.ai.mediator.assign_role(tag=w.tag, role=UnitRole.SCOUTING)
+            w.move(enemy_main)
+
+    def _update_rush_state(self) -> None:
+        """pivot·rush 检测与解除。判据(2026-07 初版):
+        ≥2 敌作战单位压到家 40 格内(沿用 F2) 或 4 分钟前敌可见兵力 ≥6(兵力异常=快攻)。
+        成立后:连出叉子顶(见 _effective_spawn) + F2 铺塔 + 全军守家(combat 读 _rush_active);
+        40 格内无敌 60 秒后自动解除,恢复正常生产/进攻。"""
+        if self._flow.pivot is None:
+            return
+        home = self.ai.start_location
+        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        near = sum(
+            1 for u in self.ai.enemy_units
+            if not u.is_structure and u.type_id not in workers
+            and u.position.distance_to(home) < 40
+        )
+        early_swarm = (
+            self.ai.time < 240
+            and sum(1 for u in self.ai.enemy_units
+                    if not u.is_structure and u.type_id not in workers) >= 6
+        )
+        if near >= 2 or early_swarm:
+            self._rush_active = True
+            self._rush_clear_since = None
+            return
+        if self._rush_active:
+            if self._rush_clear_since is None:
+                self._rush_clear_since = self.ai.time
+            elif self.ai.time - self._rush_clear_since > 60:
+                self._rush_active = False
+                self._rush_clear_since = None
+
+    def _effective_spawn(self) -> dict:
+        """当前实际 spawn 配方 = 流派配方 + pivot 动态修正:
+        rush 中 → 只出叉子顶到 rush_zealots 个;对面爆空军 → 混入 anti_air_units。"""
+        pv = self._flow.pivot
+        if pv is None:
+            return self._flow.spawn_dict()
+        # rush 响应:叉子还没顶够数,全力补叉
+        if self._rush_active and pv.rush_zealots:
+            zealots = self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.ZEALOT
+            )
+            if zealots < pv.rush_zealots:
+                return {UnitID.ZEALOT: {"proportion": 1.0, "priority": -1}}
+        # 反空军 pivot:敌可见空军主力 ≥ trigger → 混入对空兵种
+        air_threat = sum(
+            1 for u in self.ai.enemy_units
+            if u.is_flying and not u.is_structure
+            and u.type_id not in (UnitID.OBSERVER, UnitID.WARPPRISM,
+                                  UnitID.MEDIVAC, UnitID.OVERSEER)
+        )
+        if air_threat >= pv.anti_air_trigger and pv.anti_air_units:
+            spawn = dict(self._flow.spawn_dict())
+            for name in pv.anti_air_units:
+                uid = getattr(UnitID, name, None)
+                if uid is not None:
+                    spawn[uid] = {
+                        "proportion": pv.anti_air_proportion, "priority": -1,
+                    }
+            return spawn
+        return self._flow.spawn_dict()
 
     def _auto_expand(self, macro_plan: MacroPlan) -> None:
         """自动开矿(flows.yml auto_expand,缺省关):满足触发把基地扩到 to 个。

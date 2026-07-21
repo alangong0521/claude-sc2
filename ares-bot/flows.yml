@@ -40,6 +40,12 @@ flows:
     extra_production: {id: STARGATE, cap: 6, base: 1}
     chrono: {targets: [STARGATE], when: primary_pending}
     one_off: [ORACLE]
+    freeflow: true
+    pivot:                          # 自适应机制(反rush/反空军,2026-07 迭代)
+      anti_air_units: [STALKER]     # 对面爆空军时混入的兵种
+      anti_air_proportion: 0.3
+      anti_air_trigger: 3           # 敌可见空军 ≥N 架触发
+      rush_zealots: 4               # rush 时先出的叉子数
 
   # 纯追猎 blink 流(骨架,待跑局验证)
   stalker:
@@ -73,3 +79,9 @@ flows:
     extra_production: {id: STARGATE, cap: 6, base: 1}
     chrono: {targets: [STARGATE], when: primary_pending}
     one_off: [ORACLE]
+    freeflow: true
+    pivot:                          # 自适应机制(反rush/反空军,2026-07 迭代)
+      anti_air_units: [STALKER]
+      anti_air_proportion: 0.3
+      anti_air_trigger: 3
+      rush_zealots: 4

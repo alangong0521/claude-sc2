@@ -160,11 +160,14 @@ class CombatManager(Manager):
     @property
     def attack_target(self) -> Point2:
         """进攻点。参谋长下了命令就听命令（覆盖默认）：
-        defend/retreat → 回家集结；attack + 语义目标 → 求解该点；否则走默认追敌逻辑。"""
+        defend/retreat → 回家集结；attack + 语义目标 → 求解该点；否则走默认追敌逻辑。
+        pivot:rush 响应期间(_rush_active)全军守家(优先级仅次于司令命令)。"""
         order = getattr(self.ai, "steer_order", None) or {}
         stance = order.get("stance")
         if stance in ("defend", "retreat"):
             return self.ai.start_location
+        if getattr(self.ai.production_manager, "_rush_active", False):
+            return self.ai.start_location  # pivot:rush 响应中,先守家
         if tgt := order.get("target"):
             if (pt := self._resolve_steer_target(tgt)) is not None:
                 return pt

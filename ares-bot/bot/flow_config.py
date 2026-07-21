@@ -57,6 +57,16 @@ class AutoExpand:
     when_workers: int = 0   # >0:农民达到它也触发(0=只看时间)
 
 
+@dataclass(frozen=True)
+class PivotConfig:
+    """自适应 pivot(反rush/反空军):对面爆空军 → spawn 混入 anti_air_units;
+    rush 检测成立 → 先出 rush_zealots 个叉子顶 + 全军守家,威胁解除自动恢复。"""
+    anti_air_units: tuple[str, ...] = ()
+    anti_air_proportion: float = 0.0
+    anti_air_trigger: int = 3
+    rush_zealots: int = 0
+
+
 @dataclass
 class FlowConfig:
     """一个流派的完整生产配置。"""
@@ -70,6 +80,7 @@ class FlowConfig:
     rally_min_army: int = 0      # 集结阈值:兵力低于它且司令没下 stance 时先守家(0=关)
     auto_expand: AutoExpand | None = None  # 自动开矿(None=关)
     freeflow: bool = False       # SpawnController.freeflow_mode:不按配比卡产(多兵种流派必开)
+    pivot: PivotConfig | None = None  # 自适应机制(反rush/反空军),None=关
 
     @classmethod
     def from_dict(cls, name: str, data: dict) -> "FlowConfig":
@@ -125,6 +136,17 @@ class FlowConfig:
                 float(ae_raw.get("at", 0.0)), int(ae_raw.get("to", 2)),
                 int(ae_raw.get("when_workers", 0)),
             )
+        pv_raw = data.get("pivot") or {}
+        pivot = None
+        if pv_raw:
+            pivot = PivotConfig(
+                anti_air_units=tuple(
+                    str(u).strip().upper() for u in (pv_raw.get("anti_air_units") or [])
+                ),
+                anti_air_proportion=float(pv_raw.get("anti_air_proportion", 0.0)),
+                anti_air_trigger=int(pv_raw.get("anti_air_trigger", 3)),
+                rush_zealots=int(pv_raw.get("rush_zealots", 0)),
+            )
         return cls(
             name=name, spawn=spawn, core_structures=core, upgrades=upgrades,
             extra_production=extra, chrono=ChronoConfig(targets=targets, when=when),
@@ -132,6 +154,7 @@ class FlowConfig:
             rally_min_army=int(data.get("rally_min_army", 0) or 0),
             auto_expand=auto_expand,
             freeflow=bool(data.get("freeflow", False)),
+            pivot=pivot,
         )
 
     @classmethod
