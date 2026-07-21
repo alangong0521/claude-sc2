@@ -54,12 +54,17 @@ Python**。人族、虫族的生产层，以及坦克架起 / 医疗船治疗空
 | `ares-bot/bot/managers/` | 三个 manager：`combat`（指挥军队）/ `production`（造兵运营）/ `oracle`（先知骚扰） |
 | `ares-bot/bot/combat/` | 各兵种专属 combat class（借 ares 战斗原语）；无专属类的兵种走 `generic_offensive` |
 | `ares-bot/army_composition.yml` | 兵种单一真相源（三族全兵种登记）；生产与指挥都读它，**加兵种改这里** |
-| `ares-bot/flows.yml` | 流派单一真相源（spawn/科技链/升级/chrono，按 `BUILD` 选块），**加流派改这里** |
+| `ares-bot/flows.yml` | 流派单一真相源（spawn/科技链/升级/chrono/pivot 自适应，按 `BUILD` 选块），**加流派改这里** |
+| `ares-bot/bot/flow_config.py` | 读 `flows.yml`、校验、回退 tempest |
 | `ares-bot/bot/army_config.py` | 读 `army_composition.yml`、按种族分块、校验 |
+| `ares-bot/bench.py` | **自调优验证台**：串行打 N 局（剥代理/随机图/失败重试），聚合 W/L + 曲线 + 每局自动复盘（retro.md） |
+| `ares-bot/promotion.py` | **晋升矩阵 runner**：3 族 × 5 风格逐档打穿晋级（Medium→…→CheatInsane），断点续跑 |
 | `ares-bot/bot/levers.py` | 操纵杆纯逻辑（语义→坐标/枚举的纯计算，可离线单测） |
 | `ares-bot/bot/steer.py` | bot 侧：与 `~/agent-rts-steer/` 的原子 JSON 收发 |
 | `ares-bot/bot/steer_vocab.py` | 共享杠杆词表（单一真相源） |
 | `ares-bot/steer_cli.py` | 指挥 CLI：`state` / `set k=v` / `show` / `clear` / `vocab` |
+| `docs/baselines.md` | baseline 数据 + 晋升矩阵全景 + 迭代日志 |
+| `docs/pitfalls.md` | 踩坑总集（框架/环境/进程/UI/实验设计五类） |
 | `docs/lever-map.md` | 操纵杆 → bot 动作 映射图（每个杠杆最终落到哪段代码） |
 | `ares-bot/spike_config.py` | 一处管对局设置（难度 / 地图 / 种族 / realtime / 存 replay） |
 | `ares-bot/run.py` | 启动入口 |
@@ -199,6 +204,19 @@ poetry run python steer_cli.py vocab              # 列全部杠杆
 已跑通：Stage 0（拉起一局）、Stage 1（bot 无指挥即胜 Hard 内置 AI）、Stage 2（实时 steer 闭环——
 读 → 下令 → 应用 → 赢）。
 
+**流派配置化（P0 已落地）**：`flows.yml` 是流派单一真相源（spawn/科技链/升级/chrono/追加产能），
+加流派只改 yaml。当前三流：**tempest**（暴风舰天空体，已验证）、**stalker**（追猎 blink 流，骨架）、
+**carrier**（航母黄金舰队，已验证）。`BUILD=<flow> poetry run python run.py` 切换。
+
+**pivot 自适应（2026-07）**：天空流内置反 rush/反空军机制——2 分钟自动侦查；检测到 rush
+（敌军压家或早期兵力异常）→ 自动出叉子顶 + 铺塔 + 全军守家，威胁解除自动复工；检测到对面
+爆空军主力 → spawn 自动混入追猎，敌空军散了自动恢复。
+
+**自调优回路（已运转）**：`bench.py`（串行打 N 局 + 聚合 + 每局自动复盘 retro.md）+
+`promotion.py`（3 族 × 5 风格逐档打穿的晋升矩阵，断点续跑）。**已认证天花板**：
+tempest 一路杀到 **CheatMoney 全穿**、CheatInsane 12/15（仅负三族 Rush）；
+carrier 认证到 **Harder**、VeryHard 11/15（负于维京/凤凰/Rush）。数据全在 `docs/baselines.md`。
+
 已落地（骨架，随时可扩）：兵种/流派**配置化**（`army_composition.yml` 三族全兵种登记，
 生产 + 指挥都从它读）、**多兵种分派指挥**（`CombatManager` 按配置把各兵种交给对应 combat class）、
 Terran / Zerg **生产层**（全走 ares 种族无关宏行为，绕开只支持 P/T 的 `ProductionController`）、
@@ -206,7 +224,14 @@ Terran / Zerg **生产层**（全走 ares 种族无关宏行为，绕开只支�
 这些多为**离线骨架、尚未逐一实机验证**。
 
 下一步：Zerg 的**女王注卵 + 铺菌毯**（爆兵与运营核心，目前女王只造不注）、各专属微操的实战手感调优、
-更丰富的产能/扩张杠杆、侦查记忆、自动驾驶 advisor 模式、更完整的 FFA。见 `docs/status-and-roadmap.md` 与 `CHANGELOG.md`。
+更丰富的产能/扩张杠杆、robo-colossus 地面流（`docs/flows/` 排期）、侦查记忆、自动驾驶 advisor 模式。
+见 `docs/status-and-roadmap.md` 与 `CHANGELOG.md`。
+
+## 给司令的观察工具（`~/.kimi-code/bin/`）
+
+- **`sc2watch [秒]`**：观察模式——把后台对局窗口钉在前台 N 秒，这期间小地图点击/拖动不被 macOS 吞掉。
+- **`sc2cam <left|right|top|bottom|center>`**：合成点击把镜头切到指定方位（不受焦点争抢影响，稳定可靠）。
+- 原理与坑见 `docs/pitfalls.md` D 类（bot 局小地图点击失灵的完整排查）。
 
 ## 参与贡献
 
