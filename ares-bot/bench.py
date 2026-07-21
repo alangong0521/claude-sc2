@@ -33,8 +33,9 @@ _PROXY_KEYS = (
 )
 
 # 随机 1v1 地图池(--map random):从 SC2 Maps 目录取,排除已知的 >2 人图
+# 和让 ares PlacementManager 开局即崩的图(HonorgroundsLE:主矿路口摆点 IndexError)
 _MAPS_DIR = Path("/Applications/StarCraft II/Maps")
-_MAP_EXCLUDE = {"CactusValleyLE"}  # 4 人图
+_MAP_EXCLUDE = {"CactusValleyLE", "HonorgroundsLE"}  # 4 人图 / ares 摆点崩溃图
 
 # SC2 画质文件(SC2 退出时会重写它,必须每局开局前重设才不回退,Q5)
 _VARS_TXT = (

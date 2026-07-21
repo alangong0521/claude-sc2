@@ -1,8 +1,37 @@
 # Baselines 与迭代日志（自调优回路）
 
 > 数据来源：`bench.py` 系列（`ares-bot/bench/<tag>/summary.json`）。
-> 固定变量：地图 `AbyssalReefLE`、对手 `Terran`、AI build `Macro`、`REALTIME=False`。
+> 固定变量：地图 `AbyssalReefLE`（后期 `random`）、对手种族固定、AI build 固定、`REALTIME=False`。
 > 判定门槛（docs/bot-self-tuning-plan.md §6）：中档 N=10 ≥7 胜为「显著强于骰子」。
+
+## 晋升矩阵全景（2026-07-21 认证天花板）
+
+promotion.py 逐档打穿「3 族 × 5 风格」矩阵，失败重打一轮，仍不过记「疑似相克」豁免 ≤2 个：
+
+**tempest —— 一路杀到最高档 CheatInsane 才停**
+
+| 档位 | 结果 |
+|---|---|
+| Medium | 14/15（Zerg/Timing 豁免） |
+| MediumHard | **15/15 全穿** |
+| Hard | 13/15（Zerg/Timing、Protoss/Rush 豁免） |
+| Harder | 14/15（Zerg/Rush 豁免） |
+| VeryHard | 14/15（Zerg/Rush 豁免） |
+| CheatVision | 14/15（Zerg/Rush 豁免） |
+| CheatMoney | 13/15（Terran/Macro、Zerg/Rush 豁免） |
+| **CheatInsane** | **12/15 停档**，墙 = 三族 Rush（Terran/Zerg/Protoss Rush，重打两轮 0/4） |
+
+**carrier —— 停在 VeryHard**
+
+| 档位 | 结果 |
+|---|---|
+| Medium | 6/7（中途跳档未补） |
+| Hard | **15/15 全穿**（磁盘实证，全 2-0/2-1） |
+| Harder | 13/15（Terran/Timing、Zerg/Rush 豁免） |
+| **VeryHard** | **11/15 停档**，墙 = Terran/Air（维京）、Zerg/Rush、Protoss/Air（凤凰）、Protoss/Macro |
+
+墙的共性：**Rush（星空体空窗期被快攻打死）+ 对空兵种（维京/凤凰硬 counter）**——
+这正是 pivot 迭代（见下方 A1）要破的。
 
 ## Baseline（2026-07-19 凌晨，SC2 Base97563）
 

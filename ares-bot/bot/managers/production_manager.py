@@ -307,7 +307,7 @@ class ProductionManager(Manager):
                 unit_type_id=UnitID.ZEALOT
             )
             if zealots < pv.rush_zealots:
-                return {UnitID.ZEALOT: {"proportion": 1.0, "priority": -1}}
+                return {UnitID.ZEALOT: {"proportion": 1.0, "priority": 0}}
         # 反空军 pivot:敌可见空军主力 ≥ trigger → 混入对空兵种
         air_threat = sum(
             1 for u in self.ai.enemy_units
@@ -321,7 +321,7 @@ class ProductionManager(Manager):
                 uid = getattr(UnitID, name, None)
                 if uid is not None:
                     spawn[uid] = {
-                        "proportion": pv.anti_air_proportion, "priority": -1,
+                        "proportion": pv.anti_air_proportion, "priority": 0,
                     }
             return spawn
         return self._flow.spawn_dict()
