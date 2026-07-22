@@ -41,7 +41,7 @@ COMBAT_KINDS = (
     "tempest_offensive", "stalker_offensive", "oracle_harass", "default",
     "siege_offensive", "medivac_support", "medivac_transport", "templar_caster",
     "ghost_offensive", "raven_support", "queen_support", "reaper_harass",
-    "infestor_caster",
+    "infestor_caster", "dt_offensive",
 )
 
 # 种族块键(army_composition.yml 支持 per-race:顶层 protoss/terran/zerg 各一套 units)

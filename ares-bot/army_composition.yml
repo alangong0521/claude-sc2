@@ -63,8 +63,8 @@ protoss:
       notes: 高模,灵能风暴。需 TWILIGHT+TEMPLARARCHIVE。
     - id: DARKTEMPLAR
       proportion: 0.0
-      combat: default
-      notes: 黑暗圣堂,隐形近战。
+      combat: dt_offensive
+      notes: 黑暗圣堂,隐形近战。被反隐照到且盾不满即撤(Sharky DT 微操)。
     - id: IMMORTAL
       proportion: 0.0
       combat: default

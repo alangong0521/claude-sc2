@@ -3,10 +3,14 @@ from collections import Counter
 from typing import Optional
 
 from ares import AresBot, Hub, ManagerMediator
-from ares.behaviors.macro import Mining
+from ares.behaviors.macro import Mining, RestorePower
 from ares.consts import ID as TRACKER_ID
 from ares.consts import TIME_ORDER_COMMENCED, UnitRole
-from bot.production_plans import should_release_waiting_builder
+from bot.production_plans import (
+    nexus_rebuild_viable,
+    should_release_waiting_builder,
+)
+from bot.shield_battery import restore_with_batteries
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.unit import Unit
@@ -115,6 +119,14 @@ class MyBot(AresBot):
 
         await self.production_manager.update(iteration)
 
+        # 调研合并(community-tactics-research §2.3):电池主动充能 —— 纯增量微操,
+        # 没电池/没残盾单位时零指令。异常静默,绝不崩主循环。
+        restore_with_batteries(self)
+        # 调研合并(ares 调研 A3):水晶被拆导致产兵建筑断电 → 自动补水晶。
+        # can_afford 守卫防 O11 钉点(RestorePower 自身无守卫,与 ProtossStaticDefence 同类风险)。
+        if self.can_afford(UnitID.PYLON):
+            self.register_behavior(RestorePower())
+
         # O4: rush 检测成立 → 侦查农民立刻放弃探路回家采矿（rush 局白送农民雪上加霜）。
         # role 归 GATHERING 后下帧起 recall 返回 0，事件只记一次；
         # steer scout 的 _scout_tag 一并清掉（防 _handle_scout 把撤回农民再派出去），
@@ -128,12 +140,19 @@ class MyBot(AresBot):
 
         # Q5 早负判负(bench 省垃圾时间):前 10 分钟基地全没 → 投降离场。
         # 与 _ensure_townhall 互补:10 分钟后才谈重建;早期被打穿没有翻盘点。
+        # O15:有工人且场上还有矿 → 不判负,交给 O15 重建(攒钱 > save_up > 出兵)。
         if self.townhalls.amount == 0 and self.time < 600:
-            self._events.append(
-                {"t": round(self.time, 1), "msg": "前10分钟基地全失,判负离场(Q5)"}
+            minerals_left = (
+                sum(mf.mineral_contents for mf in self.mineral_field)
+                if self.mineral_field
+                else 0
             )
-            steer.publish_state(self._steer_snapshot())  # bench 拿最后状态
-            await self._client.leave()
+            if not nexus_rebuild_viable(self.workers.amount, minerals_left):
+                self._events.append(
+                    {"t": round(self.time, 1), "msg": "前10分钟基地全失,判负离场(Q5)"}
+                )
+                steer.publish_state(self._steer_snapshot())  # bench 拿最后状态
+                await self._client.leave()
 
         # 参谋长接缝：每几秒发布战况、读最新命令
         if self.time - self._last_steer >= _STEER_EVERY:

@@ -9,6 +9,7 @@ from sc2.position import Point2
 from sc2.units import Units
 
 from bot.combat.base_unit import BaseUnit
+from bot.combat.dt_offensive import DtOffensive
 from bot.combat.generic_offensive import GenericOffensive
 from bot.combat.ghost_offensive import GhostOffensive
 from bot.combat.infestor_caster import InfestorCaster
@@ -54,6 +55,7 @@ class CombatManager(Manager):
         self.tempest_offensive: BaseUnit = TempestOffensive(ai, config, mediator)
         self.stalker_offensive: BaseUnit = StalkerOffensive(ai, config, mediator)
         self.generic_offensive: BaseUnit = GenericOffensive(ai, config, mediator)
+        self.dt_offensive: BaseUnit = DtOffensive(ai, config, mediator)
         self.siege_offensive: BaseUnit = SiegeOffensive(ai, config, mediator)
         self.medivac_support: BaseUnit = MedivacSupport(ai, config, mediator)
         self.medivac_transport: BaseUnit = MedivacTransport(ai, config, mediator)
@@ -77,6 +79,7 @@ class CombatManager(Manager):
             "tempest_offensive": self.tempest_offensive,
             "stalker_offensive": self.stalker_offensive,   # 纯追猎 blink 流(BUILD=stalker)
             "default": self.generic_offensive,
+            "dt_offensive": self.dt_offensive,              # DT:被反隐照到且盾不满即撤(Sharky)
             "siege_offensive": self.siege_offensive,        # M4:攻城坦克
             "medivac_support": self.medivac_support,        # M4:医疗船治疗
             "medivac_transport": self.medivac_transport,    # M4:医疗船空投
