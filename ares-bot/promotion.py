@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 _AREAS = Path(__file__).resolve().parent
@@ -65,6 +67,67 @@ def _run_series(args: argparse.Namespace, diff: str, race: str, build: str,
         cwd=_AREAS, check=False,
     )
     return _series_result(tag) or (0, 0)
+
+
+def _purge_game_logs(tag_base: str, max_games: int) -> int:
+    """删一个组合的局内原始日志(game_XX/ 快照+run.log),留 summary.json/retro.md。
+    司令规约:2-0/3-0 速通组合、重打通过的组合 → 删日志省磁盘。
+    返回删掉的目录数。"""
+    purged = 0
+    for suffix in ("", "-r2"):
+        for g in range(1, max_games + 1):
+            series = _AREAS / "bench" / f"{tag_base}{suffix}-g{g}"
+            if not series.is_dir():
+                continue
+            for game_dir in series.glob("game_*"):
+                if game_dir.is_dir():
+                    shutil.rmtree(game_dir, ignore_errors=True)
+                    purged += 1
+    return purged
+
+
+def _analyze_failures(flow: str, diff: str, race: str, build: str,
+                      tag_base: str, max_games: int) -> Path:
+    """组合失败时果断归因:聚合各局 retro 的复盘信号 + 败局关键数据,
+    落 bench/<tag_base>-analysis.md 供迭代回溯(司令规约:2 负即分析再复测)。"""
+    issues: Counter = Counter()
+    losses: list[str] = []
+    banks: list[int] = []
+    for suffix in ("", "-r2"):
+        for g in range(1, max_games + 1):
+            series = _AREAS / "bench" / f"{tag_base}{suffix}-g{g}"
+            s = _series_result(f"{tag_base}{suffix}-g{g}")
+            if s is None:
+                continue
+            try:
+                sj = json.loads((series / "summary.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            for tag, n in sj.get("issue_counts", {}).items():
+                if tag != "clean":
+                    issues[tag] += n
+            if sj.get("losses"):
+                losses.append(
+                    f"game {series.name}: {sj.get('avg_game_time', 0):.0f}s, "
+                    f"存款峰值 {sj.get('max_bank', '?')}, "
+                    f"终局兵力 {sj.get('final_army_avg', {})}"
+                )
+                banks.append(sj.get("max_bank", 0))
+    lines = [
+        f"# {flow} @ {diff} {race}/{build} 失败归因",
+        "",
+        "## 复盘信号频次(非 clean)",
+    ]
+    lines += [f"- {t} × {n}" for t, n in issues.most_common()] or ["- (无)"]
+    lines += ["", "## 败局明细"] + [f"- {x}" for x in losses or ["(无)"]]
+    if banks and max(banks) >= 800:
+        lines += ["", f"⚠️ 存款峰值 {max(banks)} ≥800:经济没转化为兵力(司令规约 3)"]
+    out = _AREAS / "bench" / f"{tag_base}-analysis.md"
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"[promo] {race}/{build} 失败归因 → {out.name}: "
+          + (" ".join(f"{t}×{n}" for t, n in issues.most_common()) or "无信号"),
+          flush=True)
+    return out
 
 
 def _play_combo(args: argparse.Namespace, diff: str, race: str, build: str,
@@ -148,13 +211,22 @@ def main() -> int:
                 print(f"[promo] {diff} {race}/{build}: {wins}/{games} "
                       f"{'PASS' if ok else 'FAIL'}", flush=True)
                 _save_state(state, state_path)
-                if not ok:
+                if ok:
+                    # 司令规约:2-0/3-0 速通 → 直接删局内日志,开下一组合
+                    purged = _purge_game_logs(tag_base, args.n)
+                    print(f"[promo] {race}/{build} 速通,清理 {purged} 局原始日志",
+                          flush=True)
+                else:
+                    # 司令规约:2 负出局 → 果断分析整局日志再复测
+                    _analyze_failures(args.flow, diff, race, build,
+                                      tag_base, args.n)
                     failed.append((race, build))
 
         # 失败组合加打一轮(tag 加 -r2,两轮合计 ≥n 胜通过;仍不过记「疑似相克」)
         counters = []
         for race, build in failed:
             key = f"{race}/{build}"
+            tag_base = _tag(args.flow, diff, race, build)
             tag_base2 = _tag(args.flow, diff, race, build, suffix="-r2")
             w2, g2 = _play_combo(args, diff, race, build, tag_base2, pass_mark)
             total_w = history[key][0] + w2
@@ -162,9 +234,15 @@ def main() -> int:
             if total_w >= args.n:
                 history[key] = [total_w, total_g, "pass-retry"]
                 print(f"[promo] {key} 重打后合计 {total_w}/{total_g} PASS", flush=True)
+                # 司令规约:复测通过 → 删日志
+                purged = _purge_game_logs(tag_base, args.n)
+                print(f"[promo] {key} 复测通过,清理 {purged} 局原始日志", flush=True)
             else:
                 history[key] = [total_w, total_g, "counter?"]
                 counters.append(key)
+                # 仍不过:重归因(含 r2 局),原始日志保留供司令复核
+                _analyze_failures(args.flow, diff, race, build,
+                                  tag_base, args.n)
                 print(f"[promo] {key} 重打后合计 {total_w}/{total_g} → 疑似相克",
                       flush=True)
             _save_state(state, state_path)
