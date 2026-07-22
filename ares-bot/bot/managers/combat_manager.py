@@ -21,6 +21,7 @@ from bot.combat.siege_offensive import SiegeOffensive
 from bot.combat.stalker_offensive import StalkerOffensive
 from bot.combat.templar_caster import TemplarCaster
 from bot.combat.tempest_offensive import TempestOffensive
+from bot.production_plans import floor_army_defends_home
 
 if TYPE_CHECKING:
     from ares import AresBot
@@ -69,7 +70,8 @@ class CombatManager(Manager):
         # C3a 集结阈值(flows.yml rally_min_army,缺省 0=关):低于阈值且司令没下 stance 时守家攒兵
         import os
         from bot.flow_config import FlowConfig
-        self._rally_min: int = FlowConfig.load(os.environ.get("BUILD")).rally_min_army
+        self._flow: FlowConfig = FlowConfig.load(os.environ.get("BUILD"))
+        self._rally_min: int = self._flow.rally_min_army
         # combat kind → combat class 分派表(oracle_harass 由 OracleManager 单独管,这里不收)
         self._combat_dispatch: dict[str, BaseUnit] = {
             "tempest_offensive": self.tempest_offensive,
@@ -171,6 +173,17 @@ class CombatManager(Manager):
         if tgt := order.get("target"):
             if (pt := self._resolve_steer_target(tgt)) is not None:
                 return pt
+
+        # E3g:舰队成型前(pre_fleet 保底阶段)地面兵默认守家 —— 无令时默认追敌会把
+        # 保底叉子拉过全图送进蟑螂群(trickle,e3g game_01 实证:6 叉在敌波到脸前消失)。
+        # stance/rush/司令 target 都在上面已 return,不受影响;主 C 上线恢复默认进攻。
+        if floor_army_defends_home(
+            has_pre_fleet=self._flow.pre_fleet is not None,
+            primary_count=self.manager_mediator.get_own_unit_count(
+                unit_type_id=self.ai.production_manager._primary_unit_id()
+            ),
+        ):
+            return self.ai.start_location
 
         # —— 默认逻辑（无命令时）：最近敌建筑 → 轮巡分矿 ——
         if self.ai.enemy_structures:

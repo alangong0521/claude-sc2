@@ -296,6 +296,17 @@
 - [x] O8 护盾升级未随 Forge 就绪即启动，需资源预留/队列时序排查 — 2026-07-22 修复
 - [x] O9 贪开局不随侦查调整（赌检测来得及）→ 侦查情报→开局决策闭环 — 2026-07-22 实现
 - [x] O10 carrier 升级链补全（拦截机容量 + L2/L3） — 2026-07-22 修复
+- [x] E3-R1 rush 期间研究预留饿死响应包 — 2026-07-22 修复（rush_active 不注册 UpgradeController）
+- [x] E3b-R1 塔触发与 rush 检测脱钩 + rush 前线折跃 — 2026-07-22 修复（rush 即铺塔 + spawn_target 回家）
+- [x] E3c-R1 save_up 截断反空军混编 — 2026-07-22 修复（save_up_spawn exempt）
+- [ ] E3c-R2 二矿被打掉（军队真空期+分矿塔节奏）— 2026-07-22 分析+候选建议（见 E3c 节，未动手）
+- [x] E3d 塔链被电池科技饿死 + rush 矿饥荒 + 单兵营瓶颈 — 2026-07-22 修复（电池让位/资源集中/补 gateway）
+- [x] E3e 舰队成型前军队真空 — 2026-07-22 修复（pre_fleet 地面保底，cap=6 叉）
+- [x] E3f 保底下限不随威胁伸缩 + 塔建造单线慢 — 2026-07-22 修复（pre_fleet_cap 伸缩 + max_on_route=2）
+- [x] E3g 保底兵无令进攻送死 + AutoSupply 饿死 MacroPlan — 2026-07-22 修复（保底阶段守家 + return_true_if_supply_required=False）
+- [x] E3h save_up 矿物盲区 + 水晶紧急通道 — 2026-07-22 修复（resource_gap 矿气取大 + supply_left≤2 例外）
+- [x] O13 扩张后不补气矿（矿 5000+/气 0）— 2026-07-22 修复（_ensure_expansion_gas 按基地双气 + 45s 反卡死 + 气矿优先级最高）
+- [x] O11 农民干等钱造建筑（非水晶场景）— 2026-07-22 修复（钉点 >6s 撤回 watchdog + 扩张 can_afford 守卫）
 
 ---
 
@@ -328,3 +339,368 @@ runner=bench.py，tag=`e2-carrier-vh-zerg-rush` / `e2-carrier-vh-zerg-macro`。
   CARRIER@355s 成型（比 E1 的 387s 还早，多矿经济反哺）。
 - 残留：retro 仍有 one_base（rush g3 只到 2 矿——基地<4 但局势已赢，可接受）、
   trickle（零星送兵，老问题，后续看）。
+
+---
+
+## 2026-07-22 E3 bench 结果：O6-O10 验证局（carrier vs Zerg VeryHard @AbyssalReefLE，各 N=3）
+
+tag=`e3-carrier-vh-zerg-rush` / `e3-carrier-vh-zerg-macro`。
+
+| 系列 | 战绩 | 平均时长 | 备注 |
+|---|---|---|---|
+| Rush | **2-1**（E2 同期 3-0，回归） | 579s | 败局 game_02 见下方回归分析 |
+| Macro | **3-0** | 1066s | 但存款峰值 11820、retro bank×2 |
+
+### E3-R1 回归：O8 研究预留饿死 rush 响应包（已修复）
+
+- **证据**（bench/e3-carrier-vh-zerg-rush/game_02/）：虫族 t≈241s 小狗 15 只冲家，
+  我方 rush 响应只出 1 叉（rush_zealots 应为 4）、光子炮只有 2 座，t=275 基地全失；
+  run.log 显示 SHIELDS L1 @3:03、AIRWEAPONS L1 @3:24 正在研究——正是 rush 窗口。
+- **根因**：O8 把 `UpgradeController` 以 `prioritize=True` 放进 MacroPlan 最前——
+  研究预留截断后续 plan，rush 响应包（叉子在 SpawnController、塔在后续行为）
+  被活活饿死。rush 窗口与早期升级窗口天然重叠，优先级必须反转。
+- **修复**（2026-07-22）：`production_plans.research_paused_for_rush()` +
+  `production_manager.update` 在 `rush_active`（含 O9 scout verdict 提前触发）
+  期间**不注册 UpgradeController**——响应包独占资源；rush 解除后自动恢复
+  prioritize 预留。补回归单测 2 例（全量 130 例绿）。
+- **状态**：已修复（待重跑 e3-rush 验证回 3-0）。
+
+### 候选问题（只评估，未动手）
+
+- **Macro 存款峰值 11820 / retro bank×2**：根因判断——主要是**气瓶颈下矿花不出去**
+  （航母流矿:气消耗比远低于采集比，多矿后矿必然淤积）叠加 `_spend_bank` 触发阈值
+  （>800 且 <20 分钟）窗口偏窄；O8 研究预留的攒钱量级（一次几百）不足以解释 11k，
+  不是主因。候选方向：提高 `_spend_bank`  aggressiveness（更低阈值/更高产能上限）、
+  矿富余转航母外的矿耗出口（更多塔/电池）。记入下批观察。
+
+---
+
+## 2026-07-22 E3b bench 结果：E3-R1 修复后重跑 Rush（仍 2-1，死因不同）
+
+tag=`e3b-carrier-vh-zerg-rush`（carrier vs Zerg VeryHard/Rush N=3）。研究暂停已生效
+（败局 run.log 全程无 Researching），但 game_02 仍败，逐帧 state 快照实证如下。
+
+### E3b-R1 败局分析（证据：bench/e3b-carrier-vh-zerg-rush/game_02/）
+
+时间线：t=130 rush 检测成立（early_swarm：探机看到 6 狗，O4 撤回事件记录）→
+首叉 t=181（一个接一个死：197 亡 → 209 第二个 → 225 又没，在场兵力恒 1）→
+首座光子炮 t=221 → t=225 敌 15 狗、229 敌 18 狗 → t=232 基地掉判负。
+
+**主因排序（实证）**：
+
+1. **塔启动与 rush 检测脱钩（主因，已修）**：rush 130s 就检测成立，但
+   `_should_build_defense` 的 rush 分支只看「敌兵压到家 40 格」→ 塔 ~215s 才开建。
+   炮塔 ~30s 建造 + 要水晶供电，压到门口再建根本来不及——响应包名义含铺塔，
+   实际塔触发是另一套判据。
+2. **单 Gateway 产能瓶颈（结构性，未动）**：rush 响应只改 spawn 配方，1 兵营
+   ~28s 一叉 → 到 225s 最多 2-3 叉且永远分批到场（trickle 送死的直接形态）。
+   E1 证明"4叉+塔"包能赢的前提是塔及时成阵，单靠叉子产能顶不住 15 狗。
+3. **rush 窗口科技/气矿继续花钱（次因，候选）**：130-180s 间 FORGE(150) +
+   CYBERCORE(150) + 第二气(75) 照建，首叉拖到 181s、塔钱紧张。
+4. ~~前线折跃送死~~：**嫌疑不成立**——carrier 无 warpgate 研究，叉子是兵营
+   训练在主基出生，spawn_target 只影响折跃。但对 stalker 等有 warpgate 的流派
+   逻辑上确实错（rush 时前线=敌群），仍一并修复。
+5. ~~侦查判定太晚~~：**嫌疑不成立**——early_swarm 130s 就触发（探机视野），
+   离狗到脸有 ~95s，输在执行不在检测。O9 verdict(170s) 本局根本没用到。
+
+**修复**（2026-07-22，bot 层）：
+
+- `_should_build_defense`：`rush_active` 成立即铺塔（`production_plans.rush_triggers_defense`，
+  `rush_cannons=False` 的臂 B 保持不铺）→ 同类局面塔提前 ~85s 开建；
+- rush_active 期间 `SpawnController.spawn_target` 切回主基（不前线折跃）。
+- 未动（候选）：rush 期暂停非 rush 科技开销（forge/cybercore/第二气）、
+  rush 期追加 Gateway 产能——看 E3c 重跑结果再定。
+- **方差说明**：E2 同图同档曾 3-0，单局败北有方差成分；但塔触发脱钩是
+  实打实的机制缺陷，与方差无关，必须修。
+- **状态**：已修复（单测 133 例绿），待 E3c 重跑验证。
+
+---
+
+## 2026-07-22 E3c bench 结果：rush 顶住但输转型（Rush 系列仍 2-1）
+
+tag=`e3c-carrier-vh-zerg-rush`。E3b 修复成立（rush 响应包顶住了第一波），
+败局 game_01 是新的失败模式：中期二矿被打掉 → 单矿憋航母 → 敌转腐化+巢虫领主
+→ 我方零追猎混编团灭。
+
+### E3c-R1 save_up 吃掉 pivot 反空军混编（实证，已修复）
+
+- **实证**：敌 t=964 有 6 腐化+3 巢虫领主（空军 ≥3 触发 anti_air pivot），
+  但终局 STALKER=0。读码确认：anti-air 分支生成的 spawn dict 也过
+  `save_up_spawn`（O5 设计如此），save_up=250 且航母占比落后时 dict 只留
+  CARRIER——追猎作为"低优先"被永久截断。二矿掉后航母占比更难达标，
+  截断几乎恒成立 → 零追猎。
+- **修复**（2026-07-22）：`save_up_spawn` 加 `exempt` 参数（永不截断的兵种），
+  `_apply_save_up` 把 pivot `anti_air_units` 传进去——反空军混编是保命的防空，
+  不是副 C，不参与憋气截断。副 C（TEMPEST）截断语义不变。
+- **状态**：已修复（单测 135 例绿），待下轮 bench。
+
+### E3c-R2 二矿死因分析（只分析，候选未动手）
+
+时间线（逐帧快照）：t≈349 二矿建成 → t=514 敌 8 蟑螂+11 狗+4 刺蛇+1 感染虫
+压到 → t=538→542 二矿掉（农民随后骤减 12）。死因拆解：
+
+1. **军队真空期挨打（主因）**：航母和风暴都需舰队航标（ares
+   UNIT_TECH_REQUIREMENT 实证 TEMPEST 也要 FLEETBEACON）——航标 ~520s 才就绪，
+   此前 3 个星门全闲、全场兵力 = 1 先知（+1 叉）。钱花在科技/星门上，
+   挨打时没有一兵可回援。
+2. **分矿塔数量/节奏不够**：敌 18 作战单位 → 塔目标 ~7/矿（expansion_cannons
+   动态公式），挨打时全局只有 8 座（两矿合计），二矿实际就位 ~3 座，
+   挡不住 8 蟑螂强拆 Nexus。
+3. **开矿时机**：二矿在 t≈349 敌 15 狗可见时开出（优势判据没拦住——我方
+   兵力 0 也满足？不，是爆仓触发：农民 ≥22×1）。开矿本身没错（之后有 ~160s
+   和平期），问题是和平期全投科技没补兵力/塔。
+- **修复建议（候选，下批定）**：
+  ① 舰队航标就绪前限制星门数 ≤1（气体闸门的 +1 不该超前于航标，杜绝星门闲置）；
+  ② 军队真空期（stargate 兵种不可造且敌可见兵力 ≥N）用 gateway 出叉/追猎保底；
+  ③ 分矿塔建造优先级/供电节奏（natural 先供电再排塔）；
+  ④ 爆仓开矿触发加"敌可见兵力 < 阈值"安全门。
+
+---
+
+## 2026-07-22 E3d bench 结果：Rush 0-3（判定：方差放大结构缺陷，非 exempt 回归）
+
+tag=`e3d-carrier-vh-zerg-rush`。E3c(2-1) 与 E3d(0-3) 之间只改了 save_up exempt。
+
+### 回归 vs 方差判定
+
+- **exempt 无机制性影响（已核实）**：rush 时 `_effective_spawn` 走叉子单兵种分支，
+  直接 return 不过 `save_up_spawn`——exempt 改动对 rush 响应路径零接触。
+- **E3c 胜局 vs E3d 败局对比**：两边的塔链都依赖同一个抽签——ProtossStaticDefence
+  的 `_tech_required` 每帧先给电池 TechUp 核心（无 can_afford 守卫），核心在建时
+  返回 False 才轮到炮塔。E3c game_02 抽中了（首塔 172s），E3d game_01 没抽中
+  （206s 基地掉时仍 0 塔）。**0-3 = 方差（狗波时机）× 结构缺陷（塔链被电池科技阻塞）**。
+
+### 「零炮塔」真相（改正 brief 的"无 FORGE"说）
+
+逐帧快照：FORGE 从 t=124 就存在；真正断的是炮塔。链条：
+rush 130s 检测成立 → E3b 修复让防御立即启动 → `shield_batteries_per_base=1`
+→ `_tech_required` 先给电池 TechUp CYBERNETICSCORE（无守卫，工人钉在建造点等
+150 矿）→ 科技未就绪前 execute 直接 return → **pylon/炮塔段永远轮不到**。
+同时探机照造（15→22 个）、第 3 水晶照下，矿永远凑不够 150 → 核心也起不来，
+互相饿死。run.log 只有 `Adding CYBERNETICSCORE to tech towards SHIELDBATTERY` 一行
+反复出现，与快照完全吻合。
+
+### 结构性修复（2026-07-22，rush_active 资源集中防御）
+
+1. **暂停非必要开销**：rush_active 期间跳过 `_build_flow_structures`（核心/第二气）、
+   `_build_probes`（造农民）、`_build_extra_production`、`_spend_bank`、
+   `_build_forward_pylon`；升级建筑循环只保 FORGE（炮塔前置）。
+2. **电池让位**：rush_active 期间 `shield_batteries_per_base=0`（电池要核心，
+   是塔链被饿死的直接原因）；rush 解除恢复 1/矿。
+3. **补兵营产能**：`_rush_gateway_boost`（`production_plans.rush_needs_gateway`）
+   ——rush_active 且敌可见兵力 > 在场叉子数且 gateway（含 warpgate/在建）< 2 时
+   追加一个 gateway（can_afford 守卫；臂 C rush_zealots=0 不补）。
+4. rush_active 既有三连动（研究让位/spawn_target 回家/rush 即铺塔）不变。
+
+- **状态**：已修复（单测 139 例绿），待 E3e 重跑验证。
+
+---
+
+## 2026-07-22 E3e bench 结果：rush 顶住了，输在舰队成型前的军队真空（Rush 1-2）
+
+tag=`e3e-carrier-vh-zerg-rush`。六连动生效（game_01：161s 塔开建、4 塔 3 叉
+挡住 20 狗），rush 阶段从必败变为能顶住。新失败模式：rush 解除 → 顺利开 2-3 矿
+→ **军队真空**（t=402-562 army=1 先知：rush 的 4 叉死在消耗里，航母/风暴都要
+舰队航标，首艘航母 ~640s 才出生）→ t=562 敌 11 蟑螂+8 刺蛇+14 狗一波连穿两矿
+→ t=723 判负。正是 E3c-R2 候选②「军队真空期地面保底」，数据证明是绑约束。
+
+### E3e-R1 实现：舰队成型前地面保底（pre_fleet）
+
+- **设计**（2026-07-22）：
+  - 触发/退出：舰队主 C（`_primary_unit_id`，carrier=航母）计数为 0 期间，
+    spawn 混入保底兵种；主 C 出生（或达 cap）自动退出，回归主配方。
+  - 配置：`flows.yml` carrier 块 `pre_fleet: {id: ZEALOT, cap: 6}`——叉子纯矿耗，
+    不抢航母的气；`flow_config.PreFleet` 解析，缺省 None=关（tempest/stalker 不动）。
+  - 纯函数 `production_plans.pre_fleet_spawn`：混入时 priority=5 压最低
+    （舰队能产时舰队优先）；cap/上线即退出。
+  - **优先级与交互**：rush 响应的叉子覆盖分支最先 return（优先于保底）；
+    保底与 anti-air 可叠加（先混防空再混保底）；**保底兵种进 save_up 的 exempt**
+    （保命不截断，与反空军同原则）——保底叉子吃矿不吃气，不与憋气攒 250 冲突。
+- **状态**：已实现（单测 143 例绿），待 E3f 验证。
+- **残留候选**：二矿分矿塔节奏（E3c-R2 的①③④）仍未动，看 E3f 数据。
+
+---
+
+## 2026-07-22 E3f bench 结果：早期全绿，输在两段式 rush 的主力波（Rush 1-2）
+
+tag=`e3f-carrier-vh-zerg-rush`。game_02 逐帧：181s 首塔、241s 4 塔、301s 5 塔 4 叉、
+362s 6 叉开二矿（六连动+保底全部工作）→ t=373 敌第二波主力到脸（19 狗+8 蟑螂+
+刺蛇，Zerg VeryHard Rush 两段式：小狗试探 → ~7 分钟蟑螂刺蛇主力）→ 6 叉瞬间熔化、
+t=446 二矿掉 → 推平。
+
+### E3f-R1 保底随威胁伸缩（已修复）
+
+- **死因**：保底 cap=6 是和平期数字，敌 30 作战单位时 6 叉只是纸；且叉子是纯矿
+  兵种，多矿经济本可支撑 3 倍量。
+- **修复**：`production_plans.pre_fleet_cap`——上限 = clamp(cap, 敌可见作战单位 ×
+  per_enemy, max)，flows.yml carrier 配 `{cap: 6, per_enemy: 0.5, max: 16}`
+  （敌 30 → 15 叉）；max=0 时固定 cap（向后兼容）。航母上线退出逻辑不变。
+
+### E3f-R2 分矿塔节奏评估（顺带最小修）
+
+- **评估结论**：t=373-446 敌 ~30 单位时动态塔目标 ~10/矿，实际全局只有 6→7 座。
+  两个节奏问题：①和平期敌兵=0 → 塔目标=min 3，主矿 5 塔即停建，主力波可见时
+  （已到脸）才爬目标，塔 ~29s/座追不上——**公式只能反应不能预测，这是固有局限**；
+  ②单线建造（max_on_route=1）+ 分矿先供电后立塔，二矿 85s 只 +2 座。
+- **最小修**：`ProtossStaticDefence(max_on_route=2)` 允许 2 座同建（建造吞吐翻倍）。
+  供电顺序是 ares 行为内序列（先 pylon 后 cannon），不动。
+- **状态**：已修复（单测 147 例绿），待 E3g 验证。
+- **候选（未动）**：主力波预测（按时间窗/敌产能建筑而非可见兵力抬塔目标）；
+  保底叉子配电池站位（ battery 回血让叉子站住）。
+
+---
+
+## 2026-07-22 E3g bench 结果：rush 稳定顶住，败在中期转型（Rush 1-2）
+
+tag=`e3g-carrier-vh-zerg-rush`。早期 rush 已稳定顶住，game_01 败因锁定两个机制问题。
+
+### E3g-R1 地面保底兵无令外出送死（trickle 实证，已修）
+
+- **实证**：t=542-603 和平期攒回 6 叉，t=642 前消失大半（敌波 663 才到脸）。
+  读码确认：无 stance、rush_active=False 时 `combat_manager.attack_target` 默认
+  = 最近敌建筑，叉子（on_unit_created 归 ATTACKING role）被 GenericOffensive
+  拉过全图进攻，半路送进蟑螂群。carrier 的 rally_min_army=0，集结纪律不生效。
+- **修复**：`production_plans.floor_army_defends_home`——流派配了 pre_fleet 且
+  舰队主 C 计数为 0（未成型）时 attack_target 默认守家；主 C 上线恢复默认进攻。
+  插入点在 stance/rush/司令 target **之后**，司令命令与 rush 联动不受影响。
+
+### E3g-R2 航母节奏卡点：不是气，是 MacroPlan 被 AutoSupply 饿死（已修）
+
+- **数据**（逐帧快照）：航标 t≈603 就绪时 gas=1752 且一路涨到 2400；
+  矿却在 5~415 间徘徊。**气从来不是瓶颈**；且 t=610-618 矿 385 ≥ 350、
+  气 1792 ≥ 250、双星门+航标就绪，航母仍然没下——同时 AIRWEAPONS L2
+  （前置航标已就绪）到 t=755 也没开始研究。升级和生产同时停摆 → 锁定 plan 层。
+- **根因**：`AutoSupply` 的 `return_true_if_supply_required` 默认 True——supply
+  紧张期（多生产建筑下 supply_left 长期 ≤ 阈值）它**每帧返回 True 截断
+  MacroPlan**，排后面的 UpgradeController / SpawnController 整段不执行。
+  同一窗口叉子战损后也补不上（6→1），两个症状同一根因。
+- **修复**：注册时显式 `AutoSupply(return_true_if_supply_required=False)`
+  ——pylon 照建（execute 内部已派工），但返回 False 让 plan 继续走到
+  研究/生产。这正是 ares 该参数为 MacroPlan 预留的用法。
+- **候选（未动）**：矿分配优先级（保底叉子上限 × 塔 × 农民 × 二矿同时分流，
+  610 后矿很少再上 350）；「航母提速」结构项：更早开二矿/先气后塔。
+- **状态**：已修复（单测 150 例绿），待 E3h 验证。
+
+---
+
+## 2026-07-22 E3h bench 结果：0胜2负1异常（方差 × 结构性回归，已修 A+B）
+
+tag=`e3h-carrier-vh-zerg-rush`。战绩 0-2-1（game_03 ERROR 为 SC2 进程连接中断，
+headless 基建抖动非 bot 逻辑）。retro：supply_block×2 one_base×2 overrun×2 trickle×1。
+
+### 根因（逐帧实证）
+
+1. **save_up 矿物盲区（主因，E3h-A 已修）**：航标 ~534s 就绪后 gas 1500-2600 躺着，
+   矿恒定 <350。save_up 截断判据只看气缺口（=0）→ 永远截断到 {CARRIER}∪exempt，
+   把 TEMPEST(175矿) 也锁死；exempt 叉子照吃矿 → 矿更不够 → 死锁。
+   首艘航母拖到 787s（250 秒空窗），敌 6-7 分钟主力波打的是纯叉子+塔。
+2. **supply_block（E3h-B 已修）**：矿物饥荒时 O6 的 can_afford(PYLON) 守卫完全
+   屏蔽 AutoSupply → 水晶不排队 → 卡人口 68-100s（59/58、66/66 实证）。
+3. **E3f/E3g 的加重作用（诚实记录）**：保底 cap 随敌兵爬（8-10 叉常驻）+
+   双塔同建 + 守家叉子持续重建，三者把矿耗拉高一截，把气瓶颈局翻成矿瓶颈局，
+   恰好踩进盲区。守家/AutoSupply 修复本身逻辑正确（叉子死在防线非送死；
+   787s 后航母/风暴/追猎接连出生证明产线已通）。
+4. one_base×2 = 矿物饥荒拖慢农民节奏的结果，非独立 bug；trickle×1 是 retro
+   把防守战损误记（候选：检测口径区分）。
+
+### 修复（2026-07-22，司令拍板 A+B，C 暂缓）
+
+- **A 补矿物盲区**：`save_up_spawn` 判据 gas_gap → `resource_gap = max(气缺口,
+  矿缺口)`（矿缺口 = `calculate_cost.minerals - ai.minerals`）——矿差得远时
+  不截断，风暴在富矿窗口能补位，舰队不再双锁。
+- **B 水晶紧急通道**：`should_register_autosupply`——supply_left ≤ 2 时即便
+  买不起也注册 AutoSupply（钉一个工人换人口不断链）。
+- **状态**：已修复（单测 155 例绿），待 E3i 验证。
+
+## 2026-07-22 司令观察（E3i bench 后台对局期间）
+
+### O11 仍有农民干等钱造建筑（复发）
+B 水晶紧急通道修的是「人口余量 ≤2 才注册」，但一般建筑（非水晶）缺钱时
+工人仍可能钉点干等。需排查当前哪些注册路径还带 can_afford 守卫、
+哪些建筑队列允许工人在钱不够时被派出。待 E3i 后统一处理。
+
+### O12 carrier 微操：航母主体站位利用地形
+司令建议：航母主体尽量停在地面部队打不到的位置（高坡/低地交界处、
+山谷/悬崖对面），只放拦截机跨越地形攻击地面部队。
+实现方向候选：
+- 站位评估：选目标点附近对地面不可达的坐标（无地面路径/悬崖隔离）作为
+  航母锚点，拦截机射程内覆盖目标；
+- 需要地图地形数据（cliff/不可通行格）+ 敌防空分布评估；
+- 与现有进攻目标选择（attack_target）解耦，作为 carrier 专属站位层。
+复杂度高，先记 backlog，E3 收官后评估。
+
+### 环境确认：双通道验证可行
+司令确认当前人机共驾观战与后台 bench 可并行（此前按单车道规则串行）。
+后续验证可双通道跑，但注意 CPU/内存负载对 bench 时序的影响。
+
+### O13 扩张不造气矿：5000 矿 / 个位数气的资源倒挂（carrier 流致命）
+司令观察（E3i 后台对局）：3 矿已开但**没造气矿（Assimilator）**，
+矿存款 5000+、气存款个位数。carrier 流航母 350/250、风暴 175/125、
+空攻空防全吃气，气是硬约束、矿是副产品——倒挂说明：
+- 扩张逻辑（E2 auto_expand）只拍 Nexus，没跟进气矿建设；
+- 或气矿建设有 can_afford/优先级守卫被 5000 矿场景绕过（买得起但没排）。
+排查方向：1) Nexus 落成后 Assimilator 是否自动排队、有无 cap；
+2) 5000 矿时 _spend_bank 是否该优先买气矿+农民转气；
+3) save_up/截断机制是否误伤气矿注册。
+原则（司令拍板）：carrier 流派中**气矿优先级高于一切矿物开销**，
+新矿落成应立即双气满采，随时补气。
+
+### O14 无「残血后撤、满血顶前」机制（与 O12 同属 carrier 微操层）
+司令问：残血航母躲到满血航母/风暴后面继续放小飞机——当前**没有**。
+实证：CARRIER 在 army_composition.yml 用的是 `combat: default`
+（GenericOffensive），只有 StutterUnitBack 节奏微操；全代码库无任何
+health/shield 驱动的后撤换位逻辑。army_composition.yml:95 自己也标了
+「放机微操待专属类」。
+实现方向（carrier 专属 combat 类时一并做）：
+- 按 shield+health 百分比排序编队，残血（如 <40%）航母锚点向阵后/地形
+  后方收（与 O12 地形站位共用锚点逻辑）；
+- 航母特性利好：拦截机放飞后主体可远离战场，残血航母输出零损失；
+- 风暴射程 14 比航母站位更远，天然是「满血在前」的掩护位。
+
+---
+
+## 2026-07-22 E3i bench 结果：1胜2负（A+B 见效，O13 矿气倒置实锤）
+
+tag=`e3i-carrier-vh-zerg-rush`。CARRIER@669s（E3h 为 787s，A+B 修复见效，
+save_up 死锁已解）；终局编成均值 CARRIER×5。新信号：bank 6075、one_base×3、
+supply_block 降至 ×1。
+
+### 败因复盘（逐帧）
+
+- **game_01（1474s 长局败）= O13 教科书**：二矿 341s 落成，**assimilator 停在 2 个
+  长达 420s**（763s 才到 4）；三/四矿后续也都没跟上气。后期矿 6075/气 0——
+  4 矿纯采晶，航母被气卡死，矿存成死钱。卡因（读码+时间线推断）：在建气矿尝试
+  卡 tracker（工人被截/钉点）+ rush 暂停窗口（六连动④暂停科技链连带停气）
+  + 单线建造 120s 超时才自愈，三者叠加。
+- **game_03（快速败）**：rush 顶住 → 二矿 409s → 气正常跟上（as=4 @482）→
+  t=578-602 敌 72 单位主力波，舰队未出生（单星门 + oracle 插队 + 矿紧），
+  5 塔 8 叉被 overrun。与 E3g/E3h 同族的"两段式 rush 中期波"问题，
+  不是新 bug；bank→气→航母提速是正解方向。
+
+### 修复（2026-07-22，O13+O11）
+
+- **O13 按基地补气（气矿优先级 > 一切矿物开销）**：
+  - `production_manager._ensure_expansion_gas()`：每个就绪基地 ready 气矿+在建 <2
+    就派建（`_build_gas(near=th)` 泛化支持按基地选气矿），调用点在
+    `_build_extra_production`/`_spend_bank` **之前**；rush 期间缓（六连动不变）。
+  - 反卡死：在建气矿超 45s 没落地 → 拆 tracker 重派
+    （`production_plans.assimilator_attempt_stuck`）。
+- **O11 钉点撤回（钱不够不钉工人）**：
+  - `_handle_idle_workers` 扩 watchdog：tracker 里钉点 >6s 且结构仍买不起 →
+    `release_from_build_tracker` 撤回采矿（`should_release_waiting_builder`）；
+    例外：人口紧急态的水晶（E3h-B 故意钉）。覆盖 ares 全部无守卫路径
+    （ProtossStaticDefence/ExpansionController/TechUp）。
+  - `_auto_expand` 动态路径加 `can_afford(NEXUS)` 守卫（最贵的钉点先防住）。
+- **状态**：已修复（单测 159 例绿），待 E3j 验证。
+
+### O15 主矿采干+分矿被爆时，应攒钱重建 Nexus 而非继续出兵
+司令观察：分矿被敌方爆掉、主基地矿气双干（无矿可采）时，bot 仍按
+build order 继续造叉兵等进攻兵种——这是死路。正确策略：
+**最高优先级攒钱（400 矿）重建 Nexus**，恢复经济才有后续。
+实现方向候选：
+- 触发条件：我方 Nexus 数 == 0 或（所有基地矿脉+气矿残余 ≈ 0 且
+  无在建 Nexus）；
+- 触发后 MacroPlan 截断到 {NEXUS} ∪ 保命防御（类比 save_up 机制，
+  复用 resource_gap 判据）；工人转移到尚有矿的点位或拉去新开矿点；
+- 与 rush 资源集中、save_up 的优先级关系：重建 Nexus > save_up 航母 >
+  出兵（没经济一切免谈）。

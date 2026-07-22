@@ -71,6 +71,18 @@ class ExpansionCannons:
 
 
 @dataclass(frozen=True)
+class PreFleet:
+    """舰队成型前地面保底(E3e):舰队主 C 出生前混入保底兵种(矿耗地面兵,
+    不吃气不抢舰队资源),达 cap 或主 C 上线自动退出。None=关。
+    E3f:cap 随敌可见兵力伸缩(pre_fleet_cap):base 和平期下限,
+    敌兵×per_enemy 威胁伸缩,hard max 封顶;max=0 时固定 cap。"""
+    id_name: str = "ZEALOT"
+    cap: int = 6
+    per_enemy: float = 0.0
+    max: int = 0
+
+
+@dataclass(frozen=True)
 class PivotConfig:
     """自适应 pivot(反rush/反空军):对面爆空军 → spawn 混入 anti_air_units;
     rush 检测成立 → 先出 rush_zealots 个叉子顶 + 全军守家,威胁解除自动恢复。
@@ -99,6 +111,7 @@ class FlowConfig:
     pivot: PivotConfig | None = None  # 自适应机制(反rush/反空军),None=关
     save_up: int = 0             # O5 憋气机制:p0 气缺口 ≤N 时截断低优先生成攒气(0=关)
     expansion_cannons: ExpansionCannons | None = None  # 分矿塔数区间(None=固定 2)
+    pre_fleet: PreFleet | None = None  # E3e 舰队成型前地面保底(None=关)
 
     @classmethod
     def from_dict(cls, name: str, data: dict) -> "FlowConfig":
@@ -162,6 +175,15 @@ class FlowConfig:
             expansion_cannons = ExpansionCannons(
                 int(ec_raw.get("min", 3)), int(ec_raw.get("max", 8)),
             )
+        pf_raw = data.get("pre_fleet")
+        pre_fleet = None
+        if pf_raw:
+            pre_fleet = PreFleet(
+                str(pf_raw.get("id", "ZEALOT")).strip().upper(),
+                int(pf_raw.get("cap", 6)),
+                float(pf_raw.get("per_enemy", 0.0)),
+                int(pf_raw.get("max", 0)),
+            )
         pv_raw = data.get("pivot") or {}
         pivot = None
         if pv_raw:
@@ -184,6 +206,7 @@ class FlowConfig:
             pivot=pivot,
             save_up=int(data.get("save_up", 0) or 0),
             expansion_cannons=expansion_cannons,
+            pre_fleet=pre_fleet,
         )
 
     @classmethod

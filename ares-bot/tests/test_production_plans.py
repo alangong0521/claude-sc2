@@ -10,13 +10,22 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.production_plans import (  # noqa: E402
+    assimilator_attempt_stuck,
     expansion_cannon_count,
+    floor_army_defends_home,
     full_gas_bases,
     gas_gated_stargate_target,
     gas_target,
+    pre_fleet_cap,
+    pre_fleet_spawn,
+    research_paused_for_rush,
+    rush_needs_gateway,
+    rush_triggers_defense,
     save_up_spawn,
     scout_verdict,
     should_expand_dynamic,
+    should_register_autosupply,
+    should_release_waiting_builder,
     upgrade_tech_buildings,
     worker_target,
 )
@@ -152,14 +161,14 @@ class TestSaveUpSpawn(unittest.TestCase):
     def _run(self, spawn=None, **kw):
         kw.setdefault("counts", {"A": 0, "B": 0})
         kw.setdefault("affordable", {"A": False, "B": True})
-        kw.setdefault("gas_gap", {"A": 250, "B": 0})
+        kw.setdefault("resource_gap", {"A": 250, "B": 0})
         kw.setdefault("buildable", {"A": True, "B": True})
-        kw.setdefault("max_gas_gap", 250)
+        kw.setdefault("max_gap", 250)
         return save_up_spawn(spawn or self.SPAWN, **kw)
 
     def test_behind_share_and_close_truncates_to_p0(self):
-        # 占比落后 + 气缺口 ≤ 阈值 → 只留 p0(攒气,B 不再 fall-through 吃气)
-        out = self._run(counts={"A": 1, "B": 3}, gas_gap={"A": 100, "B": 0})
+        # 占比落后 + 资源缺口 ≤ 阈值 → 只留 p0(攒资源,B 不再 fall-through 吃气)
+        out = self._run(counts={"A": 1, "B": 3}, resource_gap={"A": 100, "B": 0})
         self.assertEqual(list(out), ["A"])
 
     def test_behind_share_and_affordable_truncates_to_p0(self):
@@ -168,7 +177,13 @@ class TestSaveUpSpawn(unittest.TestCase):
 
     def test_behind_share_but_far_from_affordable_keeps_full_dict(self):
         # 缺口还很大(>阈值) → 不截断,低优先先顶着生产
-        out = self._run(counts={"A": 1, "B": 3}, max_gas_gap=50)
+        out = self._run(counts={"A": 1, "B": 3}, max_gap=50)
+        self.assertEqual(set(out), {"A", "B"})
+
+    def test_mineral_bottleneck_does_not_truncate(self):
+        # E3h 回归:气 2000+(气缺口=0)但矿差得远(矿缺口=300>250)
+        # → resource_gap 取两者大 = 300 > 阈值 → 不截断,p1 在富矿窗口能补位
+        out = self._run(counts={"A": 1, "B": 3}, resource_gap={"A": 300, "B": 0})
         self.assertEqual(set(out), {"A", "B"})
 
     def test_share_met_drops_p0_so_p1_fills(self):
@@ -189,6 +204,48 @@ class TestSaveUpSpawn(unittest.TestCase):
     def test_single_unit_spawn_unchanged(self):
         out = self._run(spawn={"A": {"proportion": 1.0, "priority": 0}})
         self.assertEqual(list(out), ["A"])
+
+    def test_exempt_anti_air_never_truncated(self):
+        # E3c 回归:反空军混编(AA=追猎)触发时,即使航母占比落后要截断,
+        # 保命防空兵种也保留 —— 只截副 C(B=风暴)
+        spawn = {
+            "A": {"proportion": 0.7, "priority": 0},
+            "B": {"proportion": 0.3, "priority": 1},
+            "AA": {"proportion": 0.3, "priority": 0},
+        }
+        out = self._run(
+            spawn=spawn,
+            counts={"A": 1, "B": 2, "AA": 0},
+            affordable={"A": False, "B": True, "AA": True},
+            resource_gap={"A": 100, "B": 0, "AA": 0},
+            buildable={"A": True, "B": True, "AA": True},
+            exempt={"AA"},
+        )
+        self.assertEqual(set(out), {"A", "AA"})
+
+    def test_exempt_absent_from_spawn_is_noop(self):
+        out = self._run(counts={"A": 1, "B": 3}, exempt={"AA"})
+        self.assertEqual(list(out), ["A"])  # exempt 不在 dict 里 → 行为同前
+
+
+class TestShouldRegisterAutosupply(unittest.TestCase):
+    """O6 守卫 + E3h 水晶紧急通道。"""
+
+    def test_affordable_registers(self):
+        self.assertTrue(should_register_autosupply(True, 10))
+
+    def test_broke_but_supply_ok_skips(self):
+        # 常态:买不起且人口不紧 → 不注册(O6 防工人钉点)
+        self.assertFalse(should_register_autosupply(False, 8))
+
+    def test_supply_emergency_registers_even_broke(self):
+        # E3h:卡人口(≤2)时即便买不起也注册,钉一个工人换人口不断链
+        self.assertTrue(should_register_autosupply(False, 2))
+        self.assertTrue(should_register_autosupply(False, 0))
+
+    def test_custom_emergency_threshold(self):
+        self.assertFalse(should_register_autosupply(False, 3, emergency=2))
+        self.assertTrue(should_register_autosupply(False, 3, emergency=3))
 
 
 class TestShouldExpandDynamic(unittest.TestCase):
@@ -262,6 +319,143 @@ class TestGasGatedStargates(unittest.TestCase):
         self.assertEqual(gas_gated_stargate_target(6, [2, 2, 1]), 3)    # 没满采的不算
         self.assertEqual(gas_gated_stargate_target(6, [0]), 1)          # 没气也有 +1 底(存款爆兵)
         self.assertEqual(gas_gated_stargate_target(2, [2, 2, 2]), 2)    # cap 仍生效
+
+
+class TestResearchPausedForRush(unittest.TestCase):
+    """E3 回归:rush 期间研究(prioritize 预留)不得抢占 rush 响应包资源。
+
+    回归出处:e3-carrier-vh-zerg-rush game_02 —— rush 窗口 SHIELDS/AIRWEAPONS
+    正在研究,响应包只出 1 叉 2 塔败北。修复后 rush_active → 不注册
+    UpgradeController;rush 解除 → 恢复 O8 预留。"""
+
+    def test_rush_active_pauses_research(self):
+        self.assertTrue(research_paused_for_rush(True))
+
+    def test_normal_times_research_prioritized(self):
+        self.assertFalse(research_paused_for_rush(False))
+
+
+class TestRushTriggersDefense(unittest.TestCase):
+    """E3b 回归:rush 检测成立即铺塔,不再等敌兵压到 40 格。
+
+    回归出处:e3b game_02 —— rush 130s 检测到,首塔 221s 才立,232s 基地掉。
+    rush_cannons=False(E1 臂 B 纯叉子)时保持不铺。"""
+
+    def test_rush_active_triggers_defense(self):
+        self.assertTrue(rush_triggers_defense(True, True))
+
+    def test_no_rush_no_trigger(self):
+        self.assertFalse(rush_triggers_defense(False, True))
+
+    def test_arm_b_no_cannons_even_in_rush(self):
+        self.assertFalse(rush_triggers_defense(True, False))
+
+
+class TestRushNeedsGateway(unittest.TestCase):
+    """E3d:rush 敌兵>叉子时追加 gateway(单兵营 28s 一叉是实证瓶颈)。"""
+
+    def _run(self, **kw):
+        kw.setdefault("rush_active", True)
+        kw.setdefault("rush_zealots", 4)
+        kw.setdefault("enemy_army", 8)
+        kw.setdefault("zealots", 1)
+        kw.setdefault("gateways_have", 1)
+        return rush_needs_gateway(**kw)
+
+    def test_outnumbered_adds_gateway(self):
+        self.assertTrue(self._run())
+
+    def test_not_outnumbered_no_add(self):
+        self.assertFalse(self._run(enemy_army=1, zealots=2))
+
+    def test_cap_respected(self):
+        self.assertFalse(self._run(gateways_have=2))
+
+    def test_no_rush_or_no_zealot_response(self):
+        self.assertFalse(self._run(rush_active=False))
+        self.assertFalse(self._run(rush_zealots=0))  # 臂 C 纯塔不补兵营
+
+
+class TestPreFleetSpawn(unittest.TestCase):
+    """E3e 舰队成型前地面保底:混入/封顶/退出。"""
+
+    SPAWN = {"A": {"proportion": 0.7, "priority": 0},
+             "B": {"proportion": 0.3, "priority": 1}}
+
+    def _run(self, **kw):
+        kw.setdefault("spawn", self.SPAWN)
+        kw.setdefault("floor_id", "Z")
+        kw.setdefault("floor_count", 0)
+        kw.setdefault("floor_cap", 6)
+        kw.setdefault("fleet_online", False)
+        return pre_fleet_spawn(**kw)
+
+    def test_mixes_floor_before_fleet(self):
+        out = self._run()
+        self.assertIn("Z", out)                       # 保底混入
+        self.assertEqual(set(out), {"A", "B", "Z"})   # 主配方保留
+        self.assertGreater(out["Z"]["priority"], 1)   # 优先级压最低,舰队能产时舰队优先
+
+    def test_cap_stops_floor(self):
+        out = self._run(floor_count=6)
+        self.assertNotIn("Z", out)
+
+    def test_fleet_online_exits(self):
+        out = self._run(fleet_online=True)
+        self.assertNotIn("Z", out)
+        self.assertEqual(out, self.SPAWN)             # 回归主配方
+
+
+class TestPreFleetCap(unittest.TestCase):
+    """E3f 保底上限随敌兵力伸缩:clamp(base, 敌兵×per_enemy, hard_max)。"""
+
+    def test_scales_with_threat(self):
+        # 敌 30 兵 × 0.5 = 15(E3f game_02 的第二波规模)
+        self.assertEqual(pre_fleet_cap(6, 0.5, 16, 30), 15)
+        self.assertEqual(pre_fleet_cap(6, 0.5, 16, 20), 10)
+
+    def test_peace_time_floor_is_base(self):
+        self.assertEqual(pre_fleet_cap(6, 0.5, 16, 0), 6)
+        self.assertEqual(pre_fleet_cap(6, 0.5, 16, 10), 6)  # 低于 base 不缩
+
+    def test_hard_max_clamps(self):
+        self.assertEqual(pre_fleet_cap(6, 0.5, 16, 999), 16)
+
+    def test_zero_max_keeps_fixed_cap(self):
+        # 向后兼容 E3e:不配 max → 固定 cap
+        self.assertEqual(pre_fleet_cap(6, 0.5, 0, 30), 6)
+
+
+class TestFloorArmyDefendsHome(unittest.TestCase):
+    """E3g trickle:舰队成型前地面保底兵默认守家。"""
+
+    def test_pre_fleet_and_no_primary_defends(self):
+        self.assertTrue(floor_army_defends_home(True, 0))
+
+    def test_primary_online_resumes_offense(self):
+        self.assertFalse(floor_army_defends_home(True, 1))
+
+    def test_no_pre_fleet_flow_unchanged(self):
+        self.assertFalse(floor_army_defends_home(False, 0))
+
+
+class TestBuilderReleaseRules(unittest.TestCase):
+    """O11 钉点撤回 + O13 气矿卡死判定。"""
+
+    def test_release_after_grace_when_broke(self):
+        # O11:钉点 >6s 且仍买不起 → 撤回采矿
+        self.assertTrue(should_release_waiting_builder(False, 7.0))
+
+    def test_keep_within_grace(self):
+        self.assertFalse(should_release_waiting_builder(False, 3.0))
+
+    def test_keep_when_affordable(self):
+        self.assertFalse(should_release_waiting_builder(True, 99.0))
+
+    def test_assimilator_stuck_timeout(self):
+        # O13:在建气矿 >45s 没落地 → 判卡死重派
+        self.assertTrue(assimilator_attempt_stuck(100.0, 50.0))
+        self.assertFalse(assimilator_attempt_stuck(100.0, 80.0))
 
 
 if __name__ == "__main__":

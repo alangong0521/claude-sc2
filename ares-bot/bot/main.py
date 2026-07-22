@@ -5,7 +5,8 @@ from typing import Optional
 from ares import AresBot, Hub, ManagerMediator
 from ares.behaviors.macro import Mining
 from ares.consts import ID as TRACKER_ID
-from ares.consts import UnitRole
+from ares.consts import TIME_ORDER_COMMENCED, UnitRole
+from bot.production_plans import should_release_waiting_builder
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.unit import Unit
@@ -207,6 +208,21 @@ class MyBot(AresBot):
             if role in (UnitRole.SCOUTING.name, UnitRole.PERSISTENT_BUILDER.name):
                 continue
             if w.tag in tracker:
+                # O11:钉在建造点等钱的工人(ares 无守卫路径:ProtossStaticDefence/
+                # ExpansionController/TechUp)——钉点超 6s 且结构仍买不起 → 拆 tracker
+                # 撤回采矿,行为下帧重派(往返途中钱照采)。例外:人口紧急态的水晶
+                # (E3h-B 紧急通道,故意钉点保人口)。
+                info = tracker[w.tag]
+                sid = info[TRACKER_ID]
+                if sid == UnitID.PYLON and self.supply_left <= 2:
+                    continue
+                if should_release_waiting_builder(
+                    self.can_afford(sid),
+                    self.time - info[TIME_ORDER_COMMENCED],
+                ):
+                    release_from_build_tracker(self.mediator, w.tag)
+                    self.mediator.assign_role(tag=w.tag, role=UnitRole.GATHERING)
+                    w.gather(self.mineral_field.closest_to(w))
                 continue
             # O7:采集往返/搬资源的农民零打扰 —— idle 判定漏掉过渡帧也别重下 gather
             if w.is_gathering or w.is_carrying_resource or w.is_returning:

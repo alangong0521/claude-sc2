@@ -106,7 +106,9 @@ def main():
     if bot_race_override:
         race = _pick_enum(Race, bot_race_override, "BOT_RACE")
 
-    bot1 = Bot(race, MyBot(), bot_name)
+    # GAME_STEP 环境变量(实验用):覆盖 ares config 的 GameStep=2,如 GAME_STEP=4。
+    _gs = os.environ.get("GAME_STEP")
+    bot1 = Bot(race, MyBot(game_step_override=int(_gs) if _gs else None), bot_name)
 
     if "--LadderServer" in sys.argv:
         # Ladder game started by LadderManager

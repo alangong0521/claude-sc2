@@ -23,6 +23,10 @@
 #                     敌可见 + advantage_supply)时逐矿 +1,上限 max_bases,rush 期间不开
 #   expansion_cannons: {min, max}(缺省无=固定 2 塔/矿)。E2 分矿塔数动态:
 #                     photon_cannons_per_base = clamp(min, min + 敌可见作战单位//4, max)
+#   pre_fleet:        {id, cap, per_enemy, max}(缺省无=关)。E3e 舰队成型前地面保底:
+#                     舰队主 C 出生前混入 id 兵种(矿耗地面兵,不吃气)到 spawn;
+#                     上限 = clamp(cap, 敌可见作战单位×per_enemy, max)(E3f 伸缩,
+#                     max=0 时固定 cap);主 C 上线自动退出。保底兵种 save_up 不截断
 #   freeflow:         true|false(缺省 false)。true = SpawnController 不按配比卡产
 #                     (配比只当优先序不当上限)——多兵种流派必开,否则兵力在
 #                     精确配比点永久死锁(单兵种流派靠 over_produce 豁免,不用开)
@@ -103,6 +107,7 @@ flows:
     one_off: [ORACLE]
     freeflow: true
     save_up: 250                    # O5 憋气:航母占比落后时截断风暴生成,攒气等航母
+    pre_fleet: {id: ZEALOT, cap: 6, per_enemy: 0.5, max: 16}   # E3e 保底+E3f 伸缩:敌 30 兵→15 叉
     # E2 动态开矿(司令:有能力开到 4 矿):爆仓(农民 ≥ 22×基地数)或
     # 前线优势(我方 army supply ≥ 敌可见 + 12)时逐矿 +1,rush 期间不开
     auto_expand: {max_bases: 4, when_workers: 22, advantage_supply: 12}

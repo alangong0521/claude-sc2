@@ -206,9 +206,22 @@ class TestPivotRushCannons(unittest.TestCase):
             "PROTOSSAIRWEAPONSLEVEL3", "PROTOSSAIRARMORSLEVEL3",
             "PROTOSSSHIELDSLEVEL2", "PROTOSSSHIELDSLEVEL3",
         ])
+        # E3e/E3f:舰队成型前地面保底(随敌兵力伸缩)
+        self.assertEqual(
+            (fc.pre_fleet.id_name, fc.pre_fleet.cap,
+             fc.pre_fleet.per_enemy, fc.pre_fleet.max),
+            ("ZEALOT", 6, 0.5, 16),
+        )
         # stalker 旧式 auto_expand 不受影响(冻结块)
         sk = FlowConfig.load("stalker")
         self.assertEqual((sk.auto_expand.to, sk.auto_expand.max_bases), (2, 0))
+
+    def test_pre_fleet_default_none(self):
+        self.assertIsNone(FlowConfig.from_dict("x", {"spawn": {}}).pre_fleet)
+        fc = FlowConfig.from_dict("x", {"spawn": {}, "pre_fleet": {
+            "id": "zealot", "cap": 4,
+        }})
+        self.assertEqual((fc.pre_fleet.id_name, fc.pre_fleet.cap), ("ZEALOT", 4))
 
     def test_carrier_save_up_shipped(self):
         _yaml_or_skip(self)
