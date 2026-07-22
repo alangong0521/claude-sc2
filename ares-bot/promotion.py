@@ -88,15 +88,15 @@ def _play_combo(args: argparse.Namespace, diff: str, race: str, build: str,
     return wins, games
 
 
-def _load_state() -> dict:
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+def _load_state(path: Path = STATE_FILE) -> dict:
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
     return {}
 
 
-def _save_state(state: dict) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(
+def _save_state(state: dict, path: Path = STATE_FILE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
@@ -108,11 +108,21 @@ def main() -> int:
     ap.add_argument("--start", default="MediumHard", help="起始档位(默认 MediumHard)")
     ap.add_argument("-n", type=int, default=3, help="每组合局数(默认 3,≥2 胜通过)")
     ap.add_argument("--map", default="random", help="地图(默认 random 每局随机 1v1)")
+    ap.add_argument("--state", default=str(STATE_FILE),
+                    help="状态文件(默认 bench/promotion.json;多车道并行时各用各的)")
+    ap.add_argument("--races", default=",".join(RACES),
+                    help="逗号分隔的种族子集(默认全选,如 Terran,Zerg)")
+    ap.add_argument("--builds", default=",".join(BUILDS),
+                    help="逗号分隔的风格子集(默认全选,如 Rush,Macro)")
     args = ap.parse_args()
 
     pass_mark = args.n // 2 + 1  # 3→2 胜, 5→3 胜
+    state_path = Path(args.state)
+    races = [r for r in RACES if r in args.races.split(",")]
+    builds = [b for b in BUILDS if b in args.builds.split(",")]
+    n_combos = len(races) * len(builds)
 
-    state = _load_state()
+    state = _load_state(state_path)
     flow_state = state.setdefault(args.flow, {"tier": args.start, "history": {}})
     tier = flow_state.get("tier", args.start)
     if tier not in LADDER:
@@ -122,13 +132,13 @@ def main() -> int:
     idx = LADDER.index(tier)
     while idx < len(LADDER):
         diff = LADDER[idx]
-        print(f"\n===== {args.flow} @ {diff} 矩阵(15 组合 × ≤{args.n} 局)=====",
+        print(f"\n===== {args.flow} @ {diff} 矩阵({n_combos} 组合 × ≤{args.n} 局)=====",
               flush=True)
         history = flow_state["history"].setdefault(diff, {})
         failed: list[tuple[str, str]] = []
 
-        for race in RACES:
-            for build in BUILDS:
+        for race in races:
+            for build in builds:
                 tag_base = _tag(args.flow, diff, race, build)
                 wins, games = _play_combo(
                     args, diff, race, build, tag_base, pass_mark
@@ -137,7 +147,7 @@ def main() -> int:
                 history[f"{race}/{build}"] = [wins, games, "pass" if ok else "fail"]
                 print(f"[promo] {diff} {race}/{build}: {wins}/{games} "
                       f"{'PASS' if ok else 'FAIL'}", flush=True)
-                _save_state(state)
+                _save_state(state, state_path)
                 if not ok:
                     failed.append((race, build))
 
@@ -157,7 +167,7 @@ def main() -> int:
                 counters.append(key)
                 print(f"[promo] {key} 重打后合计 {total_w}/{total_g} → 疑似相克",
                       flush=True)
-            _save_state(state)
+            _save_state(state, state_path)
 
         if len(counters) > _MAX_COUNTERS_PER_TIER:
             # 打不过降档(司令指令 4):整档 >2 组合打不穿 → 降一档继续爬(而非退出);
@@ -166,13 +176,13 @@ def main() -> int:
                 print(f"\n[promo] {diff} 档 {len(counters)} 个组合打不穿(>{_MAX_COUNTERS_PER_TIER}),"
                       f"降档回 {LADDER[idx - 1]} 蓄力。相克组合: {counters}", flush=True)
                 flow_state["tier"] = LADDER[idx - 1]
-                _save_state(state)
+                _save_state(state, state_path)
                 idx -= 1
                 continue
             print(f"\n[promo] {diff} 档 {len(counters)} 个组合打不穿(>{_MAX_COUNTERS_PER_TIER}),"
                   f"整体未过,留在 {diff} 继续迭代。相克组合: {counters}", flush=True)
             flow_state["tier"] = diff
-            _save_state(state)
+            _save_state(state, state_path)
             return 1
 
         # 晋级(失败 ≤2 个记相克,不拦)
@@ -184,10 +194,10 @@ def main() -> int:
         if next_idx >= len(LADDER):
             print(f"[promo] {args.flow} 已打穿最高档 CheatInsane,通关!", flush=True)
             flow_state["tier"] = "DONE"
-            _save_state(state)
+            _save_state(state, state_path)
             return 0
         flow_state["tier"] = LADDER[next_idx]
-        _save_state(state)
+        _save_state(state, state_path)
         print(f"[promo] 晋级 → {LADDER[next_idx]}\n", flush=True)
         idx = next_idx
 
