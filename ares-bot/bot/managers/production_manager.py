@@ -35,6 +35,7 @@ from bot.production_plans import (
     gas_gated_stargate_target,
     gas_target,
     save_up_spawn,
+    scout_verdict,
     should_expand_dynamic,
     upgrade_tech_buildings,
     worker_target,
@@ -84,6 +85,7 @@ class ProductionManager(Manager):
         self._build_target: int | None = None
         # pivot 自适应状态(反rush/反空军)
         self._early_scout_done: bool = False
+        self._scout_verdict_done: bool = False  # O9:侦查情报→开局决策,一局评一次
         self._rush_active: bool = False
         self._rush_clear_since: float | None = None
         # 流派配置(flows.yml,神族生产侧单一真相源);Terran/Zerg 路径不走它。
@@ -121,7 +123,26 @@ class ProductionManager(Manager):
 
         # use ares-sc2 macro behaviors for building pylons and units
         macro_plan: MacroPlan = MacroPlan()
-        macro_plan.add(AutoSupply(base_location=self.ai.start_location))
+        # O6: ares AutoSupply 同样不查 can_afford(auto_supply.py:52-55 直接调
+        # BuildStructure),钱不够农民就钉在 pylon 建造点干等 —— 只在买得起时注册,
+        # supply 缺口的判定仍归 ares 内部。
+        if self.ai.can_afford(UnitID.PYLON):
+            macro_plan.add(AutoSupply(base_location=self.ai.start_location))
+        # 升级(O1/O8/O10):研究交 UpgradeController 并进 MacroPlan 且 prioritize=True ——
+        # 研究就绪但买不起时返回 True 截断 plan,SpawnController 暂停花钱 → 资源攒给
+        # 研究(O8 长研究预留,Forge/科技建筑一好就点);建筑缺失/前置未就绪时返回 False
+        # 不阻塞 plan(不会存款死锁)。前置科技建筑不走它的 auto tech-up(ares TechUp
+        # 不查 can_afford,O1 实证),由带守卫的 _build_core_structure 补建(见 update 尾部)。
+        _upgrades = self._flow.upgrade_ids()
+        if _upgrades:
+            macro_plan.add(
+                UpgradeController(
+                    _upgrades,
+                    base_location=self.ai.start_location,
+                    auto_tech_up_enabled=False,
+                    prioritize=True,
+                )
+            )
         # 兵种配方从 flows.yml 当前流派读(spawn_dict 只含 proportion>0 的兵种)。
         # freeflow_mode 按流派配置:多兵种流派必开(true=配比只当优先序不当上限),
         # 否则兵力在精确配比点永久死锁(C3c 诊断出的 stalker 停产第二根因)。
@@ -164,6 +185,7 @@ class ProductionManager(Manager):
         self._build_probes(self.ai.ready_townhalls)
         self._ensure_townhall()  # Q4:保底主基地(被打爆到 0 且有矿区价值时重建)
         self._early_scout()      # pivot:2分钟自动派一个探机看对面开局
+        self._evaluate_scout_intel()  # O9:侦查情报→开局决策(t≈170s,一局一次)
         self._update_rush_state()  # pivot:rush 检测/解除(响应包=叉子+塔+守家)
         await self._build_flow_structures(building_counter, structures_dict)
         self._morph_gateways()
@@ -173,24 +195,17 @@ class ProductionManager(Manager):
         self._spend_bank()  # Q3:存款淤积时换成开矿/追加产能,经济优势→战场优势
         self._build_forward_pylon()  # F1: 前线水晶塔(投送),各流派共用
         self._chrono_structures()
-        # 升级：研究交 ares UpgradeController，但前置科技建筑不走它的 auto tech-up ——
-        # ares TechUp 不查 can_afford 就派农民（O1 实证：开局每帧刷 Building FORGE
-        # for PROTOSSSHIELDSLEVEL1，农民钉在建造点干等 150 矿）。研究建筑里 core_structures
-        # 没覆盖的（如 FORGE），改由带 can_afford 守卫的 _build_core_structure 补建；
-        # 已覆盖的走 _build_flow_structures（保留 FLEETBEACON 需就绪星门的特判）。
-        _upgrades = self._flow.upgrade_ids()
+        # 升级前置科技建筑补建(O1/O10):core_structures 没覆盖的(如 FORGE,
+        # 以及盾 L2/L3 需要的 TWILIGHTCOUNCIL)由带 can_afford 守卫的
+        # _build_core_structure 补建;已覆盖的走 _build_flow_structures(保留
+        # FLEETBEACON 需就绪星门的特判)。研究本身在上方 MacroPlan 里(O8)。
         if _upgrades:
             _covered = set(self._flow.core_structure_ids())
-            for _tech_building in upgrade_tech_buildings(_upgrades):
+            for _tech_building in upgrade_tech_buildings(
+                _upgrades, done=self.ai.state.upgrades
+            ):
                 if _tech_building not in _covered:
                     await self._build_core_structure(_tech_building)
-            self.ai.register_behavior(
-                UpgradeController(
-                    _upgrades,
-                    base_location=self.ai.start_location,
-                    auto_tech_up_enabled=False,
-                )
-            )
 
         # one off task to build an oracle（流派配置里 one_off 含 ORACLE 才造；
         # 需舰队航标 + 有空闲就绪星门）
@@ -293,6 +308,50 @@ class ProductionManager(Manager):
         if w := self.ai.mediator.select_worker(target_position=enemy_main):
             self.ai.mediator.assign_role(tag=w.tag, role=UnitRole.SCOUTING)
             w.move(enemy_main)
+
+    # O9: 侦查情报→开局决策的评估时点(探机 100s 出发,留 70s 赶路/送死窗口)
+    _SCOUT_VERDICT_AT: float = 170.0
+    # O9: rush 征兆的"早出兵建筑"(看到 ≥2 个即判 rush;与判据早期多兵互补)
+    _MILITARY_STRUCTS = {
+        UnitID.BARRACKS, UnitID.GATEWAY, UnitID.SPAWNINGPOOL, UnitID.ROACHWARREN,
+    }
+
+    def _evaluate_scout_intel(self) -> None:
+        """O9 侦查情报 → 开局决策闭环(carrier 流,一局一次,t≈170s)。
+
+        探机(_early_scout)/steer scout 的情报 → 三档(判据纯函数
+        production_plans.scout_verdict):
+        (a) rush 征兆(早出兵建筑×2 / 早期多兵) → 提前置 _rush_active,
+            复用现有响应包(出叉+铺塔+守家),比"敌兵压到 40 格"提前 ~1 分钟;
+        (b) 对面开矿/科技开局 → 维持贪打法(什么都不做);
+        (c) 没探到(探机被杀/没找到主家,enemy_structures 空) → 保守按疑似 rush。
+        评估完把 SCOUTING 农民撤回采矿(情报已用,别留在敌家白送,同 O4 精神)。
+        只挂 carrier:tempest/stalker 是已验证基线,行为一行不动。"""
+        if self._scout_verdict_done or self._flow.name != "carrier":
+            return
+        if self._flow.pivot is None or self.ai.time < self._SCOUT_VERDICT_AT:
+            return
+        self._scout_verdict_done = True
+        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        military = sum(
+            1 for s in self.ai.enemy_structures if s.type_id in self._MILITARY_STRUCTS
+        )
+        army = sum(
+            1 for u in self.ai.enemy_units
+            if not u.is_structure and u.type_id not in workers
+        )
+        verdict = scout_verdict(
+            intel=bool(self.ai.enemy_structures),
+            military_structs=military,
+            early_army=army,
+        )
+        if verdict != "greedy":
+            self._rush_active = True
+            self._rush_clear_since = None
+        for s in self.manager_mediator.get_units_from_role(role=UnitRole.SCOUTING):
+            self.manager_mediator.assign_role(tag=s.tag, role=UnitRole.GATHERING)
+            if self.ai.mineral_field:
+                s.gather(self.ai.mineral_field.closest_to(s))
 
     @property
     def rush_active(self) -> bool:

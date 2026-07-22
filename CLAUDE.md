@@ -20,7 +20,9 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 - **`bot/steer_vocab.py`** — 命令词表（`FIELDS` + `_FIELD_VALUES`），bot 和 steer_cli 共用，加命令只改这里。
 
 ## ares 原语（优先复用，不改框架）
-- `UpgradeController(upgrades, base_location)` — 研究升级 + 打 `logger.info`。**神族路径用 `auto_tech_up_enabled=False`**：前置科技建筑改由 `_build_core_structure`（can_afford 守卫）补建，否则 ares `TechUp` 不查存款就把农民钉在建造点干等（O1 实证）。
+- `UpgradeController(upgrades, base_location)` — 研究升级 + 打 `logger.info`。**神族路径用 `auto_tech_up_enabled=False` + `prioritize=True` 并放进 MacroPlan 的 SpawnController 之前**（O8：研究就绪但买不起时截断 plan 攒钱给研究）；前置科技建筑改由 `_build_core_structure`（can_afford 守卫）补建，否则 ares `TechUp` 不查存款就把农民钉在建造点干等（O1 实证）；`required_building`（如盾 L2 的暮光议会）只在同线上一阶完成后补建（`upgrade_tech_buildings(done=)`，O10）。注意：当前 melee 无航母容量/弹射升级可研究（coop 残留枚举）。
+- `AutoSupply(base_location)` — 补 pylon。**不查 can_afford**（O6 实证）→ 只在 `can_afford(PYLON)` 时注册。
+- `Mining(mineral_boost=False)` — **必须关加速采矿**（O7 实证）：开着你每农民每往返 2 条 move+SMART，主矿区满屏点击。
 - `ProtossStaticDefence(photon_cannons_per_base, shield_batteries_per_base, ...)` — 自动每基地铺 pylon+光子炮+护盾电池 + 建 forge。
 - `SpawnController(army_composition_dict, spawn_target=)` — 造兵，`spawn_target` 控折跃位置（WarpInManager 按距离选最近电源）。
 - `TechUp(desired_tech)` — 自动补兵种所需科技建筑。
@@ -48,8 +50,10 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 1. **血条设置**：确认 `~/Library/Application Support/Blizzard/StarCraft II/Variables.txt` 里
    `displayunitstatus=Damaged`（不是就改过来再启动；客户端有时会被局内操作改回别的值）。
 2. **请示司令**：用结构化提问逐项确认五项（AskUserQuestion，每项给选项），按选项组装环境变量启动。
+   **提问顺序固定：流派 → 难度 → 风格 → 种族 → 地图**（风格紧跟难度问）。
    提问工具每题限 4 个选项，**难度和风格必须列全，用两段问法**：
-   - 难度（从 Hard 起步往上问全）：第 1 题 `Hard / Harder / VeryHard / Cheat 档`，
+   - 难度（**严格按 Hard→Cheat 升序列**：Hard / Harder / VeryHard / CheatVision /
+     CheatMoney / CheatInsane）：第 1 题 `Hard / Harder / VeryHard / Cheat 档`，
      选 Cheat 档再问第 2 题 `CheatVision / CheatMoney / CheatInsane`；
      司令想要更低难度走 Other 自填。
    - 风格（5 种 + 随机列全）：第 1 题 `Macro / Rush / Timing / 其他`，
@@ -59,8 +63,8 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 |---|---|---|
 | 流派 | `BUILD` | `tempest`（最强，认证至 CheatInsane）/ `carrier`（认证至 VeryHard）/ `stalker`（攻坚中，0 胜率） |
 | 难度 | `DIFF` | Hard / Harder / VeryHard / CheatVision / CheatMoney / CheatInsane（更低档 VeryEasy~MediumHard 不常问，司令自填） |
-| 对手种族 | `OPPONENT_RACE` | Terran / Zerg / Protoss / Random |
 | 对手风格 | `AI_BUILD` | Macro / Rush / Timing / Power / Air / RandomBuild（随机） |
+| 对手种族 | `OPPONENT_RACE` | Terran / Zerg / Protoss / Random |
 | 地图 | `MAP` | 随机（**排除 HonorgroundsLE**）/ AbyssalReefLE（baseline 固定图）/ BelShirVestigeLE / CactusValleyLE（4 人混战图）/ NewkirkPrecinctTE / PaladinoTerminalLE / ProximaStationLE（⚠️ HonorgroundsLE 会崩 PlacementManager，勿选） |
 
 示例：`REALTIME=True BUILD=carrier MAP=AbyssalReefLE DIFF=Medium OPPONENT_RACE=Random AI_BUILD=Macro poetry run python run.py`
@@ -76,6 +80,7 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 - **warpgate 必须自己变形**：`SpawnController.execute` 在 WARPGATERESEARCH 完成后**停产等 gateway 变形**（`return False`），而 ares 没有变形行为——不自己下 `MORPH_WARPGATE` 就永久停产（`production_manager._morph_gateways` 根治）。
 - **多兵种 SpawnController 必开 freeflow**：配比是**上限**不是目标——精确配比点全兵种都 ≥ 目标 → 全停产（配比死锁）；且 freeflow 下**首优先兵种若永远可负担会饿死其他兵种**（C5a 实证：zealot p0 → 0 追猎）。单兵种流派靠 `over_produce_on_low_tech` 豁免不用开。freeflow 的镜像坑：p0 **买不起**就 fall-through 喂饱 p1（O5 实证：风暴吃光气攒不出航母）→ carrier 用 `save_up` 憋气机制（`production_plans.save_up_spawn`）截断。
 - **carrier 动态多矿（E2）**：`auto_expand` 配 `max_bases` 走动态模式——爆仓（农民 ≥ `when_workers`×基地数）或前线优势（我方 army supply ≥ 敌可见 + `advantage_supply`）逐矿 +1，rush 期间不开；`expansion_cannons` 让 `ProtossStaticDefence` 塔数动态（`min + 敌可见作战单位//4`，封顶 `max`，每帧重算）；星门追加有气体闸门（目标 = min(cap, 满采气基地数 + 1)，满采=该基地 2 个 ready assimilator；+1 因气有存款可爆兵、风暴耗气更慢——司令 2026-07-21 口径）。旧式 `auto_expand {at,to,when_workers}`（stalker）不受影响。
+- **carrier 侦查决策闭环（O9）**：t≈170s 一局评一次 `scout_verdict`（无情报→保守按 rush；早出兵建筑≥2 或早期敌兵≥6→rush；否则 greedy 维持贪打法），rush/unknown 直接置 `_rush_active` 复用响应包并撤回 SCOUTING 农民。只挂 carrier，tempest/stalker 基线不动。
 - **steer 一次性 vs 粘性**：`build`/`expand`/`scout` 一次性（重下 no-op，要 `clear` 再下）；其余粘性。`clear` 清**全部**字段（无单 key clear）。
 
 ## 验证

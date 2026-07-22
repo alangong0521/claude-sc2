@@ -15,6 +15,7 @@ from bot.production_plans import (  # noqa: E402
     gas_gated_stargate_target,
     gas_target,
     save_up_spawn,
+    scout_verdict,
     should_expand_dynamic,
     upgrade_tech_buildings,
     worker_target,
@@ -90,6 +91,53 @@ class TestUpgradeTechBuildings(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(upgrade_tech_buildings([]), [])
+
+    def test_required_building_gated_on_previous_tier(self):
+        from sc2.ids.upgrade_id import UpgradeId
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+
+        ups = [UpgradeId.PROTOSSSHIELDSLEVEL1, UpgradeId.PROTOSSSHIELDSLEVEL2]
+        # L1 没完成:盾 L2 的前置 TWILIGHTCOUNCIL 不补(防早期抢气)
+        self.assertEqual(upgrade_tech_buildings(ups), [UnitID.FORGE])
+        # L1 完成后:补 TWILIGHTCOUNCIL(Forge 去重不重复)
+        self.assertEqual(
+            upgrade_tech_buildings(ups, done={UpgradeId.PROTOSSSHIELDSLEVEL1}),
+            [UnitID.FORGE, UnitID.TWILIGHTCOUNCIL],
+        )
+
+    def test_air_l2_required_fleetbeacon(self):
+        from sc2.ids.upgrade_id import UpgradeId
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+
+        ups = [UpgradeId.PROTOSSAIRWEAPONSLEVEL1, UpgradeId.PROTOSSAIRWEAPONSLEVEL2]
+        self.assertEqual(
+            upgrade_tech_buildings(ups, done={UpgradeId.PROTOSSAIRWEAPONSLEVEL1}),
+            [UnitID.CYBERNETICSCORE, UnitID.FLEETBEACON],
+        )
+
+
+class TestScoutVerdict(unittest.TestCase):
+    """O9 侦查情报 → 开局决策三档。"""
+
+    def test_no_intel_is_unknown(self):
+        # 探机被杀/没找到主家 → 保守(按疑似 rush)
+        self.assertEqual(scout_verdict(intel=False, military_structs=0, early_army=0),
+                         "unknown")
+
+    def test_rush_signals(self):
+        # 早出兵建筑 ×2(兵营×2/血池+出兵建筑)
+        self.assertEqual(scout_verdict(intel=True, military_structs=2, early_army=0),
+                         "rush")
+        # 早期可见兵力 ≥6(与 early_swarm 阈值同源)
+        self.assertEqual(scout_verdict(intel=True, military_structs=0, early_army=6),
+                         "rush")
+
+    def test_greedy_when_macro_or_tech(self):
+        # 对面开矿/科技开局(有情报、无 rush 迹象) → 维持贪打法
+        self.assertEqual(scout_verdict(intel=True, military_structs=1, early_army=2),
+                         "greedy")
+        self.assertEqual(scout_verdict(intel=True, military_structs=0, early_army=0),
+                         "greedy")
 
 
 class TestSaveUpSpawn(unittest.TestCase):

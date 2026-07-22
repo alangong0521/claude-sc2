@@ -33,20 +33,35 @@ def gas_target(
     return per_base * ready_townhalls
 
 
-def upgrade_tech_buildings(upgrade_ids: list) -> list:
-    """升级所需的研究建筑列表（去重保序）。
+def upgrade_tech_buildings(upgrade_ids: list, done=frozenset()) -> list:
+    """升级链当前该补的科技建筑（去重保序）。
 
     交给带 can_afford 守卫的 _build_core_structure 补建；UpgradeController 只负责
     研究（auto_tech_up_enabled=False）——ares TechUp 自动补建不查存款就把农民
-    钉在建造点干等（O1 实证），所以前置建筑由 bot 层守卫建造。纯逻辑，可单测。
+    钉在建造点干等（O1 实证），所以前置建筑由 bot 层守卫建造。
+
+    - 研究建筑(researched_from)全量列出（便宜,如 FORGE）；
+    - 高级前置(required_building,如盾 L2/L3 的 TWILIGHTCOUNCIL)只在**同线上
+      一阶完成后**才补(O10)——否则开局就抢 100 气建暮光议会,拖慢星门/航标。
+    done = 已完成升级集合（运行时用 ai.state.upgrades）。纯逻辑，可单测。
     """
+    from sc2.dicts.unit_research_abilities import RESEARCH_INFO
     from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
 
+    done = set(done)
     buildings: list = []
-    for uid in upgrade_ids:
+    for i, uid in enumerate(upgrade_ids):
         researched_from = UPGRADE_RESEARCHED_FROM[uid]
         if researched_from not in buildings:
             buildings.append(researched_from)
+        required = RESEARCH_INFO[researched_from][uid].get("required_building")
+        if required and required not in buildings:
+            same_line_earlier = [
+                e for e in upgrade_ids[:i]
+                if UPGRADE_RESEARCHED_FROM[e] == researched_from
+            ]
+            if all(e in done for e in same_line_earlier):
+                buildings.append(required)
     return buildings
 
 
@@ -138,3 +153,18 @@ def gas_gated_stargate_target(cap: int, gas_per_base: list[int]) -> int:
     （175气/43s vs 航母 250气/64s），产能可以略超稳态气体收入。
     例：单矿双气满采 → 2 星门；双矿四气满采 → 3 星门。纯逻辑。"""
     return min(cap, full_gas_bases(gas_per_base) + 1)
+
+
+def scout_verdict(*, intel: bool, military_structs: int, early_army: int) -> str:
+    """侦查情报 → 开局决策（O9）。纯逻辑，可单测。
+
+    - "rush"：看到 rush 征兆（早出兵建筑 ≥2，或早期可见作战单位 ≥6——与
+      `_update_rush_state` 的 early_swarm 阈值同源）→ 提前触发 rush 响应包；
+    - "greedy"：有情报且没有 rush 迹象（对面开矿/科技开局）→ 维持贪打法；
+    - "unknown"：探机没探到（被杀/没找到主家，intel=False）→ 按疑似 rush 保守处理。
+    """
+    if not intel:
+        return "unknown"
+    if military_structs >= 2 or early_army >= 6:
+        return "rush"
+    return "greedy"

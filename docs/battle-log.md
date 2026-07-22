@@ -115,6 +115,27 @@
   - 机制通用：按 priority 排序处理任意多兵种，key 无关；单兵种配方直接 no-op。
 - **状态**：已修复（待跑局验证）。
 
+### O10 carrier 科技深度不足：终局只有 L1，拦截机容量没升
+
+- **现象**（司令观察）：到对局结束，航母没有升拦截机容量（8 小飞机），护盾和
+  其它科技也只到 L1。
+- **影响**：航母流的后期强度一半在科技（容量=每航母火力翻倍，L2/L3 攻防盾
+  是黄金舰队的本钱），只到 L1 = 流派没打完。
+- **实证根因**（2026-07-22，以 stableid 数据为准，**改正猜测**）：
+  - **当前 melee 版本没有任何航母容量/弹射升级可研究**——`CARRIERCARRIERCAPACITY`、
+    `CARRIERLAUNCHSPEEDUPGRADE`、`INTERCEPTORLIMIT4/6`、`CARRIERLEASHRANGEUPGRADE`
+    枚举存在但都不在 `UPGRADE_RESEARCHED_FROM`（coop/旧版残留）。容量没法升，
+    航母火力只能靠空攻 L2/L3 补。
+  - 升级链浅是真问题：carrier 原 upgrades 只有三个 L1。L2/L3 前置查实：
+    空攻/空防 L2/L3 需 FLEETBEACON（已在科技链）；盾 L2/L3 需 TWILIGHTCOUNCIL
+    （carrier 原本不建，缺）。
+- **实现**（2026-07-22）：
+  - `flows.yml` carrier upgrades 补全为 9 项全链（空攻/空防/盾 L1-L3）；顺序讲究
+    ——UpgradeController 遇不可研究项会截断后续，故 L1 在前、盾 L2/L3 垫底。
+  - `upgrade_tech_buildings()` 加 `done` 门控：`required_building`（如暮光议会）
+    只在**同线上一阶完成后**才由守卫路径补建，避免开局抢 100 气拖慢星门/航标。
+- **状态**：已修复（待 bench 验证：多矿经济起来后 L2/L3 应依次启动不空转）。
+
 ### E1 对局实验：carrier 遇 rush，叉子顶 vs 塔防憋航母，哪个最优？
 - **司令问题**：侦查确认 rush 流后，(a) 出叉子顶前方战场，还是 (b) 防御塔顶一波
   然后直接憋航母平推？哪个是最优？
@@ -182,7 +203,82 @@
   航母数随气增加。
 - **风险**：优势判据可能被敌藏兵误导（默认 12 偏保守 + rush 不开缓解）；
   8 塔=1200 矿只在敌兵真多时爬到。分矿农民转运不在本期。
-- **状态**：已实现（单测 121 例全绿 + carrier/tempest 编译过），**待 bench 验证**。
+- **状态**：已实现（单测 121 例全绿 + carrier/tempest 编译过），**✅ bench 验证通过（2026-07-21，见文末 E2 结果）**。
+
+---
+
+## 2026-07-22 carrier @PaladinoTerminalLE vs Terran VeryHard/Rush（共驾局，**Victory**）
+
+> 结局：司令接管玩了一会获胜，电脑打出 gg；日志无 Result 行是因接管后客户端
+> 结束方式绕过了 bot 结果回报，traceback 是 python-sc2 局后查询竞态，无害。
+> 升级节奏：SHIELDS L1 @3:45 / AIRWEAPONS L1 @4:11 / AIRARMORS L1 @6:21。
+### O6 仍有农民干等钱造建筑（疑似等第二个水晶）
+
+- **现象**：一个农民不干活干等着，疑似在等钱造第二个 pylon。
+- **影响**：O1 类问题的残留——pylon 路径没被守卫覆盖。
+- **实证根因**（2026-07-22，与原猜测一致）：pylon 走 ares `AutoSupply`，
+  `auto_supply.py:52-55` 在 supply 不足时直接调 `BuildStructure`，全程无
+  can_afford 检查 → 农民被钉在 pylon 建造点等 100 矿（同 O1 的 TechUp 模式）。
+- **修复**：`production_manager.update` 只在 `can_afford(PYLON)` 时才把
+  `AutoSupply` 加进 MacroPlan；supply 缺口判定仍归 ares 内部。
+- **状态**：已修复（待 bench 验证）。
+
+### O7 主矿区频繁鼠标点击（采集应是游戏自动行为）
+
+- **现象**：屏幕上主矿区域有频繁的鼠标点击操作——农民采矿/采气本该是自动的，
+  不需要 bot 反复下指令。
+- **影响**：无谓的指令刷新；干扰司令观战，也可能顶掉司令手动操作（O2 类隐患）。
+- **实证根因**（2026-07-22，**改正原猜测**）：不是 `_handle_idle_workers`——它只碰
+  `workers.idle`（零命令农民），正常采集往返的农民手里恒有命令，扫不到。真正的
+  点击源是 ares `Mining` 的 **mineral_boost 加速采矿微操**：每个农民每次往返在
+  距离窗口内都被下 `move + SMART` 两条命令（speed_mining.py:91-94），16+ 农民
+  就是满屏点击。这是框架刻意设计（挤一点采矿效率），但与「采集零打扰/司令观感」冲突。
+- **修复**：`bot/main.py` 改 `Mining(mineral_boost=False)`——走 `_do_standard_mining`，
+  只在农民闲置/挂错矿时补一条 gather，采集中零命令；代价是放弃加速采矿的微量
+  经济收益。另给 `_handle_idle_workers` 加护栏：跳过 `is_gathering /
+  is_carrying_resource / is_returning` 的农民（过渡帧也不误重下 gather）。
+- **状态**：已修复（待 bench 验证，顺带看采矿收入变化是否可忽略）。
+
+### O8 Forge 建好没有立即升 S 盾
+
+- **现象**：Forge 建成后护盾 L1 没有立刻开始研究。
+- **司令判断**：如果是钱不够——护盾升级时间长，应该**提前攒钱**，Forge 一好就点。
+- **实证根因**（2026-07-22，**改正原猜测的"队列时序"说**）：不是队列卡位——
+  盾在 Forge、空攻/空防在 Cybercore，不同建筑本就并行研究，排第三不挡道。
+  真正原因是**资源竞争**：研究要一次付清 100/100，而 SpawnController/造农民/
+  pylon 每帧都在花钱，轮到研究时存款总差一口气。
+- **修复**（按司令意图的"预留"语义，用 ares 自带机制）：`UpgradeController` 移进
+  MacroPlan 并置于 SpawnController **之前**，`prioritize=True`——研究就绪但买不起
+  时返回 True 截断 plan，产兵暂停花钱、资源攒给研究；建筑缺失/前置未就绪时返回
+  False 不阻塞（无存款死锁）。注意残留：plan 外的开销（造农民、_spend_bank、
+  追加产能）不参与预留，属可接受误差。
+- **状态**：已修复（待 bench 验证）。
+
+### O9 5 分半前零战斗单位零塔：贪开局的依据不是侦查，是赌检测来得及
+
+- **现象**（司令观察）：5:30 才出第一个战斗单位（Oracle），之前没有任何作战单位，
+  光子塔也没修。敌一波 rush 基地可能直接被打穿。
+- **机制解释**（读码确认）：
+  - 天空体配方 spawn = CARRIER/TEMPEST，科技链 GATEWAY→BY→STARGATE→FLEETBEACON，
+    Gateway 一个不产地面兵——**设计上就是「第一个兵 = Oracle（只需星门）」**；
+  - 光子塔：6 分钟前不铺，除非 rush 预警（≥2 敌作战单位压到家 40 格，
+    `_should_build_defense`）或 rush 检测（4 分钟前敌可见兵力 ≥6，
+    `_update_rush_state`）触发；
+  - 兜底就是 pivot 响应包：检测成立 → 4 叉子 + 铺塔 + 全军守家。
+- **诚实结论：是赌**。开局贪不贪**不随侦查情报调整**——2 分钟派的探机看到的
+  信息只喂给 rush 判据，不构成「确认对面不是 rush 才放心贪」的决策。
+- **司令要求**：侦查确认对面建筑/科技不是 rush，才可以这么贪；否则就是赌，不可取。
+- **实现**（2026-07-22，最简单可验证版本）：
+  - `production_plans.scout_verdict()` 纯函数三档：无情报→unknown（保守按 rush）；
+    早出兵建筑 ≥2 或早期可见作战单位 ≥6（阈值与 early_swarm 同源）→ rush；
+    否则 → greedy（维持贪打法）。
+  - `production_manager._evaluate_scout_intel()`：t≈170s 一局评一次
+    （探机 100s 出发，留 70s 赶路/送死窗口）；rush/unknown → 直接置
+    `_rush_active`（复用现有响应包：出叉+铺塔+守家，比"敌兵压到 40 格"提前
+    ~1 分钟；误报 60 秒后自动解除）；评估完把 SCOUTING 农民撤回采矿（同 O4 精神）。
+  - **只挂 carrier**：tempest/stalker 是已验证基线，行为一行不动。
+- **状态**：已实现（待 bench 验证：Macro 局应在 170s 判 greedy 零响应；Rush 局
+  应提前出叉/铺塔）。
 
 ---
 
@@ -194,7 +290,12 @@
 - [x] O4 rush 确认即撤回侦查农民 — 2026-07-21 修复
 - [x] E1 pivot rush_cannons 换臂开关 — 2026-07-21 就绪（步骤见 E1 条）
 - [x] O5 憋气机制保航母主 C（save_up_spawn + flows.yml save_up）— 2026-07-21 修复
-- [x] E2 动态开矿/分矿塔数/星门气体闸门 — 2026-07-21 实现，待 bench 验证
+- [x] E2 动态开矿/分矿塔数/星门气体闸门 — 2026-07-21 实现并 bench 验证（6-0）
+- [x] O6 pylon 路径（AutoSupply?）也有干等钱问题 — 2026-07-22 修复
+- [x] O7 主矿区频繁点击，采集疑似被 bot 反复下指令 — 2026-07-22 修复
+- [x] O8 护盾升级未随 Forge 就绪即启动，需资源预留/队列时序排查 — 2026-07-22 修复
+- [x] O9 贪开局不随侦查调整（赌检测来得及）→ 侦查情报→开局决策闭环 — 2026-07-22 实现
+- [x] O10 carrier 升级链补全（拦截机容量 + L2/L3） — 2026-07-22 修复
 
 ---
 
@@ -206,3 +307,24 @@
 - **Idle worker time：149.25s（上局 317.375s，-53%）**——O1/O3 主账消除；
   残存 ~149s 待后续观察构成（可能含司令接管期/长距离采矿空窗）
 - 产量：击毁单位价值 8150，采集 8995 矿 / 2872 气
+
+---
+
+## 2026-07-21 E2 bench 结果：动态多矿验证（carrier vs Zerg VeryHard @AbyssalReefLE，各 N=3）
+
+runner=bench.py，tag=`e2-carrier-vh-zerg-rush` / `e2-carrier-vh-zerg-macro`。
+（注：Rush 第 1 局为旧气闸门公式，其后局为 +1 新公式；对结论无实质影响。）
+
+| 系列 | 战绩 | 平均时长 | 终局编成(均值) | 基地数(终局) |
+|---|---|---|---|---|
+| Rush | **3-0** | 724s | CARRIER×5.3 TEMPEST×2.5 拦截机×32 | 4 / 3 / 2 |
+| Macro | **3-0** | 711s | CARRIER×7.7 TEMPEST×3.0 拦截机×33 | 3 / 4 / 4 |
+
+- **臂 A rush 响应不回归**：Rush 系列 3-0，顶住后顺势开到 2~4 矿；
+  塔 10~15 座（敌兵力高档触发），电池 2~4。
+- **多矿机制生效**：Macro 系列两局开满 4 矿，assimilator 8 个全满采；
+  星门 3~5 个，与气闸门公式（满采基地+1，4 基地→5）一致；农民 57~67。
+- **航母数量随气上涨**：Macro 终局航母 7.7（E1 单矿时代 5.0），
+  CARRIER@355s 成型（比 E1 的 387s 还早，多矿经济反哺）。
+- 残留：retro 仍有 one_base（rush g3 只到 2 矿——基地<4 但局势已赢，可接受）、
+  trickle（零星送兵，老问题，后续看）。

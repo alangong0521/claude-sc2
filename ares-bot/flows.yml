@@ -88,10 +88,16 @@ flows:
       CARRIER: {proportion: 0.7, priority: 0}
       TEMPEST: {proportion: 0.3, priority: 1}
     core_structures: [GATEWAY, CYBERNETICSCORE, STARGATE, FLEETBEACON]
-    upgrades:
-      - PROTOSSAIRWEAPONSLEVEL1
-      - PROTOSSAIRARMORSLEVEL1
-      - PROTOSSSHIELDSLEVEL1
+    upgrades:                     # O10 补全:L1→L3 全链(空攻/空防前置=舰队航标已在链;
+      - PROTOSSAIRWEAPONSLEVEL1   # 盾 L2/L3 前置=暮光议会,L1 完成后由守卫路径补建)。
+      - PROTOSSAIRARMORSLEVEL1    # 顺序讲究:UpgradeController 遇到不可研究的项会
+      - PROTOSSSHIELDSLEVEL1      # 截断后续,故 L1 在前、盾 L2/L3 垫底。
+      - PROTOSSAIRWEAPONSLEVEL2   # 注:当前 melee 无航母容量/弹射升级可研究
+      - PROTOSSAIRARMORSLEVEL2    # (CARRIERCARRIERCAPACITY 等枚举是 coop/旧版残留,O10 实证)。
+      - PROTOSSAIRWEAPONSLEVEL3
+      - PROTOSSAIRARMORSLEVEL3
+      - PROTOSSSHIELDSLEVEL2
+      - PROTOSSSHIELDSLEVEL3
     extra_production: {id: STARGATE, cap: 6, base: 1}
     chrono: {targets: [STARGATE], when: primary_pending}
     one_off: [ORACLE]

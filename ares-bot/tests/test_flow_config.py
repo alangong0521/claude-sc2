@@ -198,6 +198,14 @@ class TestPivotRushCannons(unittest.TestCase):
         self.assertEqual(
             (fc.expansion_cannons.min, fc.expansion_cannons.max), (3, 8)
         )
+        # O10:升级链补全到 L3,盾 L2/L3 垫底(防队列截断)
+        self.assertEqual(fc.upgrades, [
+            "PROTOSSAIRWEAPONSLEVEL1", "PROTOSSAIRARMORSLEVEL1",
+            "PROTOSSSHIELDSLEVEL1",
+            "PROTOSSAIRWEAPONSLEVEL2", "PROTOSSAIRARMORSLEVEL2",
+            "PROTOSSAIRWEAPONSLEVEL3", "PROTOSSAIRARMORSLEVEL3",
+            "PROTOSSSHIELDSLEVEL2", "PROTOSSSHIELDSLEVEL3",
+        ])
         # stalker 旧式 auto_expand 不受影响(冻结块)
         sk = FlowConfig.load("stalker")
         self.assertEqual((sk.auto_expand.to, sk.auto_expand.max_bases), (2, 0))

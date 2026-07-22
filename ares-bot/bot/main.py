@@ -105,7 +105,10 @@ class MyBot(AresBot):
             steer.reset()  # 清上一局残留命令/战况（STEER_NO_RESET=1 保留预设命令，测试用）
 
         self._handle_player_control()  # 人机共驾：先处理让权，Mining/production 随后自动跳过被接管单位
-        self.register_behavior(Mining())
+        # O7: mineral_boost=False 关掉 ares 加速采矿微操 —— 它每个往返给每个农民下
+        # move+SMART 两条命令(speed_mining.py:91-94),主矿区满屏点击、还可能顶司令手操。
+        # 关掉后走 _do_standard_mining:只在农民闲置/挂错矿时补一条 gather,采集零打扰。
+        self.register_behavior(Mining(mineral_boost=False))
         self._handle_scout()
         self._handle_idle_workers()
 
@@ -204,6 +207,9 @@ class MyBot(AresBot):
             if role in (UnitRole.SCOUTING.name, UnitRole.PERSISTENT_BUILDER.name):
                 continue
             if w.tag in tracker:
+                continue
+            # O7:采集往返/搬资源的农民零打扰 —— idle 判定漏掉过渡帧也别重下 gather
+            if w.is_gathering or w.is_carrying_resource or w.is_returning:
                 continue
             self.mediator.assign_role(tag=w.tag, role=UnitRole.GATHERING)
             w.gather(self.mineral_field.closest_to(w))
