@@ -11,11 +11,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.production_plans import (  # noqa: E402
     assimilator_attempt_stuck,
+    defense_syncs_with_nexus,
     expansion_cannon_count,
+    expansion_reserve_active,
     floor_army_defends_home,
     full_gas_bases,
     gas_gated_stargate_target,
     gas_target,
+    nexus_rebuild_active,
+    nexus_rebuild_viable,
     pre_fleet_cap,
     pre_fleet_spawn,
     research_paused_for_rush,
@@ -456,6 +460,38 @@ class TestBuilderReleaseRules(unittest.TestCase):
         # O13:在建气矿 >45s 没落地 → 判卡死重派
         self.assertTrue(assimilator_attempt_stuck(100.0, 50.0))
         self.assertFalse(assimilator_attempt_stuck(100.0, 80.0))
+
+    def test_defense_syncs_with_nexus(self):
+        # E3l:有 Nexus 在建或已多基地 → 分矿塔防立即启动
+        self.assertTrue(defense_syncs_with_nexus(1, 1))
+        self.assertTrue(defense_syncs_with_nexus(0, 2))
+        self.assertFalse(defense_syncs_with_nexus(0, 1))  # 单矿无在建 → 不启动
+
+
+class TestNexusRebuild(unittest.TestCase):
+    """O15:基地清零重建 Nexus 的触发与可行性。"""
+
+    def test_active_only_when_zero_bases(self):
+        self.assertTrue(nexus_rebuild_active(0))
+        self.assertFalse(nexus_rebuild_active(1))
+
+    def test_viable_needs_workers_and_minerals(self):
+        self.assertTrue(nexus_rebuild_viable(10, 1500))
+        self.assertFalse(nexus_rebuild_viable(0, 1500))   # 没工人
+        self.assertFalse(nexus_rebuild_viable(10, 0))     # 全图矿干 → Q5 判负
+
+
+class TestExpansionReserve(unittest.TestCase):
+    """E3k:开矿触发但买不起 → 攒钱预留(出兵/造农民让位)。"""
+
+    def test_triggered_and_broke_reserves(self):
+        self.assertTrue(expansion_reserve_active(True, False))
+
+    def test_affordable_dispatches_normally(self):
+        self.assertFalse(expansion_reserve_active(True, True))
+
+    def test_not_triggered_no_reserve(self):
+        self.assertFalse(expansion_reserve_active(False, False))
 
 
 if __name__ == "__main__":

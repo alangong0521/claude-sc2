@@ -309,3 +309,36 @@ def assimilator_attempt_stuck(
     叠加，矿 6075 气 0）。在建气矿超过 timeout 秒没落地 → 拆 tracker 重派。
     """
     return now - commenced > timeout
+
+
+def nexus_rebuild_active(townhalls: int) -> bool:
+    """O15：是否需要一切让位重建 Nexus（基地清零 → 没经济一切免谈）。纯逻辑。"""
+    return townhalls == 0
+
+
+def nexus_rebuild_viable(workers: int, minerals_left: int) -> bool:
+    """O15：重建是否还有意义（有工人采矿 + 场上还有矿）。纯逻辑。
+    不可行时走 Q5 早负判负（bench 省垃圾时间）。"""
+    return workers > 0 and minerals_left > 0
+
+
+def expansion_reserve_active(want_expand: bool, can_afford_nexus: bool) -> bool:
+    """E3k：动态开矿已触发但暂时买不起 Nexus → 攒钱预留（出兵/造农民让位）。
+    纯逻辑，可单测。
+
+    背景（one_base×3）：rush 收尾矿紧，400 矿的 Nexus 无限排在塔/叉/农民之后。
+    预留期间不注册 SpawnController、暂停造农民（防御塔保命不动）；
+    rush 期间不开矿（六连动不变），O15 重建路径优先级更高。
+    """
+    return want_expand and not can_afford_nexus
+
+
+def defense_syncs_with_nexus(nexus_pending: int, townhalls: int) -> bool:
+    """分矿塔防是否与 Nexus 同步启动（E3l 实证修复）。纯逻辑，可单测。
+
+    E3l 三局实证：分矿 330-386s 落地后，塔防要等落地 + 6 分钟自动线才启动，
+    分矿裸奔 30-100s 被敌反复拆。规则：有 Nexus 在建（nexus_pending>0）或
+    已多基地（townhalls≥2）→ 立即启动分矿塔防（先供电后塔序由
+    ProtossStaticDefence 自己排）。
+    """
+    return nexus_pending > 0 or townhalls >= 2

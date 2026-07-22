@@ -5,7 +5,7 @@ from typing import Optional
 from ares import AresBot, Hub, ManagerMediator
 from ares.behaviors.macro import Mining, RestorePower
 from ares.consts import ID as TRACKER_ID
-from ares.consts import TIME_ORDER_COMMENCED, UnitRole
+from ares.consts import TIME_ORDER_COMMENCED, TOWNHALL_TYPES, UnitRole
 from bot.production_plans import (
     nexus_rebuild_viable,
     should_release_waiting_builder,
@@ -228,12 +228,16 @@ class MyBot(AresBot):
                 continue
             if w.tag in tracker:
                 # O11:钉在建造点等钱的工人(ares 无守卫路径:ProtossStaticDefence/
-                # ExpansionController/TechUp)——钉点超 6s 且结构仍买不起 → 拆 tracker
-                # 撤回采矿,行为下帧重派(往返途中钱照采)。例外:人口紧急态的水晶
-                # (E3h-B 紧急通道,故意钉点保人口)。
+                # TechUp)——钉点超 6s 且结构仍买不起 → 拆 tracker 撤回采矿,
+                # 行为下帧重派(往返途中钱照采)。两个例外:
+                # - 人口紧急态的水晶(E3h-B 紧急通道,故意钉点保人口);
+                # - 基地建筑(E3k 实证:工人提前走到扩张点等 400 矿是正常开矿打法,
+                #   6s 撤回会让 Nexus 永远拍不下)。
                 info = tracker[w.tag]
                 sid = info[TRACKER_ID]
                 if sid == UnitID.PYLON and self.supply_left <= 2:
+                    continue
+                if sid in TOWNHALL_TYPES:
                     continue
                 if should_release_waiting_builder(
                     self.can_afford(sid),

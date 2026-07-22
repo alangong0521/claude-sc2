@@ -307,6 +307,11 @@
 - [x] E3h save_up 矿物盲区 + 水晶紧急通道 — 2026-07-22 修复（resource_gap 矿气取大 + supply_left≤2 例外）
 - [x] O13 扩张后不补气矿（矿 5000+/气 0）— 2026-07-22 修复（_ensure_expansion_gas 按基地双气 + 45s 反卡死 + 气矿优先级最高）
 - [x] O11 农民干等钱造建筑（非水晶场景）— 2026-07-22 修复（钉点 >6s 撤回 watchdog + 扩张 can_afford 守卫）
+- [x] O15 基地清零攒钱重建 Nexus — 2026-07-23 修复（MacroPlan 截断 + 矿干 ExpansionController + Q5 豁免）
+- [x] E3k 开矿攒钱预留（one_base 可选项）— 2026-07-23 实现（expansion_reserve_active）
+- [x] E3k 预留卡死（watchdog 杀扩张钉点 + UC 饿死 plan 尾部 EC）— 2026-07-23 修复（NEXUS 豁免 + EC 前置 prioritize + 预留期 UC 让位）
+- [x] E3l 分矿裸奔（塔防启动晚于 Nexus 落地）— 2026-07-23 修复（defense_syncs_with_nexus：在建/多基地即启动）
+- [x] E3m 验证塔同步生效（二矿存活 30-100s→290s+）— E3 系列机制层修尽，转入数值面振荡带（1-2/2-1）
 
 ---
 
@@ -704,3 +709,152 @@ build order 继续造叉兵等进攻兵种——这是死路。正确策略：
   复用 resource_gap 判据）；工人转移到尚有矿的点位或拉去新开矿点；
 - 与 rush 资源集中、save_up 的优先级关系：重建 Nexus > save_up 航母 >
   出兵（没经济一切免谈）。
+
+---
+
+## 2026-07-23 E3j bench 结果：GS2 1-2 / GS4 0-3（步长实验结论：维持 GS2）
+
+- **GS2 标准臂 1-2**：Defeat 764s / Victory 404s / Defeat ~224s（第3局首次无结果
+  重试后）。存款峰值 930（O13 见效，E3i 为 6075）；CARRIER@606.7s（系列最快）；
+  终局 CARRIER×4。one_base×3、trickle×2 仍在。
+- **GS4 臂 0-3 全快速败**（trickle×3 overrun×3）：步长实验结论已定，维持 GS2，
+  gs4 局文件不做分析。
+
+### 败因分析（逐帧 + run.log）
+
+1. **one_base×3 = 阈值+经济问题，非 auto_expand bug（已核实）**：
+   ares `ExpansionController` 默认 `can_afford_check=True`（不欠费派工），
+   触发与执行链路本身无 bug。迟到原因：①爆仓触发要农民 ≥22×基地，rush 期
+   造农民暂停（六连动④）→ 300s 时农民仅 18-20；②优势触发要 army supply ≥
+   敌+12（6 叉=12 supply，~340s 才凑齐）；③rush 收尾矿紧，400 矿的 Nexus
+   排队在塔/叉/农民之后（_spend_bank >800 更难够到）。game_01 二矿 341s 落成
+   （优势触发）即此路径。可选项（未做）：ExpansionController(prioritize=True)
+   进 MacroPlan 给 Nexus 攒钱预留，或下调 advantage_supply/爆仓阈值。
+2. **game_03（重试局 224s 速败）**：run.log 实证——163s 敌 ling rush（首波
+   ~17 只，本系列最大），forge 2:09 才开建、塔链来不及，224s 基地全失。
+   属「最早最重波 vs 塔链速度」的方差极值，E3 系列已知结构边界。
+   （注：该局 state 快照混有首次无结果尝试的帧，以 run.log 为准。）
+
+### O15 修复：基地清零 → 一切让位重建 Nexus（2026-07-23）
+
+- 触发 `nexus_rebuild_active`（townhalls==0）：MacroPlan 不注册
+  UpgradeController/SpawnController（只留 AutoSupply），非 rush 开销块
+  （科技链/补气/追加产能/滚雪球/前线塔/开矿/chrono）整体暂停 → 攒钱 400 重建。
+  优先级：重建 Nexus > save_up > 出兵。
+- `_ensure_townhall`：主矿已干时不再 no-op，改交 `ExpansionController(to_count=1)`
+  找新矿点。
+- Q5 早负判负加豁免：`nexus_rebuild_viable`（有工人+场上还有矿）时不投降，
+  让 O15 打完；不可行（无工人或全图矿干）才判负。
+- **状态**：已修复（单测 161 例绿），待下轮 bench 验证。
+
+### E3k 修复：开矿攒钱预留（one_base 可选项落地，2026-07-23 司令拍板）
+
+- **实现**：`production_plans.expansion_reserve_active` + `production_manager._expansion_reserve_active()`——动态开矿已触发（爆仓/优势，阈值不变）但暂时
+  买不起 Nexus 时：不注册 SpawnController + 暂停造农民（防御塔保命不动），
+  攒钱到 400 立即由 `_auto_expand` 原有路径拍下 Nexus。不钉工人
+  （与 O11 watchdog 无冲突）。
+- **优先级**（已理清）：rush 期间不开矿（`should_expand_dynamic` 内建 rush 门，
+  六连动不变）；O15 基地清零重建 > 开矿预留（rebuild 先判，预留不启动）；
+  开矿预留 > 出兵/造农民；save_up 在 SpawnController 内部，预留期间自然挂起。
+- 没做：阈值（农民≥22×基地、优势+12）不动；ares ExpansionController 的
+  prioritize 参数（它是"欠费也派工钉点"语义，与 O11 冲突，弃用）。
+- **状态**：已实现（单测 164 例绿），待 E3k 验证。
+
+---
+
+## 2026-07-23 E3k bench 结果：2-1（历次最好）但开矿预留卡死（已修）
+
+tag=`e3k-carrier-vh-zerg-rush`。CARRIER@508.9s（系列最快）、存款峰值 485（健康）。
+但三局全部 one_base：触发后 50-200s Nexus 始终没拍下去。
+
+### 预留卡死根因（逐帧+读码实证，两条叠加）
+
+1. **O11 watchdog 杀扩张钉点（主因）**：O11 的「钉点 >6s 且买不起 → 拆 tracker
+   撤回」对 Nexus 是致命的——工人提前走到扩张点等 400 矿是正常开矿打法，
+   走路 10-20s 期间其他开销把矿花掉，工人到位 → 钉点 → 6s 后被撤回 →
+   钱够再派 → 再被花 → 无限循环（game_03 在 281-285s 有 430-480 矿的干净
+   窗口仍没拍下，此后每次 400 窗口都重复这一循环）。
+2. **UC(prioritize) 饿死 plan 尾部的 EC（次因）**：舰队航标就绪后
+   UpgradeController 研究/预留 9 项升级链，几乎每帧返回 True 截断 plan，
+   排在最后的 ExpansionController 永远轮不到执行（E3j 时升级链短/航标晚，
+   侥幸躲过）。叠加结果：航标前被 watchdog 杀、航标后被 UC 饿死。
+
+### 修复（2026-07-23）
+
+- `main.py` watchdog：**基地建筑（TOWNHALL_TYPES）豁免**——扩张钉点不撤回。
+- `update()`：**ExpansionController 从 plan 尾部上移到 UC 之前**（
+  `_want_dynamic_expand()` 算一次，EC/预留共用），并改 `prioritize=True`
+  （欠费也先派工人走位，与 watchdog 豁免配套）；
+  `_auto_expand` 动态分支删除（旧式 stalker 分支保留）。
+- 开矿攒钱预留期间 **UpgradeController 也让位**（优先级：Nexus > 研究 > 出兵）。
+- O15 重建路径不变（rebuild 优先，plan 内 EC 不启动）。
+- **状态**：已修复（单测 164 例绿），待 E3l 复验。
+
+---
+
+## 2026-07-23 E3l bench 结果：0-3（开矿修通，新败因=分矿裸奔）
+
+tag=`e3l-carrier-vh-zerg-rush`。开矿修复生效（E3k 卡死已解）：
+game_01 334s 二矿/538s 三矿、game_02 330s 二矿、game_03 386s 二矿——
+但分矿落地后被敌反复拆（3→2→1→…），农民和经济被拖死，三局全败。
+
+### 两个问题（逐帧实证）
+
+1. **是什么触发的扩张（司令第一问）**：EC 注册有 `_want_dynamic_expand` 门控
+   （E3k 修复时就是门控的），不是 ares 自己乱扩——330-386s 时农民 18-20
+   （没到爆仓线 22），触发的是**优势判定**：6-7 叉 = 12-14 army supply ≥
+   敌可见 0 + 12。敌主力藏在战争迷雾里 → 「优势」是假象，扩张撞在
+   敌方主力波成型前夜。**判定：门控工作正常，是优势信号本身被迷雾骗过。**
+2. **分矿塔没跟上（裸奔根因）**：三局 Nexus 落地时全局塔只有 3-5 座
+   （全在主矿），分矿 ~0 座。`_should_build_defense` 原来要等落地 +
+   6 分钟自动线（或 rush/压门 40 格）才启动，分矿裸奔 30-100s；
+   敌 30-70 单位的波到达时塔刚开始爬（敌 30 → 目标 10/矿 vs 实际 6-8）。
+
+### 修复（2026-07-23）
+
+- `production_plans.defense_syncs_with_nexus` + `_should_build_defense` 接入：
+  **有 Nexus 在建或已多基地 → 立即启动分矿塔防**（ProtossStaticDefence
+  自己排先供电后塔序；rush_cannons=False 的臂 B 语义不变，仍在前面拦截）。
+- 没做「敌可见兵力 > 阈值缓开」：三局的波次在到达前都不可见（迷雾），
+  可见兵力门挡不住；且 `ExpansionController.check_location_is_safe`
+  已按影响力网格跳过危险点。
+- **状态**：已修复（单测 165 例绿），待 E3m 复验。
+- **残留候选**：分矿塔建造速度（单线 29s/座 vs 敌波成型速度）若仍不够，
+  下一候选是「扩张触发时把塔目标临时抬到 min+2」或「分矿先下 1 塔再下 Nexus」。
+
+---
+
+## 2026-07-23 E3m bench 结果：1-2（塔同步生效，进入数值面振荡带）
+
+tag=`e3m-carrier-vh-zerg-rush`。Defeat 512s / Defeat 544s / Victory 482s。
+终局 CARRIER×3 INTERCEPTOR×40，CARRIER@592s，存款峰值 505。
+retro：one_base×3（按终局计，实际都开过矿）trickle×2 overrun×2。
+
+### 分矿塔同步修复生效（存活时长对比）
+
+| 局 | 二矿落地 | 二矿存活到 | 对比 E3l |
+|---|---|---|---|
+| E3m game_01 | ~362s | 651s（~290s） | E3l 同期 30-100s 即被拆 |
+| E3m game_02 | ~370s | 759s（二/三矿） | 同上 |
+| E3l 三局 | 330-386s | 30-100s | —— |
+
+裸奔窗口从「30-100s 被拆」改善到「撑过 4-6 分钟、多轮波次」，
+`defense_syncs_with_nexus`（在建/多基地即启动塔防）确认有效。
+
+### 两局败因：敌中段兵力数值面
+
+两局败局同型：扩张正常落地、塔随矿同步、航母 592s 起产——但 Zerg
+VeryHard/Rush 中段（7-10 分钟）主力波兵力厚度超出「6-10 叉 + 动态塔 +
+刚起步的航母群」的承接上限，二矿在反复波次中被磨穿后崩盘。机制链
+（rush 响应 → 保底 → 塔同步 → 气矿跟进 → 舰队成型）已无明显断点，
+输的是数值不是逻辑。
+
+### E3 系列判断（2026-07-23）
+
+E3 系列 12 轮（E3→E3m）机制层 bug 已逐轮修尽：研究预留饿死响应包、
+塔触发脱钩、电池阻塞塔链、rush 矿饥荒、单兵营瓶颈、save_up 截断防空/
+矿物盲区、AutoSupply 饿死 plan、保底兵无令送死、气矿跟进卡死、
+扩张钉点被杀/UC 饿死 EC、分矿塔启动过晚——每一轮都有实证根因和修复。
+**剩余败因以 VeryHard/Rush AI 中段兵力数值面为主，胜率在 1-2/2-1 振荡带**。
+后续提升方向是数值调参（保底配比/塔数曲线/扩张阈值）而非新机制，
+建议转入参数面实验（类 E1 的换臂矩阵）或升档验证 Macro 系。

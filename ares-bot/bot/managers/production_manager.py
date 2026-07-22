@@ -37,9 +37,12 @@ from sc2.units import Units
 
 from bot.production_plans import (
     assimilator_attempt_stuck,
+    defense_syncs_with_nexus,
     expansion_cannon_count,
+    expansion_reserve_active,
     gas_gated_stargate_target,
     gas_target,
+    nexus_rebuild_active,
     pre_fleet_cap,
     pre_fleet_spawn,
     research_paused_for_rush,
@@ -135,6 +138,17 @@ class ProductionManager(Manager):
 
         # use ares-sc2 macro behaviors for building pylons and units
         macro_plan: MacroPlan = MacroPlan()
+        # O15:基地清零 → 一切开销让位重建 Nexus(没经济一切免谈)。截断 = 不注册
+        # 研究/出兵,只留 AutoSupply;命保防御(ProtossStaticDefence,无基地时自然 no-op)。
+        _rebuild_nexus = nexus_rebuild_active(self.ai.townhalls.amount)
+        # E3k:动态开矿触发判定(算一次,EC 注册/攒钱预留共用);rush 内建门,重建优先。
+        _want_expand = (
+            self._want_dynamic_expand() if not _rebuild_nexus else False
+        )
+        # E3k:开矿触发但买不起 → 攒钱预留(出兵/造农民让位,Nexus 不再排在塔/叉/农民后)
+        _expansion_reserve = expansion_reserve_active(
+            _want_expand, self.ai.can_afford(UnitID.NEXUS)
+        )
         # O6: ares AutoSupply 同样不查 can_afford(auto_supply.py:52-55 直接调
         # BuildStructure),钱不够农民就钉在 pylon 建造点干等 —— 只在买得起时注册,
         # supply 缺口的判定仍归 ares 内部。
@@ -152,6 +166,18 @@ class ProductionManager(Manager):
                     return_true_if_supply_required=False,
                 )
             )
+        # E3k-fix:开矿排在研究/出兵之前 —— UpgradeController(prioritize) 会把
+        # plan 尾部的 ExpansionController 饿死(e3k game_03 实证)。
+        # prioritize=True = 欠费也先派工人走位(钉在扩张点等 400 是正常开矿打法,
+        # O11 watchdog 已对基地建筑豁免,见 main.py)。
+        if _want_expand:
+            macro_plan.add(
+                ExpansionController(
+                    to_count=self.ai.townhalls.amount + 1,
+                    max_pending=1,
+                    prioritize=True,
+                )
+            )
         # 升级(O1/O8/O10):研究交 UpgradeController 并进 MacroPlan 且 prioritize=True ——
         # 研究就绪但买不起时返回 True 截断 plan,SpawnController 暂停花钱 → 资源攒给
         # 研究(O8 长研究预留,Forge/科技建筑一好就点);建筑缺失/前置未就绪时返回 False
@@ -159,8 +185,14 @@ class ProductionManager(Manager):
         # 不查 can_afford,O1 实证),由带守卫的 _build_core_structure 补建(见 update 尾部)。
         # ⚠️ E3 回归:rush_active 期间研究整体让位(不注册)——预留会把 rush 响应包
         # (叉子/塔都在 plan 后续)饿死;rush 解除后自动恢复预留。
+        # E3k:开矿攒钱预留期间研究同样让位(Nexus > 研究 > 出兵)。
         _upgrades = self._flow.upgrade_ids()
-        if _upgrades and not research_paused_for_rush(self._rush_active):
+        if (
+            _upgrades
+            and not research_paused_for_rush(self._rush_active)
+            and not _rebuild_nexus
+            and not _expansion_reserve
+        ):
             macro_plan.add(
                 UpgradeController(
                     _upgrades,
@@ -174,16 +206,17 @@ class ProductionManager(Manager):
         # 否则兵力在精确配比点永久死锁(C3c 诊断出的 stalker 停产第二根因)。
         # E3b: rush_active 期间 spawn_target 切回主基 —— 前线折跃点=敌群方向,
         # 响应兵种一落地就进狗群分批送死(trickle);平时才用 F1 前线投送。
-        macro_plan.add(
-            SpawnController(
-                army_composition_dict=self._effective_spawn(),
-                spawn_target=(
-                    self.ai.start_location if self._rush_active
-                    else self._front_point()  # F1: 折跃向前线(非主基地),配合前线水晶塔远程投送
-                ),
-                freeflow_mode=self._flow.freeflow,
+        if not _rebuild_nexus and not _expansion_reserve:
+            macro_plan.add(
+                SpawnController(
+                    army_composition_dict=self._effective_spawn(),
+                    spawn_target=(
+                        self.ai.start_location if self._rush_active
+                        else self._front_point()  # F1: 折跃向前线(非主基地),配合前线水晶塔远程投送
+                    ),
+                    freeflow_mode=self._flow.freeflow,
+                )
             )
-        )
         # 运营指挥·通用建筑杠杆 build=<结构>（expand=yes = build=nexus 别名）
         _order = getattr(self.ai, "steer_order", None) or {}
         self._handle_manual_build(_order, macro_plan)
@@ -221,7 +254,8 @@ class ProductionManager(Manager):
         ] = self.manager_mediator.get_own_structures_dict
 
         # E3d: rush 期间连造农民也让位(50 矿/个是防御链的最大竞争项)
-        if not self._rush_active:
+        # E3k: 开矿攒钱预留期间同样让位(Nexus 不排在农民后)
+        if not self._rush_active and not _expansion_reserve:
             self._build_probes(self.ai.ready_townhalls)
         self._ensure_townhall()  # Q4:保底主基地(被打爆到 0 且有矿区价值时重建)
         self._early_scout()      # pivot:2分钟自动派一个探机看对面开局
@@ -230,7 +264,7 @@ class ProductionManager(Manager):
         # E3d: rush 期间资源全部让位防御链(叉子/塔) —— 暂停科技链(cybercore/星门/
         # 第二气)、造农民、追加产能、滚雪球、前线塔;rush 解除后各自恢复。
         # 保底:_rush_gateway_boost 保证兵营产能,升级循环保留 FORGE(炮塔前置,见下)。
-        if not self._rush_active:
+        if not self._rush_active and not _rebuild_nexus:
             await self._build_flow_structures(building_counter, structures_dict)
             # O13:每个就绪基地双气满采,优先级高于一切矿物开销(气矿买上再谈产能/滚雪球)
             self._ensure_expansion_gas()
@@ -240,13 +274,14 @@ class ProductionManager(Manager):
             self._build_forward_pylon()  # F1: 前线水晶塔(投送),各流派共用
         self._rush_gateway_boost()  # E3d: rush 敌兵>叉子时追加 gateway(单兵营是瓶颈)
         self._morph_gateways()
-        self._auto_expand(macro_plan)
-        self._chrono_structures()
+        if not _rebuild_nexus:
+            self._auto_expand(macro_plan)
+            self._chrono_structures()
         # 升级前置科技建筑补建(O1/O10):core_structures 没覆盖的(如 FORGE,
         # 以及盾 L2/L3 需要的 TWILIGHTCOUNCIL)由带 can_afford 守卫的
         # _build_core_structure 补建;已覆盖的走 _build_flow_structures(保留
         # FLEETBEACON 需就绪星门的特判)。研究本身在上方 MacroPlan 里(O8)。
-        if _upgrades:
+        if _upgrades and not _rebuild_nexus:
             _covered = set(self._flow.core_structure_ids())
             for _tech_building in upgrade_tech_buildings(
                 _upgrades, done=self.ai.state.upgrades
@@ -561,37 +596,35 @@ class ProductionManager(Manager):
             exempt=exempt,
         )
 
+    def _want_dynamic_expand(self) -> bool:
+        """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
+        E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
+        ae = self._flow.auto_expand
+        if ae is None or not ae.max_bases:
+            return False
+        return should_expand_dynamic(
+            bases=self.ai.townhalls.amount,
+            max_bases=ae.max_bases,
+            nexus_pending=self.manager_mediator.get_building_counter[UnitID.NEXUS],
+            supply_workers=self.ai.supply_workers,
+            workers_per_base=ae.when_workers,
+            own_army_supply=self.ai.supply_used - self.ai.supply_workers,
+            enemy_army_supply=self._visible_enemy_army_supply(),
+            advantage_supply=ae.advantage_supply,
+            rush_active=self._rush_active,
+        )
+
     def _auto_expand(self, macro_plan: MacroPlan) -> None:
         """自动开矿(flows.yml auto_expand,缺省关)。两种模式:
         旧式(stalker,没配 max_bases):到 at 秒 或 农民 ≥ when_workers 触发,一次扩到 to 个;
         动态(carrier,配了 max_bases):爆仓(农民 ≥ when_workers×当前基地数)或
         前线优势(我方 army supply ≥ 敌可见 army supply + advantage_supply)时逐矿 +1,
         rush_active 期间不开(E2,司令:有能力开到 4 矿,不设死 2 矿)。
-        与司令 expand=yes 杠杆不冲突:到数后自然停。"""
+        与司令 expand=yes 杠杆不冲突:到数后自然停。
+        E3k:动态路径已上移到 plan 构建处(EC 排 UC 前+prioritize,见 update),
+        这里只剩旧式。"""
         ae = self._flow.auto_expand
-        if ae is None:
-            return
-        if ae.max_bases:
-            # O11:钱不够不派工人 —— ExpansionController 不查存款,会把工人钉在
-            # 扩张点等 400 矿;买得起才注册(等下一帧攒钱,不钉点)
-            if not self.ai.can_afford(UnitID.NEXUS):
-                return
-            if should_expand_dynamic(
-                bases=self.ai.townhalls.amount,
-                max_bases=ae.max_bases,
-                nexus_pending=self.manager_mediator.get_building_counter[UnitID.NEXUS],
-                supply_workers=self.ai.supply_workers,
-                workers_per_base=ae.when_workers,
-                own_army_supply=self.ai.supply_used - self.ai.supply_workers,
-                enemy_army_supply=self._visible_enemy_army_supply(),
-                advantage_supply=ae.advantage_supply,
-                rush_active=self._rush_active,
-            ):
-                macro_plan.add(
-                    ExpansionController(
-                        to_count=self.ai.townhalls.amount + 1, max_pending=1
-                    )
-                )
+        if ae is None or ae.max_bases:
             return
         if self.ai.townhalls.amount >= ae.to:
             return
@@ -633,7 +666,11 @@ class ProductionManager(Manager):
             for mf in self.ai.mineral_field.closer_than(10, self.ai.start_location)
         ) if self.ai.mineral_field else 0
         if minerals_left <= 0:
-            return  # 主矿已干,没重建价值(扩张交给 ExpansionController 找新矿)
+            # O15:主矿已干 → 不在原地重建,交 ExpansionController 找新矿点
+            self.ai.register_behavior(
+                ExpansionController(to_count=1, max_pending=1)
+            )
+            return
         if any(
             not u.is_structure
             and u.position.distance_to(self.ai.start_location) < 15
@@ -909,6 +946,13 @@ class ProductionManager(Manager):
         pv = self._flow.pivot
         if pv is not None and not pv.rush_cannons:
             return False
+        # E3l:分矿塔与 Nexus 同步 —— 有 Nexus 在建/已多基地立即启动分矿塔防
+        # (原来要等落地+6 分钟自动线,分矿裸奔 30-100s 被敌反复拆,e3l 三局实证)
+        if defense_syncs_with_nexus(
+            self.manager_mediator.get_building_counter[UnitID.NEXUS],
+            self.ai.townhalls.amount,
+        ):
+            return True
         # E3b: rush 检测成立即铺塔 —— 原来塔的触发只看"敌兵压到 40 格",
         # 炮塔 ~30s 建造 + 要水晶供电,压到门口再建来不及(e3b game_02:
         # 检测 130s 成立,首塔 221s 才立)。rush_cannons=False(臂 B)保持不铺。
