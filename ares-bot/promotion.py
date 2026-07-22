@@ -160,6 +160,15 @@ def main() -> int:
             _save_state(state)
 
         if len(counters) > _MAX_COUNTERS_PER_TIER:
+            # 打不过降档(司令指令 4):整档 >2 组合打不穿 → 降一档继续爬(而非退出);
+            # 已在最低档才退出。打穿最高档仍按 DONE 退出。
+            if idx > 0:
+                print(f"\n[promo] {diff} 档 {len(counters)} 个组合打不穿(>{_MAX_COUNTERS_PER_TIER}),"
+                      f"降档回 {LADDER[idx - 1]} 蓄力。相克组合: {counters}", flush=True)
+                flow_state["tier"] = LADDER[idx - 1]
+                _save_state(state)
+                idx -= 1
+                continue
             print(f"\n[promo] {diff} 档 {len(counters)} 个组合打不穿(>{_MAX_COUNTERS_PER_TIER}),"
                   f"整体未过,留在 {diff} 继续迭代。相克组合: {counters}", flush=True)
             flow_state["tier"] = diff

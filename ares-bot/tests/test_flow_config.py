@@ -225,5 +225,28 @@ class TestPivotRushCannons(unittest.TestCase):
             self.assertTrue(fc.pivot.rush_cannons, f"{name} rush_cannons 缺省应为 True")
 
 
+    def test_dt_loads(self):
+        """dt(隐刀 rush,2026-07-21 落地):块可加载、配比和=1.0、科技链含 DARKSHRINE。"""
+        _yaml_or_skip(self)
+        fc = FlowConfig.load("dt")
+        self.assertEqual(fc.name, "dt")
+        total = sum(v["proportion"] for v in fc.spawn.values())
+        self.assertAlmostEqual(total, 1.0, places=6)
+        self.assertIn("DARKTEMPLAR", fc.spawn)
+        self.assertIn("DARKSHRINE", fc.core_structures)
+        self.assertIn("TWILIGHTCOUNCIL", fc.core_structures)
+        self.assertEqual(fc.rally_min_army, 4)
+        self.assertIsNotNone(fc.pivot)
+
+    def test_dt_enums_resolve(self):
+        """dt 的兵种/结构/升级枚举运行时全部可解析(防拼写静默失效)。"""
+        _yaml_or_skip(self)
+        fc = FlowConfig.load("dt")
+        self.assertTrue(fc.spawn_dict(), "dt spawn_dict 为空")
+        self.assertTrue(fc.core_structure_ids(), "dt 科技链枚举为空")
+        self.assertEqual(len(fc.upgrade_ids()), len(fc.upgrades),
+                         "dt 有升级名解析不出")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

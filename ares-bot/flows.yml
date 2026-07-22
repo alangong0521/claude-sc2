@@ -112,3 +112,24 @@ flows:
       anti_air_proportion: 0.3
       anti_air_trigger: 3
       rush_zealots: 4
+
+  # 隐刀 rush(2026-07-21 落地):黑暗圣堂速出白打农民,对面出反隐就转运营
+  dt:
+    spawn:
+      DARKTEMPLAR: {proportion: 1.0, priority: 0}
+    core_structures: [GATEWAY, CYBERNETICSCORE, TWILIGHTCOUNCIL, DARKSHRINE]
+    upgrades:
+      - WARPGATERESEARCH
+      - PROTOSSGROUNDWEAPONSLEVEL1
+      - PROTOSSGROUNDWEAPONSLEVEL2
+    extra_production: {id: GATEWAY, cap: 8, base: 2}
+    chrono: {targets: [GATEWAY, TWILIGHTCOUNCIL], when: always}
+    one_off: []
+    freeflow: true
+    rally_min_army: 4               # 攒 4 把刀再出门(DT 分批送死是头号死法)
+    auto_expand: {at: 300, to: 2, when_workers: 18}   # rush 不成转运营的退路
+    pivot:                          # rush 更脆叉子减半;对面空军起来混追猎兜底
+      anti_air_units: [STALKER]
+      anti_air_proportion: 0.3
+      anti_air_trigger: 3
+      rush_zealots: 2

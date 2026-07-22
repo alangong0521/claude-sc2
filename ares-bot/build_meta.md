@@ -22,6 +22,11 @@ flows:
     codename: Skytoss
     core_units: [CARRIER, TEMPEST]
     playstyle: 航母黄金舰队(航母主 C + 暴风舰副 C)
+  dt:
+    race: Protoss
+    codename: ShadowBlade
+    core_units: [DARKTEMPLAR]
+    playstyle: 黑暗圣堂速出隐身白打农民,对面出反隐就转型
 ---
 
 ## 流派 tempest（暴风舰天空体 + 先知，已实机验证）
@@ -71,6 +76,25 @@ blink 好了打一波消耗 → 追猎成型持续压 → 混狂热者顶前排�
 
 ### 典型胜利路径
 龟缩防守憋航母（先知顺路骚扰拖时间）→ 开二矿补经济 → 航母 4-5 艘成型压上 → 暴风舰点杀威胁目标 → 清图。
+
+## 流派 dt（隐刀 rush，2026-07-21 落地）
+
+**神族 Protoss**：**黑暗圣堂(Dark Templar)速出**，隐身白打对面农民/基地；对面出反隐就转运营。
+
+### 节奏
+农民开局 → Gateway→控制核心→暮光议会(Twilight Council)→黑暗圣所(Dark Shrine) →
+**攒 4 把隐刀齐出**（分批送死是 DT 头号死法，rally 到数才出门）→ 摸农民、拆基地。
+对面反隐成型 → 转开矿运营混编。
+
+### 关键特性
+- **隐身即完全体**：DT 没有要微操的技能，白打看不见的敌人；对面没反隐就是屠杀。
+- **死穴 = 反隐**：渡鸦(Raven)、侦测器(Observer)、眼虫(Overseer)、导弹塔/孢子爬虫、
+  轨道扫描。侦查到这些立刻预警「他有反隐了，别送」。
+- ** rush 窗口短**：Dark Shrine 科技链较长，成型越晚对面反隐越齐——速度就是一切。
+
+### 典型胜利路径
+探机确认对面开局 → 速 dark shrine → 4 刀齐出摸主矿农民 → 对面慌补反隐时家里开二矿 →
+有反隐就转运营混编，没有就杀穿。
 
 ## 当前支持的兵种（army_composition）
 见 `army_composition.yml`（兵种注册表，战斗侧分派用）；各流派造兵配方见 `flows.yml`。
