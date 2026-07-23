@@ -92,7 +92,8 @@ protoss:
     - id: CARRIER
       proportion: 0.0
       combat: default
-      notes: 航母,舰载机;放机微操待专属类。
+      notes: 航母,舰载机;E4g N=5对照: carrier_offensive 0-5 vs default 2-3,切回 default。
+      #   微操类代码保留(bot/combat/carrier_offensive.py),CARRIER_COMBAT 环境变量可切换备重启。
     - id: MOTHERSHIP
       proportion: 0.0
       combat: default

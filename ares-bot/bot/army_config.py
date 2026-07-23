@@ -6,7 +6,8 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -37,11 +38,12 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "army_composition.yml"
 #   queen_support     = 女王输血(UseTransfuse)     |  reaper_harass = 死神手雷(ReaperGrenade)
 #   infestor_caster   = 感染虫真菌爆发(UseAOEAbility)
 #   stalker_offensive = 追猎 blink 流(集火/风筝/低血 blink 后撤,BUILD=stalker 才入产)
+#   carrier_offensive = 航母锚点放机+残血后撤(O12/O14,bot/combat/carrier_offensive)
 COMBAT_KINDS = (
     "tempest_offensive", "stalker_offensive", "oracle_harass", "default",
     "siege_offensive", "medivac_support", "medivac_transport", "templar_caster",
     "ghost_offensive", "raven_support", "queen_support", "reaper_harass",
-    "infestor_caster", "dt_offensive",
+    "infestor_caster", "dt_offensive", "carrier_offensive",
 )
 
 # 种族块键(army_composition.yml 支持 per-race:顶层 protoss/terran/zerg 各一套 units)
@@ -122,6 +124,18 @@ class ArmyComposition:
                 combat=combat,
                 notes=u.get("notes", ""),
             ))
+        # CARRIER_COMBAT 环境变量(E4 双通道对照,bench.py --carrier-combat 透传):
+        # 设置时覆盖 CARRIER 条目的 combat;未设置用 yml 原值。值须为 COMBAT_KINDS 之一。
+        cc = os.environ.get("CARRIER_COMBAT")
+        if cc:
+            if cc not in COMBAT_KINDS:
+                raise ValueError(
+                    f"CARRIER_COMBAT '{cc}' 非法(可用: {COMBAT_KINDS})"
+                )
+            specs = [
+                replace(s, combat=cc) if s.id_name == "CARRIER" else s
+                for s in specs
+            ]
         _validate(specs)
         # 升级列表(M3):字符串名归一大写、去空、去重保序。运行时再转 UpgradeId 枚举。
         upgrades: list[str] = []

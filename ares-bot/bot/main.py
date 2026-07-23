@@ -147,7 +147,9 @@ class MyBot(AresBot):
                 if self.mineral_field
                 else 0
             )
-            if not nexus_rebuild_viable(self.workers.amount, minerals_left):
+            if not nexus_rebuild_viable(
+                self.workers.amount, minerals_left, self.minerals
+            ):
                 self._events.append(
                     {"t": round(self.time, 1), "msg": "前10分钟基地全失,判负离场(Q5)"}
                 )
@@ -227,6 +229,12 @@ class MyBot(AresBot):
             if role in (UnitRole.SCOUTING.name, UnitRole.PERSISTENT_BUILDER.name):
                 continue
             if w.tag in tracker:
+                # E4c:rush 期间一切建造钉点豁免 —— 矿紧时塔/兵营工人到点等钱
+                # 是防御链的一部分;此时撤回会陷入「派出→钉点→6s 撤回→重派」
+                # 循环,炮塔永远起不来(e4c game_02 实证:矿 170-390 而首塔
+                # 拖到 206s 才 warp-in,首波被穿)。
+                if self.production_manager.rush_active:
+                    continue
                 # O11:钉在建造点等钱的工人(ares 无守卫路径:ProtossStaticDefence/
                 # TechUp)——钉点超 6s 且结构仍买不起 → 拆 tracker 撤回采矿,
                 # 行为下帧重派(往返途中钱照采)。两个例外:

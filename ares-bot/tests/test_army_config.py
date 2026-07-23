@@ -278,16 +278,45 @@ class TestNewCombatKinds(unittest.TestCase):
         self.assertEqual([u.combat for u in ac.units], ["stalker_offensive"])
 
     def test_combat_kinds_count(self):
-        # COMBAT_KINDS 冻结在 14 个(13 + dt_offensive),防止误删/漏加
+        # COMBAT_KINDS 冻结在 15 个(14 + carrier_offensive),防止误删/漏加
         from bot.army_config import COMBAT_KINDS
-        self.assertEqual(len(COMBAT_KINDS), 14)
-        self.assertEqual(len(set(COMBAT_KINDS)), 14)  # 无重复
+        self.assertEqual(len(COMBAT_KINDS), 15)
+        self.assertEqual(len(set(COMBAT_KINDS)), 15)  # 无重复
 
     def test_unknown_combat_still_rejected(self):
         with self.assertRaises(ValueError):
             ArmyComposition.from_dict(
                 {"units": [{"id": "x", "combat": "laser_offensive"}]}
             )
+
+
+class TestCarrierCombatEnvOverride(unittest.TestCase):
+    """CARRIER_COMBAT 环境变量(E4 双通道对照):覆盖 CARRIER 的 combat。"""
+
+    DICT = {"units": [
+        {"id": "carrier", "proportion": 0.7, "combat": "carrier_offensive"},
+        {"id": "tempest", "proportion": 0.3, "combat": "tempest_offensive"},
+    ]}
+
+    def test_env_unset_keeps_yml(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CARRIER_COMBAT", None)
+            ac = ArmyComposition.from_dict(self.DICT)
+            self.assertEqual(ac.units[0].combat, "carrier_offensive")
+
+    def test_env_set_overrides_only_carrier(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"CARRIER_COMBAT": "default"}):
+            ac = ArmyComposition.from_dict(self.DICT)
+            self.assertEqual(ac.units[0].combat, "default")       # CARRIER 被覆盖
+            self.assertEqual(ac.units[1].combat, "tempest_offensive")  # 其他不动
+
+    def test_env_invalid_rejected(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"CARRIER_COMBAT": "bogus"}):
+            with self.assertRaises(ValueError):
+                ArmyComposition.from_dict(self.DICT)
 
 
 if __name__ == "__main__":

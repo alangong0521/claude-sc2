@@ -136,11 +136,17 @@ def should_expand_dynamic(
     优势触发：我方 army supply ≥ 敌可见 army supply + advantage_supply（前线有优势提前开）。
     约束：rush_active 期间不开（rush 响应优先）、到 max_bases 停、已有 nexus 在建不叠加
     （配合 ExpansionController max_pending=1，逐矿评估，局势变了就停）。
+    E4b 修正：敌可见 army supply 为 0 时**禁止优势触发**——0 可见不是优势是未知
+    （敌兵藏迷雾时"假优势"曾导致裸奔扩张+预留停产自绞，E4b 实证）；
+    爆仓触发不依赖敌情，不受影响。
     """
     if rush_active or bases >= max_bases or nexus_pending:
         return False
     saturated = workers_per_base > 0 and supply_workers >= workers_per_base * bases
-    advantage = own_army_supply >= enemy_army_supply + advantage_supply
+    advantage = (
+        enemy_army_supply > 0
+        and own_army_supply >= enemy_army_supply + advantage_supply
+    )
     return saturated or advantage
 
 
@@ -316,10 +322,17 @@ def nexus_rebuild_active(townhalls: int) -> bool:
     return townhalls == 0
 
 
-def nexus_rebuild_viable(workers: int, minerals_left: int) -> bool:
-    """O15：重建是否还有意义（有工人采矿 + 场上还有矿）。纯逻辑。
-    不可行时走 Q5 早负判负（bench 省垃圾时间）。"""
-    return workers > 0 and minerals_left > 0
+def nexus_rebuild_viable(
+    workers: int, minerals_left: int, bank: int = 0, nexus_cost: int = 400
+) -> bool:
+    """O15：重建是否还有意义（有工人 + 场上还有矿 + 拿得出重建的钱）。纯逻辑。
+
+    E4 实证（game_01）：基地清零且存款 <400 时重建是数学死局——
+    没有 townhall 就没有资源入库口，工人采了矿也交不了，收入恒 0、
+    存款永远到不了 400，bot 空转 400 秒垃圾时间。
+    所以豁免 Q5 判负必须同时满足：工人 >0、矿脉有剩、存款 ≥ nexus_cost。
+    """
+    return workers > 0 and minerals_left > 0 and bank >= nexus_cost
 
 
 def expansion_reserve_active(want_expand: bool, can_afford_nexus: bool) -> bool:

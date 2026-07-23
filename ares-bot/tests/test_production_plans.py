@@ -274,10 +274,16 @@ class TestShouldExpandDynamic(unittest.TestCase):
         self.assertTrue(self._run(bases=2, supply_workers=44))
 
     def test_advantage_triggers(self):
-        # 优势:我方 army supply ≥ 敌可见 + 12
-        self.assertTrue(self._run(own_army_supply=12, enemy_army_supply=0))
-        self.assertFalse(self._run(own_army_supply=11, enemy_army_supply=0))
+        # 优势:我方 army supply ≥ 敌可见 + 12(敌必须先现身)
+        self.assertTrue(self._run(own_army_supply=14, enemy_army_supply=1))
+        self.assertFalse(self._run(own_army_supply=11, enemy_army_supply=1))
         self.assertFalse(self._run(own_army_supply=13, enemy_army_supply=2))
+
+    def test_advantage_blocked_when_enemy_unseen(self):
+        # E4b 实证:敌可见 0 时不是优势是未知(迷雾藏兵)——禁止优势触发
+        self.assertFalse(self._run(own_army_supply=99, enemy_army_supply=0))
+        # 爆仓触发不依赖敌情,不受影响
+        self.assertTrue(self._run(supply_workers=22, enemy_army_supply=0))
 
     def test_caps_and_pending_block(self):
         self.assertFalse(self._run(bases=4, supply_workers=999))   # 到上限
@@ -476,9 +482,14 @@ class TestNexusRebuild(unittest.TestCase):
         self.assertFalse(nexus_rebuild_active(1))
 
     def test_viable_needs_workers_and_minerals(self):
-        self.assertTrue(nexus_rebuild_viable(10, 1500))
-        self.assertFalse(nexus_rebuild_viable(0, 1500))   # 没工人
-        self.assertFalse(nexus_rebuild_viable(10, 0))     # 全图矿干 → Q5 判负
+        self.assertTrue(nexus_rebuild_viable(10, 1500, 500))   # 有工有矿有钱
+        self.assertFalse(nexus_rebuild_viable(0, 1500, 500))   # 没工人
+        self.assertFalse(nexus_rebuild_viable(10, 0, 500))     # 全图矿干 → Q5 判负
+
+    def test_viable_needs_bank_for_nexus(self):
+        # E4 实证:0 基地 = 零收入(采了交不了),存款 <400 是死局 → 不豁免 Q5
+        self.assertFalse(nexus_rebuild_viable(10, 1500, 45))
+        self.assertTrue(nexus_rebuild_viable(10, 1500, 400))
 
 
 class TestExpansionReserve(unittest.TestCase):

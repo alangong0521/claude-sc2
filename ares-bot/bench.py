@@ -181,6 +181,8 @@ def _game_env(args: argparse.Namespace, game_dir: Path, map_name: str) -> dict:
         "BENCH_DIR": str(game_dir),      # on_end 结果 JSON(game_<uuid>.json)
         "SAVE_REPLAY": "1" if args.replay else "0",  # 每局存回放(双击可看全战况)
     })
+    if args.carrier_combat:  # E4 双通道对照:覆盖 CARRIER 的 combat 类
+        env["CARRIER_COMBAT"] = args.carrier_combat
     return env
 
 
@@ -360,6 +362,7 @@ def _aggregate(games: list[dict], series_dir: Path, args: argparse.Namespace) ->
             "flow": args.flow, "map": args.map, "diff": args.diff,
             "race": args.race, "ai_build": args.ai_build,
             "realtime": bool(args.realtime),
+            "carrier_combat": args.carrier_combat or "yml",
         },
         "games": len(games), "wins": wins, "losses": losses,
         "ties": ties, "errors": errors,
@@ -404,6 +407,9 @@ def main() -> int:
     ap.add_argument("--replay", action="store_true",
                     help="每局存回放(SAVE_REPLAY,双击 .SC2Replay 看完整战况)")
     ap.add_argument("--timeout", type=int, default=1800, help="单局超时秒数")
+    ap.add_argument("--carrier-combat", default=None,
+                    choices=["default", "carrier_offensive"],
+                    help="覆盖 CARRIER 的 combat 类(E4 双通道对照);不设用 yml 原值")
     args = ap.parse_args()
 
     series_dir = _AREAS / "bench" / args.tag

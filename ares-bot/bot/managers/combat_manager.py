@@ -9,6 +9,7 @@ from sc2.position import Point2
 from sc2.units import Units
 
 from bot.combat.base_unit import BaseUnit
+from bot.combat.carrier_offensive import CarrierOffensive
 from bot.combat.dt_offensive import DtOffensive
 from bot.combat.generic_offensive import GenericOffensive
 from bot.combat.ghost_offensive import GhostOffensive
@@ -65,6 +66,7 @@ class CombatManager(Manager):
         self.queen_support: BaseUnit = QueenSupport(ai, config, mediator)
         self.reaper_harass: BaseUnit = ReaperHarass(ai, config, mediator)
         self.infestor_caster: BaseUnit = InfestorCaster(ai, config, mediator)
+        self.carrier_offensive: BaseUnit = CarrierOffensive(ai, config, mediator)
         # 兵种组成从 army_composition.yml 读(单一真相源,按 bot 种族选块),决定指挥哪些兵种、
         # 用哪个 combat class。不再写死只指挥 TEMPEST —— 加兵种只改 yaml。
         from bot.army_config import ArmyComposition, bot_race_name
@@ -89,6 +91,7 @@ class CombatManager(Manager):
             "queen_support": self.queen_support,            # 女王输血
             "reaper_harass": self.reaper_harass,            # 死神手雷
             "infestor_caster": self.infestor_caster,        # 感染虫真菌
+            "carrier_offensive": self.carrier_offensive,    # O12/O14:航母锚点放机+残血后撤
         }
 
     def _enemy_near_their_base(self) -> bool:
