@@ -269,7 +269,13 @@ class CombatManager(Manager):
         for spec in self._army.by_role("ATTACKING"):
             uid = getattr(UnitID, spec.id_name, None)
             if uid is not None:
-                count += self.manager_mediator.get_own_unit_count(unit_type_id=uid)
+                try:
+                    count += self.manager_mediator.get_own_unit_count(unit_type_id=uid)
+                except KeyError:
+                    # cy_unit_pending 对变形形态(如 WARPPRISMPHASING)无 pending
+                    # 数据会 KeyError —— 该兵种按 0 计,不让一个 spec 崩掉整局
+                    # (E6c game_01-05 五连 ERROR 实证)
+                    continue
         return count
 
     def _apply_combat_sim_brake(self, attack_target: Point2) -> Point2:
