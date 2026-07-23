@@ -67,3 +67,6 @@
     后台任务输出必须重定向（防 16MiB 杀），且管道接 `bench/logroll.py` 只留尾部 20MB：
     `... 2>&1 | python3 bench/logroll.py bench/promo.log 20971520`。
     矩阵本身不逐局消费日志，尾部足够撞墙归因。
+23. **状态文件必须原子写**——`promotion.json` 直接 `write_text` 时车道被 kill 会留下
+    0 字节/半个 JSON，下次启动 `json.loads` 崩。修法：写 `.tmp` 再 `replace()`；
+    `_load_state` 容忍损坏返回 `{}`——逐局 summary 在 `bench/<tag>/` 下，矩阵历史无损重放。

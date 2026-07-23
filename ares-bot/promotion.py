@@ -152,16 +152,22 @@ def _play_combo(args: argparse.Namespace, diff: str, race: str, build: str,
 
 
 def _load_state(path: Path = STATE_FILE) -> dict:
-    if path.exists():
+    # 容忍空文件/截断 JSON(车道被 kill 时可能正在写)——返回 {} 走断点重建,
+    # 逐局 summary 还在 bench/<tag>/ 下,矩阵历史会无损重放。
+    try:
         return json.loads(path.read_text(encoding="utf-8"))
-    return {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def _save_state(state: dict, path: Path = STATE_FILE) -> None:
+    # 原子写:先写临时文件再 rename,防 kill 瞬间留下半个 JSON(车道 A 实测踩过)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
         json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    tmp.replace(path)
 
 
 def main() -> int:
