@@ -121,6 +121,9 @@ class TechUp(MacroBehavior):
                 and mediator.get_own_structures_dict[UnitID.WARPGATE]
             ):
                 return False
+            # can_afford check: don't send worker if we can't afford
+            if not ai.can_afford(researched_from_id):
+                return False
             logger.info(
                 f"{ai.time_formatted} Building {researched_from_id} "
                 f"for {self.desired_tech}"
@@ -174,6 +177,9 @@ class TechUp(MacroBehavior):
                             )
                         return upgrading
 
+                    # can_afford check: don't send worker if we can't afford
+                    if not ai.can_afford(structure_type):
+                        continue
                     building: bool = BuildStructure(
                         self.base_location, structure_type
                     ).execute(ai, ai.config, ai.mediator)

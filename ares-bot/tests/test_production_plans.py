@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.production_plans import (  # noqa: E402
     assimilator_attempt_stuck,
+    base_rebuild_active,
     defense_syncs_with_nexus,
     expansion_cannon_count,
     expansion_reserve_active,
@@ -490,6 +491,27 @@ class TestNexusRebuild(unittest.TestCase):
         # E4 实证:0 基地 = 零收入(采了交不了),存款 <400 是死局 → 不豁免 Q5
         self.assertFalse(nexus_rebuild_viable(10, 1500, 45))
         self.assertTrue(nexus_rebuild_viable(10, 1500, 400))
+
+
+class TestBaseRebuild(unittest.TestCase):
+    """base_rebuild_active:基地被打掉后的重建模式。E6b 回归实证:
+    只看「当前<目标」会在开局(1<max_bases=4)误触发,造农民/出兵整局被掐死
+    (bench e6b 五局 8 农民封顶、零兵营、~208s 全灭)——必须有「真的丢过基地」门。"""
+
+    def test_opening_one_base_does_not_trigger(self):
+        # 开局:当前 1 = 峰值 1 < 目标 4 → 不触发(E6b 回归判例)
+        self.assertFalse(base_rebuild_active(1, 1, 4, False))
+        self.assertFalse(base_rebuild_active(1, 1, 4, True))
+
+    def test_triggers_only_after_actual_base_loss(self):
+        # 开到 2 矿后被打回 1 → 峰值 2 > 当前 1 → 触发
+        self.assertTrue(base_rebuild_active(1, 2, 4, True))
+        # 没丢过(峰值=当前)即便 < 目标也不触发
+        self.assertFalse(base_rebuild_active(2, 2, 4, True))
+
+    def test_rush_and_no_target_gate(self):
+        self.assertFalse(base_rebuild_active(1, 2, 4, True, rush_active=True))
+        self.assertFalse(base_rebuild_active(1, 2, None, True))  # 无 max_bases 流派
 
 
 class TestExpansionReserve(unittest.TestCase):

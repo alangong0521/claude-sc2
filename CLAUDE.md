@@ -70,20 +70,30 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 
 示例：`REALTIME=True BUILD=carrier MAP=AbyssalReefLE DIFF=Medium OPPONENT_RACE=Random AI_BUILD=Macro poetry run python run.py`
 
+## 对局后检查（每次对局结束必做，司令指令 2026-07-23）
+
+1. **idle 建造农民检查（O19）**：每局结束后检查日志/快照，确认是否有农民
+   **>1s 不干活干等建造**（等钱、钉点、无指令）。bench 走 retro 检测器
+   （`idle_builder` 标签，E6 后落地）；观战局手动查 state 快照。
+   发现 → 记 battle-log 并优化建造顺序与拉农民建造的 timing。
+2. 其余 retro 标签照旧（supply_block / one_base / overrun / trickle / bank / stall）。
+
 ## 约束 / 踩过的坑
 - **升级改动走 `flows.yml` 的 flow.upgrades**（神族生产已不读 `DESIRED_UPGRADES`，该常量已删）；`army_composition.yml` 的 protoss.upgrades 仍被 `tests/test_army_config.py::test_shipped_protoss_upgrades_unchanged` 锁（T/Z 路径还在读它）；flows.yml 的 tempest/stalker 块被 `tests/test_flow_config.py` 的 shipped 测试冻结。
 - **spawn 比例和必须 ≈ 1.0**——`flows.yml` 与 `army_composition.yml` 同一约束（加载时各自校验）。
 - **ares-sc2 是本地包**——`import ares` 需 `sys.path` 加 `ares-sc2/src`（`run.py:14-16`）；离线编译检查也要加。
 - **headless `websocket 超时`**——SC2 更新中 / 冷启动慢会导致；用 REALTIME 或等 SC2 ready。headless 本环境不稳，优先 REALTIME。
 - **SC2 补丁日首发失败**（2026-07-18 实证）：当天补丁（如 Base97563）后 SC2 二进制能起进程但**不开 websocket、不出窗口、静默退出**，新旧 build 都一样 → 不是 bot 问题，去 Battle.net 让它完成更新 / 「扫描和修复」，确认手动能进游戏后再跑 bench。排查手法：直启二进制 `-listen 127.0.0.1 -port <p>` + `lsof -iTCP:<p> -sTCP:LISTEN`；多实例互斥会互相踢，先 `pkill -9 -x SC2` 再测。
-- **idle 农民**：ares 框架层 `BuildStructure`/`TechUp` 不查 `can_afford`（bot 层加守卫根治：BuildStructure 注册点 + 升级前置建筑全走 `_build_core_structure`）。另有 `main._handle_idle_workers` 每 1 游戏秒兜底清扫（跳过侦查/司令接管/采集中的农民）；tracker 里钉点 >6s 且买不起的建造工人会被拆 tracker 撤回（O11 watchdog，例外=人口紧急态水晶、基地建筑 TOWNHALL_TYPES、**rush_active 期间全部**——E4c 实证：rush 矿紧时撤回循环会让塔永远起不来）。**气矿优先级最高（O13）**：`_ensure_expansion_gas` 每帧在追加产能/滚雪球之前跑，每个就绪基地双气满采，在建气矿 45s 不落地拆 tracker 重派。**司令接管**靠的是 PERSISTENT_BUILDER role + `release_from_build_tracker` 摘除 ares building_tracker（BuildingManager 无视 role，只换 role 抢不回单位，O2 实证）。
+- **idle 农民**：ares 框架层 `BuildStructure`/`TechUp` 不查 `can_afford`（bot 层加守卫根治：BuildStructure 注册点 + 升级前置建筑全走 `_build_core_structure`）。**TechUp 已加 can_afford 守卫（2026-07-23 修复）**：在 `ares-sc2/src/ares/behaviors/macro/tech_up.py` 两处添加 `can_afford` 检查（第 128 行和第 180 行），防止农民被钉在建造点等钱（Forge 建造实证：两个农民等钱造 forge）。另有 `main._handle_idle_workers` 每 1 游戏秒兜底清扫（跳过侦查/司令接管/采集中的农民）；tracker 里钉点 >6s 且买不起的建造工人会被拆 tracker 撤回（O11 watchdog，例外=人口紧急态水晶、基地建筑 TOWNHALL_TYPES、**rush_active 期间全部**——E4c 实证：rush 矿紧时撤回循环会让塔永远起不来）。**气矿优先级最高（O13）**：`_ensure_expansion_gas` 每帧在追加产能/滚雪球之前跑，每个就绪基地双气满采，在建气矿 45s 不落地拆 tracker 重派。**司令接管**靠的是 PERSISTENT_BUILDER role + `release_from_build_tracker` 摘除 ares building_tracker（BuildingManager 无视 role，只换 role 抢不回单位，O2 实证）。
 - **bot 局小地图点击"失灵"**（2026-07-19 结案）：四层叠加——①窗口非键窗时点击被当"激活"吞掉（先点主画面）；②AI 投降弹窗是模态框挡全部输入（gg 聊天型 bench 自动点 Yes；静默型手动点）；③全速模拟下离散点击被间歇性丢弃；④**主因:并行车道新局开窗每几分钟抢一次键窗,观看窗口被降级,点击被当激活吞掉(开窗期失灵、安静期好使)**。**观察方案:`sc2cam <left|right|top|bottom|center>`(~/.kimi-code/bin/,合成点击切镜头,可靠),或边缘平移(可在游戏内调低滚动速度)**。判别手法：手动开一局 vs AI 能点 = bot 局特有。
 - **warpgate 必须自己变形**：`SpawnController.execute` 在 WARPGATERESEARCH 完成后**停产等 gateway 变形**（`return False`），而 ares 没有变形行为——不自己下 `MORPH_WARPGATE` 就永久停产（`production_manager._morph_gateways` 根治）。
 - **多兵种 SpawnController 必开 freeflow**：配比是**上限**不是目标——精确配比点全兵种都 ≥ 目标 → 全停产（配比死锁）；且 freeflow 下**首优先兵种若永远可负担会饿死其他兵种**（C5a 实证：zealot p0 → 0 追猎）。单兵种流派靠 `over_produce_on_low_tech` 豁免不用开。freeflow 的镜像坑：p0 **买不起**就 fall-through 喂饱 p1（O5 实证：风暴吃光气攒不出航母）→ carrier 用 `save_up` 憋气机制（`production_plans.save_up_spawn`）截断。
 - **carrier 动态多矿（E2）**：`auto_expand` 配 `max_bases` 走动态模式——爆仓（农民 ≥ `when_workers`×基地数）或前线优势（我方 army supply ≥ 敌可见 + `advantage_supply`，**E4b 起敌可见必须先 >0**：0 可见不是优势是未知，迷雾藏兵曾致假优势裸奔+预留停产）逐矿 +1，rush 期间不开；`expansion_cannons` 让 `ProtossStaticDefence` 塔数动态（`min + 敌可见作战单位//4`，封顶 `max`，每帧重算）；星门追加有气体闸门（目标 = min(cap, 满采气基地数 + 1)，满采=该基地 2 个 ready assimilator；+1 因气有存款可爆兵、风暴耗气更慢——司令 2026-07-21 口径）。旧式 `auto_expand {at,to,when_workers}`（stalker）不受影响。
 - **carrier 侦查决策闭环（O9）**：t≈170s 一局评一次 `scout_verdict`（无情报→保守按 rush；早出兵建筑≥2 或早期敌兵≥6→rush；否则 greedy 维持贪打法），rush/unknown 直接置 `_rush_active` 复用响应包并撤回 SCOUTING 农民。只挂 carrier，tempest/stalker 基线不动。
 - **rush_active 六连动（E3b/E3d）**：①不注册 UpgradeController（研究让位，E3-R1）；②`spawn_target` 切回主基（不前线折跃进敌群）；③`_should_build_defense` 立即铺塔（不等敌兵压 40 格，`rush_triggers_defense`，臂 B `rush_cannons:false` 除外）；④暂停科技链/造农民/追加产能/滚雪球/前线塔，升级建筑只保 FORGE（E3d 矿饥荒实证）；⑤`shield_batteries_per_base=0`（电池要核心，`_tech_required` 会阻塞整条塔链）；⑥敌兵>叉子数时追加 gateway（`rush_needs_gateway`，单兵营 28s 一叉是瓶颈）。
+- **基地被打掉后重建（O20，2026-07-23 修复）**：当"当前基地数 < 目标基地数"时（如 2 矿被打剩 1 矿），触发类似 E3k 的攒钱预留模式 —— 暂停 SpawnController/造农民，优先重建 Nexus。触发条件：`base_rebuild_active(current_bases, target_bases, can_afford_nexus, rush_active)`，目标基地数来自 `auto_expand.max_bases`（carrier 动态开矿用）。修复前 bot 会继续消费航母/科技，导致经济崩溃（2026-07-23 对局实证）。相关代码：`production_plans.py:base_rebuild_active`，`production_manager.py:update()` 头部计算 `_base_rebuild` 标志位，4 处截断点集成（SpawnController/造农民/ExpansionController）。
 - **基地清零重建（O15）**：`townhalls==0` 时 MacroPlan 只留 AutoSupply（研究/出兵/开销块全停，攒钱 400 重建，优先级 > save_up）；主矿干则 `ExpansionController(to_count=1)` 找新矿；Q5 判负豁免条件=有工人且场上还有矿且**存款 ≥400**（`nexus_rebuild_viable`，E4 实证：0 基地=零收入，存款不够就是死局，豁免会空转垃圾时间）。
+- **农民被抄转移（E6）**：`main.update_worker_evacuation` 每帧跑——敌地面 ≥4 进某基地 Nexus 15 格视为被抄；有就绪塔（距 Nexus ≤9）且敌 <6+4×塔数则不撤（塔罩得住），**敌 ≥6+4×塔数=塔被压垮照撤**（bench 实证：22 狗+9 蟑螂波 ~20s 拆光塔再屠农，塔覆盖≠安全），无塔即撤；撤离农民挂 `CONTROL_GROUP_ONE` role（脱离 Mining/派工/idle 清扫）撤向最近有塔基地，敌 <2（滞回）或基地丢后归 GATHERING 回采。判据纯函数在 `production_plans`（`should_evacuate_workers`/`evacuation_clear`/`pick_evacuation_base`）。rush 期**主基**不新增撤离（六连动不变），**分矿不受 rush 门**（bench 实证 rush_active 从首接敌续过中段波，全局 rush 门=E6 死代码）；跳过 building_tracker/司令接管农民。
 - **开矿攒钱预留（E3k）**：动态开矿触发即把 `ExpansionController(prioritize=True)` 插在 plan 的 UC 之前（欠费也先派工人走位）；触发但买不起时不注册 SpawnController + 暂停造农民 + UC 让位（优先级：Nexus > 研究 > 出兵）；rush 不开矿、O15 重建优先。⚠️ ExpansionController 千万别放 plan 尾部（UC prioritize 会饿死它，E3k 实证）；扩张钉点工人已在 O11 watchdog 豁免（TOWNHALL_TYPES）。
 - **分矿塔与 Nexus 同步（E3l）**：`_should_build_defense` 在有 Nexus 在建或 ≥2 基地时即启动（`defense_syncs_with_nexus`）——分矿塔防不再等落地+6 分钟线，裸奔窗口从 30-100s 压到塔建造时间本身。
 - **save_up 不截反空军（E3c）**：`save_up_spawn(exempt=)`——pivot `anti_air_units` 永不截断（保命防空不是副 C），否则敌爆空军时零混编团灭。截断判据是 `resource_gap = max(气缺口, 矿缺口) ≤ save_up`（E3h：只看气会在矿瓶颈局把副 C 锁死）。
@@ -93,8 +103,8 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 ## 验证
 ```bash
 cd ares-bot
-# 编译（两流派都测）
-BUILD=stalker poetry run python -c "import sys; sys.path[:0]=['ares-sc2/src/ares','ares-sc2/src','ares-sc2']; from bot.managers import production_manager; from bot.combat.stalker_offensive import StalkerOffensive; print('OK')"
+# 编译（两流派都测，含 2026-07-23 新增 base_rebuild_active）
+BUILD=carrier poetry run python -c "import sys; sys.path[:0]=['ares-sc2/src/ares','ares-sc2/src','ares-sc2']; from bot.managers import production_manager; from bot.production_plans import base_rebuild_active; print('OK')"
 # 测试(unittest,无需 pytest;86 例)
 poetry run python -m unittest discover -s tests
 # 跑局

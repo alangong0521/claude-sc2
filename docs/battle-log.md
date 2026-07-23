@@ -1379,3 +1379,24 @@ production_manager 每帧维护 `_peak_townhalls`。rush/None-target 门不变�
 - 他人 WIP 的 `_base_rebuild` 门（重建期掐 probe/spawn）本身代价存疑
   （E3k 攒钱预留已有同类语义且更温和），留给该 agent 自评，本次只做
   最小修复（峰值门）不重构。
+
+---
+
+## 2026-07-23 并入另一 agent 的观战记录（ares-bot/docs/ 野文件归档）
+
+> 来源：`ares-bot/docs/battle-log.md`（另一 agent 误建副本，内容核对后并入，野文件已删）。
+> 其中「两个农民等钱造 forge」（=O1 复发，TechUp 已加 can_afford 守卫根治）与
+> 「二矿被推平应攒钱重建」（=base_rebuild_active，已加峰值门修复）两条为重复记录，不重复收录。
+
+### O21 虫族早开矿 vs carrier 6 分半才开矿【待讨论】
+
+- **现象**：虫族 3 分钟前开 2 矿；carrier 流 6 分半才开 2 矿。
+- **分析**：carrier 配置 `when_workers: 22, advantage_supply: 12`，单矿需 22
+  农民或 army 优势才触发开矿。6 分半偏晚，但符合「先憋舰队后开矿」策略。
+- **待定**：是否降低 `when_workers`（调参臂已叫停，先不动，留作数据点）。
+
+### O22 2 矿选址距主基隔了一个矿区【待确认】
+
+- **现象**：新开的 2 矿距离主基隔了一个矿区。
+- **分析**：ares `ExpansionController` 自动选址，可能选了第三近的矿区。
+- **待定**：ares 框架层尽量不改；若分矿防御压力实证偏大再评估。
