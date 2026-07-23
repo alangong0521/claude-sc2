@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -56,8 +58,37 @@ def _series_result(tag: str) -> tuple[int, int] | None:
     return s["wins"], s["games"]
 
 
+def _sc2_count() -> int:
+    """当前 SC2 游戏进程数(pgrep -x 精确匹配进程名;异常按 0 处理,不挡开局)。"""
+    try:
+        out = subprocess.run(["pgrep", "-x", "SC2"],
+                             capture_output=True, text=True, timeout=10)
+        return len([ln for ln in out.stdout.splitlines() if ln.strip()])
+    except Exception:
+        return 0
+
+
+def _wait_sc2_budget() -> None:
+    """SC2 并发闸门(司令指令):PROMO_SC2_BUDGET=N 时,开新局前若 SC2 进程数 ≥N
+    就挂起等待 —— 别的 agent/车道在占用时主动让位,不抢机器。
+    只在"开新局"前挡:summary 重放/归因/删日志等纯磁盘阶段不受限。
+    0(缺省)= 不启用。"""
+    budget = int(os.environ.get("PROMO_SC2_BUDGET", "0") or 0)
+    if budget <= 0:
+        return
+    waited = False
+    while _sc2_count() >= budget:
+        if not waited:
+            print(f"[promo] SC2 进程数≥{budget},让位等待(每30s复查)...", flush=True)
+            waited = True
+        time.sleep(30)
+    if waited:
+        print("[promo] SC2 空位出现,继续开局", flush=True)
+
+
 def _run_series(args: argparse.Namespace, diff: str, race: str, build: str,
                 tag: str, n: int) -> tuple[int, int]:
+    _wait_sc2_budget()
     print(f"[promo] 打 {tag} ...", flush=True)
     subprocess.run(
         ["poetry", "run", "python", "bench.py",
