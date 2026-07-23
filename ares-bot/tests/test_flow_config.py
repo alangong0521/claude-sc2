@@ -210,7 +210,7 @@ class TestPivotRushCannons(unittest.TestCase):
         self.assertEqual(
             (fc.pre_fleet.id_name, fc.pre_fleet.cap,
              fc.pre_fleet.per_enemy, fc.pre_fleet.max),
-            ("ZEALOT", 6, 0.7, 20),
+            ("ZEALOT", 6, 0.5, 16),
         )
         # stalker 旧式 auto_expand 不受影响(冻结块)
         sk = FlowConfig.load("stalker")
