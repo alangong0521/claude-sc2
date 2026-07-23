@@ -206,11 +206,11 @@ class TestPivotRushCannons(unittest.TestCase):
             "PROTOSSAIRWEAPONSLEVEL3", "PROTOSSAIRARMORSLEVEL3",
             "PROTOSSSHIELDSLEVEL2", "PROTOSSSHIELDSLEVEL3",
         ])
-        # E3e/E3f:舰队成型前地面保底(随敌兵力伸缩)
+        # E3e/E3f:舰队成型前地面保底(随敌兵力伸缩);E5-B 臂 0.5/16→0.7/20
         self.assertEqual(
             (fc.pre_fleet.id_name, fc.pre_fleet.cap,
              fc.pre_fleet.per_enemy, fc.pre_fleet.max),
-            ("ZEALOT", 6, 0.5, 16),
+            ("ZEALOT", 6, 0.7, 20),
         )
         # stalker 旧式 auto_expand 不受影响(冻结块)
         sk = FlowConfig.load("stalker")

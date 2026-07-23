@@ -107,7 +107,7 @@ flows:
     one_off: [ORACLE]
     freeflow: true
     save_up: 250                    # O5 憋气:航母占比落后时截断风暴生成,攒气等航母
-    pre_fleet: {id: ZEALOT, cap: 6, per_enemy: 0.5, max: 16}   # E3e 保底+E3f 伸缩:敌 30 兵→15 叉
+    pre_fleet: {id: ZEALOT, cap: 6, per_enemy: 0.7, max: 20}   # E5-B 臂:0.5/16→0.7/20(基线 e4g-default 2-3)
     # E2 动态开矿(司令:有能力开到 4 矿):爆仓(农民 ≥ 22×基地数)或
     # 前线优势(我方 army supply ≥ 敌可见 + 12)时逐矿 +1,rush 期间不开
     auto_expand: {max_bases: 4, when_workers: 22, advantage_supply: 12}
