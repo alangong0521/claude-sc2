@@ -7,12 +7,17 @@ from ares.behaviors.macro import Mining, RestorePower
 from ares.consts import ID as TRACKER_ID
 from ares.consts import TIME_ORDER_COMMENCED, TOWNHALL_TYPES, UnitRole
 from bot.production_plans import (
+    evacuation_clear,
     nexus_rebuild_viable,
+    pick_evacuation_base,
+    should_evacuate_workers,
     should_release_waiting_builder,
 )
 from bot.shield_battery import restore_with_batteries
+from bot.selftune import SelfTuner
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from sc2.position import Point2
 from sc2.unit import Unit
 
 from bot import steer
@@ -22,6 +27,23 @@ from bot.managers.production_manager import ProductionManager
 
 # 每隔几游戏秒发布 state.json + 读 orders.json
 _STEER_EVERY: float = 4.0
+
+# ── E6 农民被抄转移/协防 ──
+_EVAC_RADIUS: float = 15.0    # 敌地面单位距 Nexus 多少格内算"进矿区"
+_EVAC_THRESHOLD: int = 4      # 进矿区敌地面 ≥ 此数 → 该基地视为被抄
+_CANNON_COVER: float = 9.0    # 就绪塔距 Nexus ≤ 此值 → 矿区在塔射程内
+# 撤离农民挂 CONTROL_GROUP_ONE(ares 枚举里"use for anything not specified"的
+# 兜底 role,vendored ares 无任何消费者):Mining/ResourceManager/idle 清扫/建造派工
+# 都只认 GATHERING,撤离期间他们彻底不碰这些农民;敌退后归位 GATHERING 自动重上岗。
+_EVAC_ROLE = UnitRole.CONTROL_GROUP_ONE
+# 能覆盖矿区的静态防御(光子炮是神族主案;人/虫塔顺手兼容)
+_STATIC_DEFENCE = {
+    UnitID.PHOTONCANNON,
+    UnitID.MISSILETURRET,
+    UnitID.SPORECRAWLER,
+    UnitID.SPORECANNON,
+    UnitID.PLANETARYFORTRESS,
+}
 
 
 def release_from_build_tracker(mediator, tag: int) -> bool:
@@ -55,6 +77,153 @@ def recall_scouting_workers(ai) -> int:
         if ai.mineral_field:
             s.gather(ai.mineral_field.closest_to(s))
     return len(scouts)
+
+
+def update_worker_evacuation(ai) -> None:
+    """E6 农民被抄转移/协防(E3m 死因:game_01 农民 42→22、game_02 47→29,
+    经济断气后 2000+ 气烂掉)。每帧跑一次,三件事:
+
+    1. **检测**:敌地面单位距某基地 Nexus <_EVAC_RADIUS 且 ≥_EVAC_THRESHOLD
+       → 该基地视为被抄(纯判据 production_plans.should_evacuate_workers)。
+    2. **响应**(按优先级):
+       a) 矿区有就绪塔(_CANNON_COVER 内)且敌兵规模塔罩得住(<6+4×塔数)
+          → 农民继续采,塔会打,本函数不动;塔被压垮(如 22 狗+9 蟑螂波)照撤
+          (E6 bench 实证:塔覆盖≠安全,大波 ~20s 拆光塔再屠农);
+       b) 无塔保护/塔被压垮 → 该矿线农民(role 归 _EVAC_ROLE 脱离 Mining/建造
+          派工/idle 清扫)撤向最近有塔基地,都没有则最近基地;途中到点先就地采
+          (别站着)。单基地无塔无处可撤 → 不动,交 ares Mining keep_safe 个体避险;
+       c) 就近有地面防御兵力 → 事件里标记集结点(**不强行微操**,
+          rush/stance/集结纪律的优先级都在 combat_manager,不抢)。
+    3. **回采**:敌地面 <2(滞回,防边界抖动往返)或基地已丢(O15 重建接管)
+       → 全员归 GATHERING 回最近矿脉,ares ResourceManager 自动重新分配。
+
+    与现有机制的关系:
+    - rush 期**主基**不新增撤离(六连动全权接管主基防守,行为不变);
+      **分矿不受 rush 门**(E6 bench 实证:VeryHard/Rush 的 rush_active 从首接敌
+      一路续过中段波,全局 rush 门让 E6 在目标场景永不触发=死代码;分矿撤离
+      与 rush 守主基响应包互补);回采判定 rush 与否都照常,不滞留;
+    - 跳过 building_tracker 里的建造农民(BuildingManager 的责任,O1/O2 教训)
+      和司令接管的农民(_player_ctrl);
+    - O11 watchdog 不冲突:撤离农民不在 tracker、不 idle(移动/就地采)。
+    纯操作函数,可单测(假 ai 见 tests/test_worker_evacuation.py)。"""
+    if not ai.townhalls:
+        return
+    worker_types = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+    evac_bases: dict[int, dict] = ai._evac_bases
+    tracker = ai.mediator.get_building_tracker_dict
+
+    def _enemy_ground_near(pos) -> int:
+        return sum(
+            1
+            for u in ai.enemy_units
+            if not u.is_structure
+            and not u.is_flying
+            and u.type_id not in worker_types
+            and u.position.distance_to(pos) < _EVAC_RADIUS
+        )
+
+    def _cannons_near(pos) -> int:
+        return sum(
+            1
+            for s in ai.structures
+            if s.type_id in _STATIC_DEFENCE
+            and s.is_ready
+            and s.position.distance_to(pos) <= _CANNON_COVER
+        )
+
+    # —— 回采/途中维护(每帧都跑,rush 也不例外:撤离中的农民不能因 rush 状态滞留) ——
+    for th_tag, info in list(evac_bases.items()):
+        th = next((t for t in ai.townhalls if t.tag == th_tag), None)
+        anchor = th.position if th is not None else info["pos"]
+        if th is not None and not evacuation_clear(_enemy_ground_near(anchor)):
+            for tag in list(info["workers"]):
+                w = next((x for x in ai.workers if x.tag == tag), None)
+                if w is None or tag in ai._player_ctrl:
+                    info["workers"].discard(tag)  # 死了/被司令接管 → 出账
+                    continue
+                if w.is_idle:
+                    if w.position.distance_to(info["target"]) < 10:
+                        if ai.mineral_field:  # 已到安全基地 → 就地先采,别站着
+                            w.gather(ai.mineral_field.closest_to(w))
+                    else:  # 途中被卡/命令被打断 → 补 move
+                        w.move(info["target"])
+            continue
+        # 敌退(或基地已丢,O15 重建接管) → 全员归 GATHERING 回采
+        returned = 0
+        for tag in list(info["workers"]):
+            w = next((x for x in ai.workers if x.tag == tag), None)
+            if w is None or tag in ai._player_ctrl:
+                continue
+            ai.mediator.assign_role(tag=tag, role=UnitRole.GATHERING)
+            if ai.mineral_field:
+                w.gather(ai.mineral_field.closest_to(th if th is not None else w))
+            returned += 1
+        evac_bases.pop(th_tag)
+        if returned:
+            ai._events.append(
+                {"t": round(ai.time, 1), "msg": f"E6:敌退,{returned}农民回采"}
+            )
+
+    # —— 新撤离判定 ——
+    # rush 门(E6 bench 修正):rush 期主基不新增撤离(六连动全权接管主基防守,
+    # 行为不变);但**分矿不受 rush 门**——bench 实证 VeryHard/Rush 的 rush_active
+    # 从 ~130s 首接敌一路续到中段波(game_03 t=520 仍在),E6 目标场景(分矿被抄)
+    # 恰好全程落在 rush 态里,全局 rush 门 = 机制死代码。分矿撤离与 rush 响应包
+    # (守主基/铺塔/出叉)互补不冲突。
+    rush = ai.production_manager.rush_active
+    main_pos = ai.start_location
+    gathering = set(ai.mediator.get_unit_role_dict[UnitRole.GATHERING])
+    th_of_worker = ai.mediator.get_worker_tag_to_townhall_tag
+    for th in (t for t in ai.townhalls if t.is_ready):
+        if th.tag in evac_bases:
+            continue
+        if rush and th.position.distance_to(main_pos) < 5:
+            continue  # rush 期主基行为不变
+        n = _enemy_ground_near(th.position)
+        cannons = _cannons_near(th.position)
+        if not should_evacuate_workers(
+            n, cannon_cover=cannons > 0, cannons_near=cannons,
+            threshold=_EVAC_THRESHOLD,
+        ):
+            continue
+        candidates = [
+            (o.position.x, o.position.y, _cannons_near(o.position) > 0)
+            for o in ai.townhalls
+            if o.tag != th.tag and o.is_ready
+        ]
+        target = pick_evacuation_base((th.position.x, th.position.y), candidates)
+        if target is None:
+            continue  # 无处可撤(单基地无塔):交 ares Mining keep_safe 个体避险
+        moved: set[int] = set()
+        for w in ai.workers:
+            if th_of_worker.get(w.tag) != th.tag or w.tag not in gathering:
+                continue
+            if w.tag in tracker or w.tag in ai._player_ctrl:
+                continue
+            ai.mediator.assign_role(tag=w.tag, role=_EVAC_ROLE)
+            w.move(Point2(target))
+            moved.add(w.tag)
+        if not moved:
+            continue
+        # 2c 协防标记:就近地面兵力在场 → 事件标记集结点(不强行微操)
+        defenders = sum(
+            1
+            for u in ai.units
+            if not u.is_structure
+            and not u.is_flying
+            and u.type_id not in worker_types
+            and u.position.distance_to(th.position) < 20
+        )
+        cover_note = "无塔" if cannons == 0 else f"塔{cannons}座压不住"
+        msg = f"E6:基地被抄(敌{n}地面,{cover_note}),撤离{len(moved)}农民"
+        if defenders:
+            msg += f";{defenders}地面兵力就近协防(集结点=被抄基地)"
+        ai._events.append({"t": round(ai.time, 1), "msg": msg})
+        evac_bases[th.tag] = {
+            "pos": th.position,
+            "target": Point2(target),
+            "workers": moved,
+        }
 
 
 # 人机共驾：司令一旦亲手操作某单位，bot 让权 N 游戏秒；期间不再自动指挥它，
@@ -102,6 +271,21 @@ class MyBot(AresBot):
         self._last_idle_sweep: float = -10.0
         # 敌方打出 gg(投降意向)检测,一局只记一次
         self._enemy_gg: bool = False
+        # B8 自调参(leitwerk ask/tell):只记录+学习,ask 出的参数暂不接消费点
+        # (先攒 bench 数据,接法见 docs/selftune.md §4)——对局内行为零变更。
+        self._selftuner = SelfTuner()
+        self._selftune_params = None
+
+    async def on_start(self) -> None:
+        await super(MyBot, self).on_start()
+        try:
+            self._selftune_params = self._selftuner.ask(
+                {"enemy_race": os.environ.get("OPPONENT_RACE", "")}
+            )
+        except Exception:
+            pass  # 调参失败不挡开局
+        # E6 农民被抄转移:被抄基地 th_tag -> {"pos","target","workers"}(撤离台账)
+        self._evac_bases: dict[int, dict] = {}
 
     async def on_step(self, iteration: int) -> None:
         await super(MyBot, self).on_step(iteration)
@@ -118,6 +302,10 @@ class MyBot(AresBot):
         self._handle_idle_workers()
 
         await self.production_manager.update(iteration)
+        # E6:农民被抄转移/协防(塔覆盖不撤/无塔撤向有塔基地/敌退回采)。
+        # 放在 production 之后:rush_active 是本帧最新;role 改动先于 _after_step
+        # 的 Mining 执行生效,不会与 Mining 抢命令。
+        update_worker_evacuation(self)
 
         # 调研合并(community-tactics-research §2.3):电池主动充能 —— 纯增量微操,
         # 没电池/没残盾单位时零指令。异常静默,绝不崩主循环。
@@ -213,7 +401,7 @@ class MyBot(AresBot):
 
     def _handle_idle_workers(self) -> None:
         """闲置农民清扫(司令观察实证):除被司令接管(PERSISTENT_BUILDER)/侦查(SCOUTING)
-        的之外,任何无命令农民立刻派回最近矿脉,role 归 GATHERING。
+        /E6 撤离中(_EVAC_ROLE)的之外,任何无命令农民立刻派回最近矿脉,role 归 GATHERING。
         ares Mining 只管 GATHERING role;且矿线饱和时 freed 建造农民在 ares 长距离采矿里
         找不到"空闲矿脉"拿不到命令 —— 这里兜底,每 1 游戏秒扫一次(O3:2 秒显得"傻等")。
         跳过 ares building_tracker 里的建造农民:他们是 BuildingManager 的责任,扫了会
@@ -226,7 +414,13 @@ class MyBot(AresBot):
         tracker = self.mediator.get_building_tracker_dict
         for w in self.workers.idle:
             role = self._current_role(w.tag)
-            if role in (UnitRole.SCOUTING.name, UnitRole.PERSISTENT_BUILDER.name):
+            # E6: _EVAC_ROLE 的撤离农民由 update_worker_evacuation 全权维护
+            # (途中补 move/到点就地采/敌退回采),这里别抢回去采被抄矿区的矿。
+            if role in (
+                UnitRole.SCOUTING.name,
+                UnitRole.PERSISTENT_BUILDER.name,
+                _EVAC_ROLE.name,
+            ):
                 continue
             if w.tag in tracker:
                 # E4c:rush 期间一切建造钉点豁免 —— 矿紧时塔/兵营工人到点等钱
@@ -507,6 +701,19 @@ class MyBot(AresBot):
         (d / f"game_{uuid.uuid4().hex[:8]}.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        # B8 tell:每局结局落进 selftune 记录(bench 环境变量带 race/diff/build;
+        # 异常静默——记录失败不影响结局上报)
+        try:
+            self._selftuner.tell({
+                "flow": payload["flow"],
+                "difficulty": os.environ.get("DIFF", ""),
+                "race": os.environ.get("OPPONENT_RACE", ""),
+                "build": os.environ.get("AI_BUILD", ""),
+                "result": payload["result"],
+                "game_time": payload["game_time"],
+            })
+        except Exception:
+            pass
 
     async def on_unit_created(self, unit: Unit) -> None:
         await super(MyBot, self).on_unit_created(unit)

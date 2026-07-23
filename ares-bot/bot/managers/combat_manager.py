@@ -23,6 +23,7 @@ from bot.combat.siege_offensive import SiegeOffensive
 from bot.combat.stalker_offensive import StalkerOffensive
 from bot.combat.templar_caster import TemplarCaster
 from bot.combat.tempest_offensive import TempestOffensive
+from bot.combat.warp_prism_offensive import WarpPrismOffensive
 from bot.production_plans import floor_army_defends_home
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ class CombatManager(Manager):
         self.stalker_offensive: BaseUnit = StalkerOffensive(ai, config, mediator)
         self.generic_offensive: BaseUnit = GenericOffensive(ai, config, mediator)
         self.dt_offensive: BaseUnit = DtOffensive(ai, config, mediator)
+        self.warp_prism_offensive: BaseUnit = WarpPrismOffensive(ai, config, mediator)
         self.siege_offensive: BaseUnit = SiegeOffensive(ai, config, mediator)
         self.medivac_support: BaseUnit = MedivacSupport(ai, config, mediator)
         self.medivac_transport: BaseUnit = MedivacTransport(ai, config, mediator)
@@ -76,12 +78,15 @@ class CombatManager(Manager):
         from bot.flow_config import FlowConfig
         self._flow: FlowConfig = FlowConfig.load(os.environ.get("BUILD"))
         self._rally_min: int = self._flow.rally_min_army
+        # B3 刹车状态(事件去抖:只在"判负"边沿记一条,不每帧刷 events)
+        self._sim_retreat_active: bool = False
         # combat kind → combat class 分派表(oracle_harass 由 OracleManager 单独管,这里不收)
         self._combat_dispatch: dict[str, BaseUnit] = {
             "tempest_offensive": self.tempest_offensive,
             "stalker_offensive": self.stalker_offensive,   # 纯追猎 blink 流(BUILD=stalker)
             "default": self.generic_offensive,
             "dt_offensive": self.dt_offensive,              # DT:被反隐照到且盾不满即撤(Sharky)
+            "warp_prism_offensive": self.warp_prism_offensive,  # B9:相位折跃+接残血(Sharky/sharpy)
             "siege_offensive": self.siege_offensive,        # M4:攻城坦克
             "medivac_support": self.medivac_support,        # M4:医疗船治疗
             "medivac_transport": self.medivac_transport,    # M4:医疗船空投
@@ -236,6 +241,10 @@ class CombatManager(Manager):
             attack_target = self.ai.start_location
         else:
             attack_target = self.attack_target
+        # B3 can_win_fight 接战刹车:模拟器判负 → 目标改为撤回主基地(只当一票否决)
+        attack_target = self._apply_combat_sim_brake(attack_target)
+        # B6 Squad 化:主力 squad 中心做散兵归队锚点(拿不到 → None 降级现状)
+        regroup_center = self._main_squad_center()
         for spec in self._army.by_role("ATTACKING"):
             combat = self._combat_dispatch.get(spec.combat)
             if combat is None:
@@ -251,6 +260,7 @@ class CombatManager(Manager):
                     attack_target=attack_target,
                     focus=order.get("focus"),        # ③焦点
                     maneuver=order.get("maneuver"),  # ④机动意图
+                    regroup_center=regroup_center,   # B6 归队锚点(仅 generic 用,其余忽略)
                 )
 
     def _own_army_count(self) -> int:
@@ -261,3 +271,55 @@ class CombatManager(Manager):
             if uid is not None:
                 count += self.manager_mediator.get_own_unit_count(unit_type_id=uid)
         return count
+
+    def _apply_combat_sim_brake(self, attack_target: Point2) -> Point2:
+        """B3 can_win_fight 接战刹车(来源:ares CombatSimManager + QueenBot combat_queens
+        + 12PoolBot micro.py;治 bench 信号 trickle/overrun —— 兵力反复崩落=逐个上去送)。
+
+        模拟器判负(LOSS_*)→ 把 attack_target 改为我方主基地(撤)而不是压上。
+        只当一票否决,不当进攻触发器(判胜不主动加压,维持原目标)。
+        司令已下 stance(attack/defend/...)时以司令为准,不刹车(同 rally 让位原则)。
+        模拟器异常/不可用 → 维持原行为(try/except 兜底)。
+        """
+        order = getattr(self.ai, "steer_order", None) or {}
+        if order.get("stance") is not None:
+            return attack_target
+        from bot.levers import sim_combatants
+        try:
+            # 官方警告:模拟器不含微操/施法 —— 过滤农民和建筑,免得污染战力评估
+            own = sim_combatants(self.manager_mediator.get_own_army())
+            enemy = sim_combatants(self.ai.enemy_units)
+            if not own or not enemy:
+                return attack_target
+            result = self.manager_mediator.can_win_fight(
+                own_units=own, enemy_units=enemy
+            )
+            if result.name.startswith("LOSS"):
+                if not self._sim_retreat_active:
+                    self._sim_retreat_active = True
+                    events = getattr(self.ai, "_events", None)
+                    if events is not None:
+                        events.append({
+                            "t": round(self.ai.time, 1),
+                            "msg": f"can_win_fight 判负({result.name}),全军撤回主基地",
+                        })
+                return self.ai.start_location
+            self._sim_retreat_active = False
+        except Exception:
+            pass  # 模拟器异常 → 维持原进攻目标,不影响现有行为
+        return attack_target
+
+    def _main_squad_center(self) -> Point2 | None:
+        """B6 Squad 化(来源:ares SquadManager 教程 + group behaviors;治"行军散队、
+        局部少打多")。取 ATTACKING 最大 squad 的中心,做散兵归队锚点。
+        渐进式:只用于归队,不改交战细节;任何异常 → None(降级到现状)。"""
+        try:
+            squads = self.manager_mediator.get_squads(
+                role=UnitRole.ATTACKING, squad_radius=9.0
+            )
+            if not squads:
+                return None
+            main = max(squads, key=lambda s: len(s.squad_units))
+            return main.squad_position
+        except Exception:
+            return None

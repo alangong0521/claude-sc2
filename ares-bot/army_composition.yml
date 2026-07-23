@@ -98,6 +98,14 @@ protoss:
       proportion: 0.0
       combat: default
       notes: 母舰,大招/隐匿待专属类。
+    - id: WARPPRISM
+      proportion: 0.0
+      combat: warp_prism_offensive
+      notes: B9 折跃棱镜,相位供场+接残血(Sharky/sharpy),行为未跑局验证。
+    - id: WARPPRISMPHASING
+      proportion: 0.0
+      combat: warp_prism_offensive
+      notes: B9 相位形态(独立 type_id),与运输形态共用同一指挥。
   upgrades:
     - TEMPESTGROUNDATTACKUPGRADE
     - PROTOSSAIRARMORSLEVEL1

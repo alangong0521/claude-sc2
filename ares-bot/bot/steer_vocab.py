@@ -17,7 +17,7 @@ TARGETS: tuple[str, ...] = (  # ②语义目标 / where to push (bot resolves to
     "enemy_backdoor",   # 绕后/偷家点(离敌军重心最远的敌方分矿)/ backdoor expansion
     "map_center", "home",
 )
-FOCUS: tuple[str, ...] = ("weakest", "closest", "workers")  # ③焦点 / focus fire
+FOCUS: tuple[str, ...] = ("weakest", "closest", "workers", "priority")  # ③焦点 / focus fire(priority=B2 静态优先级表)
 # ④机动 / maneuver:只有 ambush / hold_position 会改变行为(令部队原地蹲守待机);
 # 其余情况(不设)= 正常压上。别加没有实现的词,免得 CLI 广告空操作。
 MANEUVERS: tuple[str, ...] = ("ambush", "hold_position")
@@ -122,11 +122,11 @@ def validate_field(field: str, value: str) -> list[str]:
         # 自由取值字段,只做轻形式校验
         if field == "focus" and value:
             v = value.strip()
-            # 兵种名通常全大写;weakest/closest/workers 小写。空串无意义。
-            if v.lower() not in ("weakest", "closest", "workers") and not v.isupper():
+            # 兵种名通常全大写;weakest/closest/workers/priority 小写。空串无意义。
+            if v.lower() not in ("weakest", "closest", "workers", "priority") and not v.isupper():
                 errs.append(
                     f"focus 值 '{value}' 看着不像兵种名(应全大写如 SIEGETANK)"
-                    f"或关键字 weakest/closest/workers"
+                    f"或关键字 weakest/closest/workers/priority"
                 )
         return errs
     v = value.strip()

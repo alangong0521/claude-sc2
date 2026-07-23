@@ -280,8 +280,8 @@ class TestNewCombatKinds(unittest.TestCase):
     def test_combat_kinds_count(self):
         # COMBAT_KINDS 冻结在 15 个(14 + carrier_offensive),防止误删/漏加
         from bot.army_config import COMBAT_KINDS
-        self.assertEqual(len(COMBAT_KINDS), 15)
-        self.assertEqual(len(set(COMBAT_KINDS)), 15)  # 无重复
+        self.assertEqual(len(COMBAT_KINDS), 16)
+        self.assertEqual(len(set(COMBAT_KINDS)), 16)  # 无重复
 
     def test_unknown_combat_still_rejected(self):
         with self.assertRaises(ValueError):

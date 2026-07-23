@@ -37,8 +37,12 @@ from sc2.units import Units
 
 from bot.production_plans import (
     assimilator_attempt_stuck,
+    bank_production_target,
+    base_rebuild_active,
     defense_syncs_with_nexus,
+    defensive_rally_point,
     expansion_cannon_count,
+    expansion_max_pending,
     expansion_reserve_active,
     gas_gated_stargate_target,
     gas_target,
@@ -46,7 +50,10 @@ from bot.production_plans import (
     pre_fleet_cap,
     pre_fleet_spawn,
     research_paused_for_rush,
+    rush_cancellable_structure,
+    rush_defend_base,
     rush_needs_gateway,
+    rush_stops_gas,
     rush_triggers_defense,
     save_up_spawn,
     scout_verdict,
@@ -103,6 +110,11 @@ class ProductionManager(Manager):
         self._scout_verdict_done: bool = False  # O9:侦查情报→开局决策,一局评一次
         self._rush_active: bool = False
         self._rush_clear_since: float | None = None
+        # 基地数峰值(重建模式的"真的丢过基地"门,E6b 回归修复:开局 1<max_bases 不算丢)
+        self._peak_townhalls: int = 0
+        # B4③ 停气台账:rush 期间被拉下气矿的农民 tag(role 归 _GAS_STOP_ROLE),
+        # rush 解除后统一归 GATHERING 回气(ares 记账不动,见 _rush_gas_stop)。
+        self._gas_stopped_tags: set[int] = set()
         # 流派配置(flows.yml,神族生产侧单一真相源);Terran/Zerg 路径不走它。
         self._flow: FlowConfig = FlowConfig.load(os.environ.get("BUILD"))
         # 兵种组成注册表(army_composition.yml):Terran/Zerg 路径的 spawn/升级从这里读,
@@ -149,6 +161,20 @@ class ProductionManager(Manager):
         _expansion_reserve = expansion_reserve_active(
             _want_expand, self.ai.can_afford(UnitID.NEXUS)
         )
+        # 基地被打掉重建：真的丢过基地(峰值>当前)且 < 目标基地数时进入重建模式。
+        # E6b 回归实证:只看"当前<目标"会在开局(1<max_bases)就误触发,
+        # 造农民/出兵整局被掐死 —— 必须带峰值门(见 production_plans.base_rebuild_active)。
+        self._peak_townhalls = max(self._peak_townhalls, self.ai.townhalls.amount)
+        _target_bases = self._flow.auto_expand.max_bases if (
+            self._flow.auto_expand and self._flow.auto_expand.max_bases
+        ) else None
+        _base_rebuild = base_rebuild_active(
+            self.ai.townhalls.amount,
+            self._peak_townhalls,
+            _target_bases,
+            self.ai.can_afford(UnitID.NEXUS),
+            self._rush_active,
+        )
         # O6: ares AutoSupply 同样不查 can_afford(auto_supply.py:52-55 直接调
         # BuildStructure),钱不够农民就钉在 pylon 建造点干等 —— 只在买得起时注册,
         # supply 缺口的判定仍归 ares 内部。
@@ -170,11 +196,21 @@ class ProductionManager(Manager):
         # plan 尾部的 ExpansionController 饿死(e3k game_03 实证)。
         # prioritize=True = 欠费也先派工人走位(钉在扩张点等 400 是正常开矿打法,
         # O11 watchdog 已对基地建筑豁免,见 main.py)。
-        if _want_expand:
+        # 基地重建也需要开矿
+        if _want_expand or _base_rebuild:
+            # B7③(QueenBot 扩张动态 max_pending):矿>1250 且离 max_bases 有富余时
+            # 允许多片矿同建(治 bank+扩张慢);rush 否决在判据层(should_expand_dynamic)。
+            # _pending=1 时与旧行为完全一致(to_count=+1, max_pending=1)。⚠️ 未验证
+            _headroom = (
+                _target_bases - self.ai.townhalls.amount if _target_bases else 1
+            )
+            _pending = expansion_max_pending(
+                self.ai.minerals, headroom=max(1, _headroom)
+            )
             macro_plan.add(
                 ExpansionController(
-                    to_count=self.ai.townhalls.amount + 1,
-                    max_pending=1,
+                    to_count=self.ai.townhalls.amount + _pending,
+                    max_pending=_pending,
                     prioritize=True,
                 )
             )
@@ -204,14 +240,17 @@ class ProductionManager(Manager):
         # 兵种配方从 flows.yml 当前流派读(spawn_dict 只含 proportion>0 的兵种)。
         # freeflow_mode 按流派配置:多兵种流派必开(true=配比只当优先序不当上限),
         # 否则兵力在精确配比点永久死锁(C3c 诊断出的 stalker 停产第二根因)。
-        # E3b: rush_active 期间 spawn_target 切回主基 —— 前线折跃点=敌群方向,
+        # E3b: rush_active 期间 spawn_target 从前线切回防守 —— 前线折跃点=敌群方向,
         # 响应兵种一落地就进狗群分批送死(trickle);平时才用 F1 前线投送。
-        if not _rebuild_nexus and not _expansion_reserve:
+        # B4 防守三角:防守落点不再是基地中心 —— 分矿承压折跃被攻击的分矿
+        # (② sharpy 防御性折跃),主基承压折跃坡口顶端下 4 格集结点
+        # (① sharpy PlanHeatDefender),见 _rush_spawn_target。⚠️ 未验证
+        if not _rebuild_nexus and not _expansion_reserve and not _base_rebuild:
             macro_plan.add(
                 SpawnController(
                     army_composition_dict=self._effective_spawn(),
                     spawn_target=(
-                        self.ai.start_location if self._rush_active
+                        self._rush_spawn_target() if self._rush_active
                         else self._front_point()  # F1: 折跃向前线(非主基地),配合前线水晶塔远程投送
                     ),
                     freeflow_mode=self._flow.freeflow,
@@ -255,12 +294,15 @@ class ProductionManager(Manager):
 
         # E3d: rush 期间连造农民也让位(50 矿/个是防御链的最大竞争项)
         # E3k: 开矿攒钱预留期间同样让位(Nexus 不排在农民后)
-        if not self._rush_active and not _expansion_reserve:
+        if not self._rush_active and not _expansion_reserve and not _base_rebuild:
             self._build_probes(self.ai.ready_townhalls)
         self._ensure_townhall()  # Q4:保底主基地(被打爆到 0 且有矿区价值时重建)
         self._early_scout()      # pivot:2分钟自动派一个探机看对面开局
         self._evaluate_scout_intel()  # O9:侦查情报→开局决策(t≈170s,一局一次)
         self._update_rush_state()  # pivot:rush 检测/解除(响应包=叉子+塔+守家)
+        # B4③(QueenBot rush 应激清单)经济侧联动:停气+取消在建非关键科技。
+        # 放 rush 检测之后:本帧最新状态;role 改动先于 _after_step 的 Mining 执行生效。
+        self._rush_economy_response()
         # E3d: rush 期间资源全部让位防御链(叉子/塔) —— 暂停科技链(cybercore/星门/
         # 第二气)、造农民、追加产能、滚雪球、前线塔;rush 解除后各自恢复。
         # 保底:_rush_gateway_boost 保证兵营产能,升级循环保留 FORGE(炮塔前置,见下)。
@@ -473,7 +515,8 @@ class ProductionManager(Manager):
     def _update_rush_state(self) -> None:
         """pivot·rush 检测与解除。判据(2026-07 初版):
         ≥2 敌作战单位压到家 40 格内(沿用 F2) 或 4 分钟前敌可见兵力 ≥6(兵力异常=快攻)。
-        成立后:连出叉子顶(见 _effective_spawn) + F2 铺塔 + 全军守家(combat 读 _rush_active);
+        成立后:连出叉子顶(见 _effective_spawn) + F2 铺塔 + 全军守家(combat 读 _rush_active)
+        + B4 防守三角(折跃落点 _rush_spawn_target、应激经济 _rush_economy_response);
         40 格内无敌 60 秒后自动解除,恢复正常生产/进攻。"""
         if self._flow.pivot is None:
             return
@@ -499,6 +542,90 @@ class ProductionManager(Manager):
             elif self.ai.time - self._rush_clear_since > 60:
                 self._rush_active = False
                 self._rush_clear_since = None
+
+    # ────────────────────── B4 防守三角(2026-07,来源:sharpy/QueenBot) ──────────────────────
+    def _rush_spawn_target(self) -> Point2:
+        """B4 rush 折跃落点(取代 E3b 的"切回主基中心")。⚠️ 未验证(未跑局)。
+
+        ②(sharpy 防御性折跃):威胁位置取各基地 25 格内敌地面单位计数(与
+        _update_rush_state 的威胁口径同源),最多的分矿 = 被攻击的基地,折跃过去;
+        ①(sharpy PlanHeatDefender):主基承压/无明确威胁 → 主坡口顶端下 4 格的
+        防守集结点(而非基地中心) —— 集结在坡后高地,响应兵落地即占坡口。
+        主坡口取 ai.main_base_ramp(ares/python-sc2 现成属性,无需 mediator)。"""
+        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        threats = []
+        for th in self.ai.townhalls:
+            n = sum(
+                1 for u in self.ai.enemy_units
+                if not u.is_structure and u.type_id not in workers
+                and u.position.distance_to(th) < 25
+            )
+            threats.append((th.position.x, th.position.y, n))
+        main = self.ai.start_location
+        base = rush_defend_base(threats, (main.x, main.y))
+        if base is not None:
+            return Point2(base)  # ② 分矿承压 → 折跃被攻击的分矿
+        ramp = self.ai.main_base_ramp  # ① 主基 → 坡口顶端下 4 格
+        return Point2(defensive_rally_point(
+            (ramp.top_center.x, ramp.top_center.y),
+            (ramp.bottom_center.x, ramp.bottom_center.y),
+        ))
+
+    # B4③-a 停气用的兜底 role(同 E6 的 CONTROL_GROUP_ONE 套路:vendored ares 无
+    # 消费者,Mining 只指挥 GATHERING,role 一切换自然脱离气矿指派)。
+    _GAS_STOP_ROLE = UnitRole.CONTROL_GROUP_TWO
+
+    def _rush_economy_response(self) -> None:
+        """B4③(QueenBot rush 应激清单)经济侧联动:
+        a) 停气(见 _rush_gas_stop):rush 期间气矿农民拉去采矿;
+        b) 取消在建非关键科技建筑换现金(极保守白名单,见 rush_cancellable_structure)。
+        扩张暂停走判据层(should_expand_dynamic / _auto_expand 的 rush 否决,B7③)。
+        rush 未激活时停气台账自动清(农民归 GATHERING 回气),取消建筑自然不触发。"""
+        self._rush_gas_stop()
+        if not self._rush_active:
+            return
+        for s in self.ai.structures:
+            if rush_cancellable_structure(True, s.type_id.name, s.is_ready):
+                # ⚠️ 未验证:取消指令(AbilityId.CANCEL)与返款比例未跑局确认
+                s(AbilityId.CANCEL)
+
+    def _rush_gas_stop(self) -> None:
+        """B4③-a(QueenBot 停气):rush 期间把气矿农民拉去采矿(气换矿 —— 叉子/塔全矿耗)。
+        ⚠️ 未验证(未跑局)。
+
+        实现说明:不能直接 mediator.set_workers_per_gas(0) —— main.py 的 Mining 行为
+        每帧末尾重置回 3(mining.py:240,本任务不改 main.py);故学 E6 撤离改 role
+        脱离 Mining,ares ResourceManager 的记账(worker_to_geyser)不动,rush 解除
+        归 GATHERING 后 Mining 按原记账自动派回气矿。被司令接管的农民不动(人机共驾)。
+        已停农民闲置时补采集命令(main.py 的 _handle_idle_workers 不豁免本 role,
+        靠"不闲置"避免被扫走;同帧本方法在其后重停,单帧抖动无害)。"""
+        if rush_stops_gas(self._rush_active):
+            gas_workers = self.manager_mediator.get_worker_to_vespene_dict
+            gathering = self.manager_mediator.get_unit_role_dict.get(
+                UnitRole.GATHERING, set()
+            )
+            player_ctrl = getattr(self.ai, "_player_ctrl", {})
+            for w in self.ai.workers:
+                if w.tag in player_ctrl:
+                    continue
+                if w.tag in gas_workers and w.tag in gathering:
+                    self.manager_mediator.assign_role(
+                        tag=w.tag, role=self._GAS_STOP_ROLE
+                    )
+                    self._gas_stopped_tags.add(w.tag)
+                    if w.is_carrying_vespene:
+                        w.return_resource()
+                    elif self.ai.mineral_field:
+                        w.gather(self.ai.mineral_field.closest_to(w))
+                elif w.tag in self._gas_stopped_tags and w.is_idle:
+                    if self.ai.mineral_field:
+                        w.gather(self.ai.mineral_field.closest_to(w))
+        elif self._gas_stopped_tags:
+            alive = {w.tag for w in self.ai.workers}
+            for tag in list(self._gas_stopped_tags):
+                if tag in alive:
+                    self.manager_mediator.assign_role(tag=tag, role=UnitRole.GATHERING)
+                self._gas_stopped_tags.discard(tag)
 
     def _effective_spawn(self) -> dict:
         """当前实际 spawn 配方 = 流派配方 + pivot 动态修正:
@@ -625,6 +752,10 @@ class ProductionManager(Manager):
         这里只剩旧式。"""
         ae = self._flow.auto_expand
         if ae is None or ae.max_bases:
+            return
+        # B7③:rush_active 时禁扩张(动态路径的否决在 should_expand_dynamic,
+        # 这里补旧式;stalker 没配 pivot → _rush_active 恒 False,基线行为不变)
+        if self._rush_active:
             return
         if self.ai.townhalls.amount >= ae.to:
             return
@@ -886,12 +1017,20 @@ class ProductionManager(Manager):
             )
 
     def _spend_bank(self) -> None:
-        """滚雪球(Q3,司令要求):前 20 分钟存款淤积(>800)时把钱换成战场优势——
-        能开矿先开(基地<4,钱生钱),否则突破流派常规上限追加产兵建筑(存款越多补得越多)。
-        治"经济优势大但钱花不完,没转化成兵力"。"""
-        if self.ai.time > 1200 or self.ai.minerals < 800:
+        """滚雪球(Q3,司令要求):前 20 分钟存款淤积时把钱换成战场优势——
+        能开矿先开(基地<4,钱生钱,维持原 800 矿阈值不动),否则突破流派常规上限
+        追加产兵建筑(存款越多补得越多)。治"经济优势大但钱花不完,没转化成兵力"。
+        B7②(12PoolBot add_production_at_bank=(400,400)):追加产能的存款判据抽纯函数
+        bank_production_target —— 矿>400 且气>400 才追加(旧版只看矿≥800),封顶 12。
+        ⚠️ 未验证:阈值改动未跑局(bank 局追加更早,且多一道气>400 闸门)。"""
+        if self.ai.time > 1200:
             return
-        if self.ai.townhalls.amount < 4 and self.ai.can_afford(UnitID.NEXUS):
+        # 开矿分支维持原阈值(矿≥800 才触发,Q3 已验证行为不变)
+        if (
+            self.ai.minerals >= 800
+            and self.ai.townhalls.amount < 4
+            and self.ai.can_afford(UnitID.NEXUS)
+        ):
             self.ai.register_behavior(
                 ExpansionController(
                     to_count=self.ai.townhalls.amount + 1, max_pending=1
@@ -904,14 +1043,21 @@ class ProductionManager(Manager):
         sid = getattr(UnitID, ep.id_name, None)
         if sid is None or not self.ai.can_afford(sid):
             return
+        desired = bank_production_target(
+            self.ai.minerals,
+            self.ai.vespene,
+            base=ep.base,
+            ready_bases=self.ai.townhalls.ready.amount,
+        )
+        if desired is None:
+            return
         have = (
             len(self.manager_mediator.get_own_structures_dict[sid])
             + self.manager_mediator.get_building_counter[sid]
         )
         if sid == UnitID.GATEWAY:  # warpgate 也是产能
             have += len(self.manager_mediator.get_own_structures_dict[UnitID.WARPGATE])
-        if have < min(12, ep.base + self.ai.townhalls.ready.amount
-                      + self.ai.minerals // 800):
+        if have < desired:
             self.ai.register_behavior(BuildStructure(self.ai.start_location, sid))
 
     def _front_point(self) -> Point2:

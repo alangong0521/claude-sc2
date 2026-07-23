@@ -1196,3 +1196,186 @@ carrier vs Zerg VeryHard/Rush @AbyssalReefLE：
 - 转降档验证（vs Harder 或 VeryHard/Macro）认证机制链真实胜率；或
 - 在 VeryHard/Rush 上做结构性升级（非调参）：rally/站位（P5）、
   农民被抄转移逻辑、航母编队集火目标选择。
+
+---
+
+## 2026-07-23 E6 实现：农民被抄时的转移/协防（结构性升级，未跑局）
+
+背景：E3m 死因复盘——VeryHard/Rush 中段波真正死因不是塔/叉不够，是**农民被抄**
+（game_01 t=650 农民 42→22、game_02 t=747-771 47→29），经济断气后 2000+ 气
+烂掉而矿 <400，航母永远 1-2 艘。E5 收官建议的「结构性升级」候选之一，本任务落地。
+
+### ares 现状盘点（决定新写 vs 接线）
+
+- `Mining(keep_safe=True)` 只有**个体**避险：单农民位置不安全 →
+  `find_closest_safe_spot` 挪几步，仍留在被抄矿区附近；`self_defence_active`
+  让农民还手。没有「整片矿线撤到别的基地」的基地级策略。
+- `ResourceManager` 只有 `safe_mineral_fields_at_townhalls`（挑安全矿脉）和
+  `remove_worker_from_mineral`，无现成的跨基地转移行为。
+- 结论：**无等效机制，新写**；但全部用 ares 原语接线（role 体系 +
+  `get_worker_tag_to_townhall_tag` 矿线归属台账），不改 ares 一行。
+
+### 设计
+
+- **检测**：敌地面单位（非建筑/非空军/非农民）距某基地 Nexus <15 格且 ≥4
+  → 该基地视为被抄（纯判据 `production_plans.should_evacuate_workers`）。
+- **响应**（按优先级）：
+  a) 矿区在就绪塔射程内（塔距 Nexus ≤9，光子炮/导弹塔/孢子爬虫等）→ 农民继续采；
+  b) 无塔且敌 ≥4 → 该矿线农民 role 从 GATHERING 改挂 `CONTROL_GROUP_ONE`
+     （ares 枚举的兜底 role，vendored ares 无消费者——Mining/ResourceManager/
+     idle 清扫/建造派工都只认 GATHERING，撤离期间零干扰），撤向**最近有塔基地**，
+     都没有则最近基地；到点就地先采（不站着），途中被卡补 move。
+     单基地无塔无处可撤 → 不动，交 Mining keep_safe 个体避险；
+  c) 就近 20 格内有我方地面兵力 → 事件流标记「集结点=被抄基地」，
+     **不强行微操**（rush/stance/集结纪律的优先级都在 combat_manager）。
+- **回采**：敌地面 <2（滞回：撤离阈值 4、回采线 2，防边界抖动往返空跑）或
+  基地已丢（O15 重建接管）→ 全员归 GATHERING 回最近矿脉。
+- **冲突防护**：rush 期不新增撤离（六连动行为不变），已在撤离的回采判定照常；
+  跳过 building_tracker 建造农民（O1/O2 教训）和司令接管农民（_player_ctrl）；
+  O11 watchdog 不碰（撤离农民不在 tracker、不 idle）。
+
+### 改动清单
+
+- `bot/production_plans.py`：`should_evacuate_workers` / `evacuation_clear` /
+  `pick_evacuation_base` 三个纯函数。
+- `bot/main.py`：`update_worker_evacuation(ai)`（检测/撤离/维护/回采全链路，
+  每帧在 production_manager.update 后跑）；`_handle_idle_workers` 跳过
+  _EVAC_ROLE；`__init__` 加 `_evac_bases` 台账。
+- `tests/test_worker_evacuation.py`：12 例（纯判据 5 + 运行时链路 7，
+  含塔覆盖不撤/rush 阻断/滞回边界/敌退回采/单基地滞留）。
+- 全量单测 195 例绿。**未跑局验证**——bench 待司令排期（建议指标：被抄局
+  农民存活数、二矿存活时长，沿用 E5 的连续指标教训）。
+
+### O16 侦查没做完：农民未抵达敌方主基地
+司令观察：侦查农民没走到敌方主基地（可能中途发呆/被杀/目标点不对）。
+侦查是 O17/O18 决策链的输入，断链则下游全是赌。排查：scout 路径点、
+被杀后是否补派、scout_verdict 超时回退逻辑。
+
+### O17 侦查=扩张攀科技 → 叉叉提前压前线（不必等集结数）
+若侦查确认敌方早开分矿+攀科技（前期兵力薄），叉叉兵应**提早压前线**
+给压力/抓扩张timing，不用等 rally_min_army 集结数到齐。
+本质：rally 门槛应按侦查结论动态化——对手贪 → 早压（小股即走）。
+
+### O18 侦查=rush → 叉叉集结积攒再动
+若侦查确认 rush，叉叉应集结积攒（守家/塔后），不零散出门。
+与 O17 是同一机制的两极：scout_verdict ∈ {rush, greedy, unknown}
+→ stance ∈ {集结守, 提前压, 默认}。O9 已有 scout_verdict 闭环，
+O17/O18 是把它接到 rally/stance 决策上。
+
+### O19 仍有农民干等建造（复发，升级为每局必查项）
+司令观察：对局中仍见农民傻等钱造建筑。司令指令（长期有效）：
+**每次对局结束必须检查日志，确认是否有农民 >1s 不干活干等建造**，
+并优化建造顺序与拉农民建造的 timing。
+落实方式（E6 后做）：bench retro 检测器加「idle_builder」标签——
+state 快照里工人连续 >1s 无指令且被 tracker 标记为建造等待 → 计数。
+已有先例：O1/O6（等钱水晶）、O11（watchdog 6s 撤回）、E4c（rush 期豁免）——
+本条是兜底检测，确保不再漏。
+
+---
+
+## 2026-07-23 E6 验证：bench 0-5 逐帧验尸——败局无罪，但机制在目标场景是死代码（已修）
+
+E6 bench（bench/e6-worker-evac，carrier vs Zerg VeryHard/Rush @AbyssalReefLE，N=5）：
+0-5，末农民 16/18/16/52/15，二矿存活窗口 0/32/160/48/68s。逐帧验尸结论：
+**败局与 E6 无关（噪声带内），但 E6 在其设计目标场景里结构性不触发**。
+
+### 验尸数据（state 快照逐帧）
+
+**Q1 撤离触发/回采**：5 局只触发 **1 次**（game_04 t=1066.6，敌 12 地面无塔，
+撤 16 农民，t=1080.6 敌退 15 农民回采，历时 14s）。归还链路正常
+（CONTROL_GROUP_ONE → GATHERING 15/16，1 个途中死亡），无农民卡撤离 role。
+撤离窗口矿收入正常（70 农民 4 基地经济，撤 16 个 14s 无损）。
+
+**Q2 二矿早死因果（game_01/03/05）**：E6 在这些局**从未触发**，不可能致早死。
+未触发的两个结构性原因：
+- **塔覆盖=继续采**：carrier 流 E2/E3l 分矿常态 4-6 塔 → `cannon_cover=True`
+  → case (a) 不撤。但中段波是 21-22 狗 + 7-9 蟑螂 + 刺蛇（game_01 t=401、
+  game_03 t=522、game_05 t=433），~20-30s 拆光塔再屠农——「塔会打」对
+  大波不成立。
+- **全局 rush 门**：rush_active 从 ~130s 首接敌一路续过中段波（game_03
+  t=520 仍有「确认rush」事件，t=534 二矿死），rush 门把 E6 在它的目标
+  场景里整个关掉。
+
+**Q3 败局归责**：对照 e5a-baseline（与 e4g 同代码）二矿窗口 88-225s、同样 0-5、
+两局 <600s 末帧——E6 各局数据落在同一噪声带，0-5 是档位真实胜率波动
+（E5 结论复验），非 E6 所害。E6 唯一触发局（game_04）反而是 5 局里
+活得最久的（1394s，末农民 52）。
+
+**Q4 game_02（209s 死）**：经典首波 rush 死——t=132 六狗到脸，首塔 t=184.8
+才立（rush 期塔链老问题，E3/E4 系列已知），t=209 主基地爆 + Q5 判负。
+全程单基地，E6 无触发条件（rush 门+单基地无处可撤），无罪。
+
+### 修复（判决：败局无罪，但机制死代码必须修，否则等于没做）
+
+1. **塔覆盖不再是绝对免撤**：`should_evacuate_workers` 加塔被压垮判据——
+   有塔但敌地面 ≥ 6 + 4×塔数 → 照撤（1 塔罩到 9 敌、4 塔罩到 21；小股骚扰
+   继续采的行为不变）。
+2. **rush 门收窄到主基**：rush 期主基不新增撤离（六连动不变），**分矿不受
+   rush 门**——分矿撤离与 rush 守主基响应包互补，不冲突。
+
+改动：`bot/production_plans.py`（should_evacuate_workers 加 cannons_near/
+overwhelm 参数）、`bot/main.py`（_cannon_cover→_cannons_near 计数、rush 门
+按基地分流、事件区分「无塔/塔N座压不住」）。单测 12→15 例（新增：压垮判据
+2 例、rush 主基阻断/分矿放行 2 例、压垮照撤链路 1 例），全量 198 例绿。
+**未再跑 bench**——修复后的 E6 首次触发场景待下轮 bench 验证（指标：二矿
+被抄局农民存活数、二矿存活窗口）。
+
+### O20 bench 重试路径泄漏 SC2 进程（僵尸对局定格在终局画面）
+实证（2026-07-24）：E6 game_04 首次尝试崩溃/超时→bench 重试并继续系列，
+但首次尝试的 SC2 进程（pid 21839）未被 kill，以 Defeat 终局画面（23:17）
+挂在桌面 ~40 分钟，被司令发现。run.log 句柄确认归属。
+修复方向：bench.py 重试/超时路径在 spawn 新进程前应对旧 SC2 做
+kill_switch/pkill 兜底（CLAUDE.md 已有 pkill -9 -x SC2 的先例手法，
+但双通道时代不能无脑 pkill 全部——需按 port/pid 精确 kill 自己 spawn 的）。
+
+---
+
+## 2026-07-24 E6b 回归：0-5 开局崩坏根因——外来 base_rebuild 变更，非 E6b 改动（已修）
+
+E6b bench（bench/e6b-worker-evac，N=5）：0-5 全在 ~208-218s 死，开局即崩——
+game_01 @149s workers=6、建筑仅 NEXUS+ASSIMILATOR×2+PYLON×2、零兵营零熔炉。
+
+### 逐帧证据（game_01 0-210s state 快照）
+
+- workers **从 t=0 到终局一条平线**（8→8→7→6）：整局零农民生产；
+  对照 e4g 同时间段 8→9→10→11 稳步爬升。
+- t=12 立 ASSIMILATOR（正常开局 t=24）、t=72 双气、PYLON t=48——建造序列
+  全乱；GATEWAY/FORGE 从未出现。
+- run.log 无 error/traceback，E6 撤离事件 0 次（E6 机制根本没参与）。
+
+### 根因（与 E6b 改动无关）
+
+工作树里有**另一agent的未提交变更**（git diff 实证，base_rebuild 重建模式 +
+B4 防守三角系列，涉 production_manager/production_plans/combat_*/levers/
+ares tech_up.py）：`base_rebuild_active(current, target, afford, rush)` 判据是
+「当前基地数 < 目标基地数」——carrier `max_bases=4`，**开局 1<4 从 t=0 恒真**，
+于是 `_base_rebuild` 门掐死 `_build_probes` 和 SpawnController（整局零农民零兵），
+并让 ExpansionController(prioritize) 从首帧钉一个农民去分矿点等 400。
+这正是观测到的「农民生产停摆+气矿早产+科技链没走」。
+
+排除 E6b 自身改动的证据链：
+- E6b 改动（should_evacuate_workers 新参数/_cannons_near/rush门按基地分流）
+  只在敌地面 ≥4 进 Nexus 15 格时有行为，开局无触发路径；5 局撤离事件 0 次。
+- state.json 每 4s 正常发布 → on_step 无异常被吞（发布点在 E6 调用之后）。
+- 崩坏模式（probe/spawn 停摆）与 `_base_rebuild` 门控点一一对应。
+- 时间线：bench 00:30-00:36，外来文件 mtime 00:32-00:42（另一agent在并行作业，
+  E6b bench 恰好跑进了它的半成品窗口）。
+
+### 修复（峰值基地门，保留他人特性意图）
+
+`base_rebuild_active` 加 `peak_bases` 参数：只有**真的丢过基地**
+（peak > current）且 current < target 才进重建模式；开局 1=peak → 不触发。
+production_manager 每帧维护 `_peak_townhalls`。rush/None-target 门不变。
+改动：production_plans.py（函数签名+docstring）、production_manager.py
+（峰值记账+传参）、tests/test_production_plans.py 新增 TestBaseRebuild 3 例
+（开局不触发/丢基地才触发/rush与无目标门）。
+全量单测 299 例绿；BUILD=carrier 编译通过。
+
+### 协作教训
+
+- 多 agent 共机同树作业（见 promotion 并发闸门提交）：bench 前应先
+  `git status --short` 确认树上只有自己的改动，否则验证结果无法归因——
+  本次 E6b 的 0-5 一度被记到 E6 头上。
+- 他人 WIP 的 `_base_rebuild` 门（重建期掐 probe/spawn）本身代价存疑
+  （E3k 攒钱预留已有同类语义且更温和），留给该 agent 自评，本次只做
+  最小修复（峰值门）不重构。

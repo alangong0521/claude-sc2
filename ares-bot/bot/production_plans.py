@@ -5,6 +5,8 @@ ProductionManager 各种族路径(Protoss 现有、Terran M1)都从这里取目�
 """
 from __future__ import annotations
 
+import math
+
 
 def worker_target(num_townhalls: int, per_base: int = 22, cap: int = 70) -> int:
     """农民目标数:每基地 per_base 个(16 矿+6 气),全局封顶 cap 给军队留供给。
@@ -346,6 +348,85 @@ def expansion_reserve_active(want_expand: bool, can_afford_nexus: bool) -> bool:
     return want_expand and not can_afford_nexus
 
 
+def base_rebuild_active(
+    current_bases: int,
+    peak_bases: int,
+    target_bases: int | None,
+    can_afford_nexus: bool,
+    rush_active: bool = False,
+) -> bool:
+    """判断是否需要进入"重建基地"模式（当基地被打掉后）。
+
+    触发条件：
+    1. **真的丢过基地**（peak_bases > current_bases）——E6b 回归实证：
+       没有这条时开局 1 基地 < carrier max_bases 4，从 t=0 就进"重建模式"，
+       造农民/出兵整局被掐死（bench e6b 五局 8 农民封顶、零兵营，~208s 全灭）；
+    2. 当前基地数 < 目标基地数；
+    3. rush 期间不开（复用六连动不变）。
+
+    纯逻辑，可单测。
+    """
+    if rush_active or target_bases is None:
+        return False
+    return peak_bases > current_bases and current_bases < target_bases
+
+
+def should_evacuate_workers(
+    enemy_ground_near: int,
+    cannon_cover: bool,
+    cannons_near: int = 0,
+    threshold: int = 4,
+    overwhelm_base: int = 6,
+    overwhelm_per_cannon: int = 4,
+) -> bool:
+    """E6：某基地矿区的农民是否该撤离。纯逻辑，可单测。
+
+    判据（E3m 死因复盘：game_01 农民 42→22 / game_02 47→29，经济断气后
+    2000+ 气烂掉）：
+    - 敌地面 < threshold → 不撤；
+    - 无塔保护（cannon_cover=False）且敌 ≥ threshold → 撤；
+    - 有塔但敌 ≥ overwhelm_base + overwhelm_per_cannon×塔数 → 塔被压垮也撤
+      （E6 bench 实证：carrier 分矿常态 4-6 塔，VeryHard/Rush 中段波 22 狗
+      +9 蟑螂 ~20s 拆光塔再屠农，「塔覆盖就继续采」对此类波是送死；
+      小股骚扰（几条狗）塔确实罩得住，继续采）。
+    """
+    if enemy_ground_near < threshold:
+        return False
+    if not cannon_cover:
+        return True
+    return enemy_ground_near >= overwhelm_base + overwhelm_per_cannon * cannons_near
+
+
+def evacuation_clear(enemy_ground_near: int, clear_below: int = 2) -> bool:
+    """E6：被抄基地的敌情是否已退（农民可回采）。纯逻辑，可单测。
+
+    滞回设计：撤离阈值 4，回采判据 <2（而不是 <4）——边界抖动（敌兵在
+    3-4 之间徘徊）不会造成「撤离→回采→再撤离」的往返空跑。
+    """
+    return enemy_ground_near < clear_below
+
+
+def pick_evacuation_base(raided_pos, candidates):
+    """E6：撤离目标基地选择。纯逻辑，可单测。
+
+    raided_pos : (x, y) 被抄基地坐标
+    candidates : [(x, y, covered), ...] 候选基地（**不含被抄基地本身**），
+                 covered = 该基地矿区是否有塔覆盖。
+    规则：优先「有塔覆盖」的基地（就近），都没有则撤向最近的基地；
+    候选为空 → None（无处可撤，交 ares Mining keep_safe 个体避险）。
+    """
+    if not candidates:
+        return None
+
+    def _key(c):
+        x, y, covered = c
+        d2 = (x - raided_pos[0]) ** 2 + (y - raided_pos[1]) ** 2
+        return (0 if covered else 1, d2)
+
+    best = min(candidates, key=_key)
+    return (best[0], best[1])
+
+
 def defense_syncs_with_nexus(nexus_pending: int, townhalls: int) -> bool:
     """分矿塔防是否与 Nexus 同步启动（E3l 实证修复）。纯逻辑，可单测。
 
@@ -355,3 +436,129 @@ def defense_syncs_with_nexus(nexus_pending: int, townhalls: int) -> bool:
     ProtossStaticDefence 自己排）。
     """
     return nexus_pending > 0 or townhalls >= 2
+
+
+# ────────────────────── B4 防守三角(2026-07,来源:sharpy/QueenBot) ──────────────────────
+
+
+def defensive_rally_point(
+    ramp_top: tuple[float, float],
+    ramp_bottom: tuple[float, float],
+    offset: float = 4.0,
+) -> tuple[float, float]:
+    """B4① 防守集结点 = 主坡口顶端朝坡底的反方向 offset 格(sharpy PlanHeatDefender:
+    base_ramp.top_center.towards(bottom_center, -4))。纯逻辑,可单测。
+
+    集结在坡后高地(而不是基地中心):响应兵落地即占坡口,射程覆盖上坡敌军;
+    基地中心则腹背开阔。top==bottom(退化)→ 原样返回 top。
+    """
+    dx = ramp_top[0] - ramp_bottom[0]
+    dy = ramp_top[1] - ramp_bottom[1]
+    dist = math.hypot(dx, dy)
+    if dist == 0:
+        return (ramp_top[0], ramp_top[1])
+    return (ramp_top[0] + dx / dist * offset, ramp_top[1] + dy / dist * offset)
+
+
+def rush_defend_base(
+    threats: list[tuple[float, float, int]],
+    main: tuple[float, float],
+    main_tol: float = 5.0,
+) -> tuple[float, float] | None:
+    """B4② rush 时哪个基地承压(sharpy 防御性折跃的目标选择)。纯逻辑,可单测。
+
+    threats : [(x, y, 敌地面单位数), ...] 每个基地的威胁计数(调用方按 25 格口径统计,
+              与 _update_rush_state 的威胁口径同源);
+    main    : 主基坐标。
+    返回 None = 主基承压或无明确威胁(走 B4① 坡口集结点);
+    否则返回敌地面单位最多的**分矿**坐标(折跃到被攻击的分矿)。
+    计数并列时主基优先(threats 主基在前即可,> 不取 =)。
+    """
+    best: tuple[float, float] | None = None
+    best_n = 0
+    for x, y, n in threats:
+        if n > best_n:
+            best, best_n = (x, y), n
+    if best is None or best_n == 0:
+        return None
+    if abs(best[0] - main[0]) < main_tol and abs(best[1] - main[1]) < main_tol:
+        return None  # 承压的是主基 → 坡口集结点
+    return best
+
+
+def rush_stops_gas(rush_active: bool) -> bool:
+    """B4③-a(QueenBot rush 应激清单):rush_active 时停气(气矿农民拉去采矿)。
+    纯逻辑,可单测。
+
+    理由:rush 响应包(叉子/炮塔/电池)全是矿耗,气在 rush 窗口是死钱;
+    多 3 个农民采矿 ≈ +120 矿/分钟,正好喂叉子链。rush 解除自动回气。"""
+    return rush_active
+
+
+# B4③-b(QueenBot rush 应激清单):rush 时可取消换现金的在建科技建筑白名单(极其保守)。
+# 兵营/电池/水晶/炮塔/基地/气矿是 rush 防御链本身,永远不动(守人口水晶);
+# FORGE 是炮塔前置(E3d),STARGATE/CYBERNETICSCORE 是流派核心链,同样不动。
+RUSH_CANCELLABLE_TECH: frozenset = frozenset({
+    "TWILIGHTCOUNCIL",
+    "ROBOTICSFACILITY",
+    "ROBOTICSBAY",
+    "FLEETBEACON",
+    "TEMPLARARCHIVE",
+    "DARKSHRINE",
+})
+
+
+def rush_cancellable_structure(
+    rush_active: bool, type_name: str, is_ready: bool
+) -> bool:
+    """B4③-b 在建科技建筑是否可取消换现金(QueenBot 应激清单,极保守白名单)。
+    纯逻辑,可单测。
+
+    只取消 rush 激活且未完工(is_ready=False)且命中 RUSH_CANCELLABLE_TECH 的建筑;
+    兵营/电池/水晶等防御链结构天然不在白名单(守人口水晶:水晶永不取消)。
+    """
+    return rush_active and not is_ready and type_name in RUSH_CANCELLABLE_TECH
+
+
+# ────────────────────── B7 运营队列(2026-07,来源:QueenBot/12PoolBot) ──────────────────────
+
+
+def bank_production_target(
+    minerals: float,
+    vespene: float,
+    *,
+    base: int,
+    ready_bases: int,
+    cap: int = 12,
+    bank: tuple[float, float] = (400.0, 400.0),
+    step: float = 800.0,
+) -> int | None:
+    """B7② 存款自动补产能的目标数(12PoolBot ProductionController
+    add_production_at_bank=(400,400),治 bank)。纯逻辑,可单测。
+
+    矿 > bank[0] 且气 > bank[1] 才追加:目标 = min(cap, base + ready_bases + 矿//step)
+    (公式沿用 _spend_bank 旧逻辑,矿越多补得越多,cap=12 封顶);
+    存款不达标 → None(不追加,常规上限内的补建归 _build_extra_production)。
+    """
+    if minerals <= bank[0] or vespene <= bank[1]:
+        return None
+    return min(cap, base + ready_bases + int(minerals // step))
+
+
+def expansion_max_pending(
+    minerals: float,
+    *,
+    headroom: int = 1,
+    rich_threshold: float = 1250.0,
+    rich_pending: int = 3,
+) -> int:
+    """B7③ 扩张动态 max_pending(QueenBot:矿>1250 时 3~4,治 bank+扩张慢)。
+    纯逻辑,可单测。
+
+    矿存款 > rich_threshold 且离 max_bases 还有富余(headroom>1)→ 允许多片矿同建
+    min(rich_pending, headroom);否则 1(逐矿评估,局势变了就停)。
+    rush 否决在判据层(should_expand_dynamic / base_rebuild_active),不进这里。
+    """
+    if minerals > rich_threshold and headroom > 1:
+        return min(rich_pending, headroom)
+    return 1

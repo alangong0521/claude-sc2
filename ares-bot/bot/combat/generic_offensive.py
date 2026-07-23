@@ -6,6 +6,10 @@
 留待跑局验证后再逐兵种调优(见 docs/roadmap-unit-support.md B 类)。
 
 ⚠️ 未经跑局验证:接口/寻路与 tempest_offensive 对齐,但具体交战手感需开游戏实测。
+
+B6 增量(2026-07-23,来源:ares SquadManager 教程):接收 regroup_center(主力 squad 中心),
+无近敌且离主力 >15 格的地面散兵改为寻路归队,不独自压 attack_target 送死。
+渐进式:只加归队分支,交战细节(射程内 StutterUnitBack / 追击 AMove)不动。
 """
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -23,6 +27,10 @@ from bot.levers import pick_focus_key
 
 if TYPE_CHECKING:
     from ares import AresBot
+
+
+# B6 归队距离:无近敌且离主力 squad 中心超过此值 → 寻路归队,不独自压点
+_REGROUP_DIST: float = 15.0
 
 
 def _pick_focus(enemies, focus, origin=None) -> Unit:
@@ -54,13 +62,15 @@ class GenericOffensive(BaseUnit):
         Keyword Arguments
         -----------------
         attack_target : Point2  部队要去的点
-        focus : str | None      ③焦点(weakest/workers/closest/兵种名)
+        focus : str | None      ③焦点(weakest/workers/closest/priority/兵种名)
         maneuver : str | None   ④机动(ambush/hold_position → 到位后不主动追近敌)
+        regroup_center : Point2 | None  B6 主力 squad 中心;散兵(>15 格且无近敌)归队用
         """
         assert "attack_target" in kwargs, "attack_target is required"
         attack_target = kwargs["attack_target"]
         focus = kwargs.get("focus")
         maneuver = kwargs.get("maneuver")
+        regroup_center = kwargs.get("regroup_center")
         ambush = maneuver in ("ambush", "hold_position")
 
         near: dict[int, Units] = self.mediator.get_units_in_range(
@@ -88,10 +98,22 @@ class GenericOffensive(BaseUnit):
                 maneuver_plan.add(AMove(unit, target.position))
             else:
                 grid = self._maybe_grid(unit)
+                # B6 归队(来源:ares SquadManager 教程;渐进式:只加归队,不改交战细节):
+                # 地面散兵离主力 squad 中心 >15 且无近敌 → 寻路归队,不独自压点送死。
+                # 飞行单位不动(tempest 个体风筝由专属 combat class 管)。
+                # 逐只 PathUnitToTarget 而非 PathGroupToTarget:与现有逐单位循环一致,散兵位置分散,
+                # 群体指令要以某个 start 为中心,对散兵反而是绕路(未验证)。
+                destination = attack_target
+                if (
+                    regroup_center is not None
+                    and not unit.is_flying
+                    and unit.distance_to(regroup_center) > _REGROUP_DIST
+                ):
+                    destination = regroup_center
                 if grid is not None:
-                    maneuver_plan.add(PathUnitToTarget(unit, grid, attack_target))
+                    maneuver_plan.add(PathUnitToTarget(unit, grid, destination))
                 else:
-                    maneuver_plan.add(AMove(unit, attack_target))
+                    maneuver_plan.add(AMove(unit, destination))
 
             self.ai.register_behavior(maneuver_plan)
 

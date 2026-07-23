@@ -34,7 +34,10 @@ QueenBot(AresSC2 官方)、12PoolBot(phantomsc2,含 leitwerk 自调参库)。
 
 ---
 
-## Backlog(行为变更类,等 carrier 复测空窗 A/B 后再合,避免污染在跑系列)
+## Backlog —— **已于 2026-07-24 全部落地**(B1-B9 司令指令提前合并;B10 为放弃项不落地)。
+下面保留原始方案备查;实现细节见各文件注释与 commit 记录。
+B8 selftune 已接 main.py ask/tell(记录先行,参数消费点未接,见 docs/selftune.md §4)。
+BruceBot 衍生项见 docs/bc-flow-plan.md。
 
 ### B1. Stalker blink 三改(来源:Sharky StalkerMicroController + sharpy micro_stalkers + h3nnn4n)
 目标文件:`bot/combat/stalker_offensive.py`

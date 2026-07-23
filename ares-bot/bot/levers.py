@@ -72,6 +72,16 @@ def pick_focus_key(enemies, focus: str | None, origin=None):
         if origin is not None:
             return min(enemies, key=lambda u: origin.distance_to(u))
         return None
+    # B2:静态优先级模式 —— 档位高者优先;同档内沿用 weakest(血+盾最少)打破平局。
+    # 键排序:(-优先级, 血+盾),升序取第一个 = 最高档里最残的。
+    if focus == "priority":
+        return min(
+            enemies,
+            key=lambda u: (
+                -FOCUS_PRIORITY.get(getattr(u.type_id, "name", ""), DEFAULT_FOCUS_PRIORITY),
+                u.health + u.shield,
+            ),
+        )
     # 兵种名
     typed = [u for u in enemies if getattr(u.type_id, "name", "") == focus]
     return typed[0] if typed else None
@@ -85,6 +95,37 @@ def _is_worker(u) -> bool:
     """不依赖 ares 的 worker 判断(测试桩可能是假对象)。"""
     name = getattr(getattr(u, "type_id", None), "name", "")
     return name in _WORKER_NAMES
+
+
+# ── ③b 集火静态优先级表(B2,来源:sharpy micro_stalkers high_priority 字典)──
+# 语义:分数越高越优先集火。电池/炮塔只有 1 —— 不浪费输出打建筑(有兵先打兵)。
+# 只在 focus="priority" 模式下生效;默认 focus=weakest 行为不变(见 pick_focus_key)。
+FOCUS_PRIORITY: dict[str, int] = {
+    # 10 档:重火力 / 关键施法者(架起的坦克、感染、HT、巨像、渡鸦、埋地寡妇雷、大龙)
+    "SIEGETANKSIEGED": 10,
+    "INFESTOR": 10,
+    "INFESTORBURROWED": 10,
+    "HIGHTEMPLAR": 10,
+    "COLOSSUS": 10,
+    "RAVEN": 10,
+    "WIDOWMINEBURROWED": 10,
+    "BROODLORD": 10,
+    # 9 档:地刺(含卵)、隐刀、不朽
+    "LURKERMP": 9,
+    "LURKEREGG": 9,
+    "DARKTEMPLAR": 9,
+    "IMMORTAL": 9,
+    # 8~6 档:大和、哨兵、鬼兵、医疗船
+    "BATTLECRUISER": 8,
+    "SENTRY": 8,
+    "GHOST": 7,
+    "MEDIVAC": 6,
+    # 1 档:静态防御 —— 排在普通兵种之后
+    "SHIELDBATTERY": 1,
+    "PHOTONCANNON": 1,
+}
+# 未上榜单位的默认档(中位 5:保证任何作战兵种都排在电池/炮塔前面)
+DEFAULT_FOCUS_PRIORITY: int = 5
 
 
 # ── ④ build 别名 → 引擎结构名 ────────────────────────────────────────────
@@ -137,3 +178,50 @@ STICKY_FIELDS = ("stance", "target", "focus", "maneuver", "harass", "trigger", "
 def is_one_shot(field: str) -> bool:
     """该操纵杆是否为"一次性锁定"型(造到即停,重下同值是 no-op)。"""
     return field in ONE_SHOT_FIELDS
+
+
+# ── ⑦ blink / 战斗模拟纯逻辑(B1/B3,来源:Sharky / sharpy / ares)─────────────
+def outranging_threats(unit, enemies, range_buffer: float = 1.0):
+    """B1② AvoidTargetedDamage(Sharky StalkerMicroController):
+    返回"射程明显大于我方、且已经够得着我"的敌人(架起坦克/地刺等)。
+
+    被这类敌人瞄准时不看盾量直接后跳出其射程 —— 站桩对撸是稳亏交换。
+    纯逻辑,可单测。enemies 元素需有 .ground_range / .distance_to(unit)。
+    """
+    my_range = getattr(unit, "ground_range", 0.0) or 0.0
+    return [
+        e for e in enemies
+        if (getattr(e, "ground_range", 0.0) or 0.0) > my_range + range_buffer
+        and e.distance_to(unit) <= e.ground_range
+    ]
+
+
+def blink_away_point(from_pos, threat_pos, blink_range: float):
+    """B1⑤(Sharky:Cyclone LOCKON 特判):沿"远离威胁"方向的 blink 落点 (x, y)。
+
+    与威胁重合(方向无定义)→ None,调用方回退到安全点选法。纯逻辑,可单测。
+    """
+    dx = from_pos.x - threat_pos.x
+    dy = from_pos.y - threat_pos.y
+    dist = (dx * dx + dy * dy) ** 0.5
+    if dist == 0:
+        return None
+    return (from_pos.x + dx / dist * blink_range, from_pos.y + dy / dist * blink_range)
+
+
+def blink_landing_is_safer(cur_influence: float, dest_influence: float) -> bool:
+    """B1④(sharpy find_weak_influence_ground_blink):落点 influence 严格更低才跳,
+    否则退回走位风筝 —— 跳进更危险的地方等于白交 10s CD。"""
+    return dest_influence < cur_influence
+
+
+def sim_combatants(units):
+    """B3:can_win_fight 输入过滤 —— 去掉建筑和农民。
+
+    ares 官方警告:战斗模拟器不含微操/施法,农民和建筑会污染战力评估。
+    纯逻辑,可单测(元素需有 .is_structure / .type_id.name)。
+    """
+    return [
+        u for u in units
+        if not getattr(u, "is_structure", False) and not _is_worker(u)
+    ]
