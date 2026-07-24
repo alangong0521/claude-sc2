@@ -50,6 +50,7 @@ from bot.production_plans import (
     nexus_rebuild_active,
     pre_fleet_cap,
     pre_fleet_spawn,
+    redispatch_cooled_down,
     research_paused_for_rush,
     rush_cancellable_structure,
     rush_defend_base,
@@ -70,6 +71,8 @@ if TYPE_CHECKING:
 
 # O19:防御塔派工的走位时间估算(基地内,秒)——dispatch_viable 用,见 F2 注册点
 _DEFENCE_WALK_TIME: float = 5.0
+# O19 二轮:O11 撤回塔工后的重派冷却(秒)——redispatch_cooled_down 用
+_DEFENCE_REDISPATCH_CD: float = 15.0
 # O19:探机/农民移动速度(格/游戏秒),扩张走位时间估算用
 _WORKER_SPEED: float = 3.94
 
@@ -289,11 +292,22 @@ class ProductionManager(Manager):
         # can_afford,钱不够也派农民钉在塔点等钱(e7e8 bench idle_builder 最大头:
         # PHOTONCANNON 9-21 次/局)。守卫后不派而非派了再撤(农民照采,塔起建时间不变,
         # E4c 撤回循环前科不存在这个问题)。
-        if self._should_build_defense(_order) and dispatch_viable(
-            self.ai.minerals,
-            self._mineral_income_per_sec(),
-            _DEFENCE_WALK_TIME,
-            self.ai.calculate_cost(UnitID.PHOTONCANNON).minerals,
+        # O19 二轮(o19fix 复验):守卫只挡注册瞬间,收入高时恒真——派工后钱被
+        # warp-in/航母抽干 → 钉 6s → O11 撤回 → 下帧守卫又过 → 再派(循环,
+        # 同 tag 反复 episode)。加撤回冷却:15s 内被 O11 撤过塔工 → 不注册。
+        if (
+            self._should_build_defense(_order)
+            and redispatch_cooled_down(
+                getattr(self.ai, "_o11_released_at", {}).get(UnitID.PHOTONCANNON),
+                self.ai.time,
+                _DEFENCE_REDISPATCH_CD,
+            )
+            and dispatch_viable(
+                self.ai.minerals,
+                self._mineral_income_per_sec(),
+                _DEFENCE_WALK_TIME,
+                self.ai.calculate_cost(UnitID.PHOTONCANNON).minerals,
+            )
         ):
             ec = self._flow.expansion_cannons
             cannons = (

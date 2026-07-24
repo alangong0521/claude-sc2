@@ -291,6 +291,8 @@ class MyBot(AresBot):
         # O19 idle_builder 检测:tag -> [干等起点时间, 本 episode 已发过事件]
         self._builder_wait: dict[int, list] = {}
         self._last_builder_scan: float = -10.0
+        # O19 防重派循环:O11 撤回记录(结构 -> 撤回时刻),production_manager 读
+        self._o11_released_at: dict = {}
 
     async def on_step(self, iteration: int) -> None:
         await super(MyBot, self).on_step(iteration)
@@ -453,6 +455,10 @@ class MyBot(AresBot):
                     self.time - info[TIME_ORDER_COMMENCED],
                 ):
                     release_from_build_tracker(self.mediator, w.tag)
+                    # O19 防重派循环:记录撤回时刻,production_manager 对同类结构
+                    # 冷却 15s 不再派工(o19fix 实证:撤回→下帧守卫又过→再派的
+                    # 循环让同一农民反复钉点)。rush 期 O11 豁免 → 无冷却(E4c)。
+                    self._o11_released_at[sid] = self.time
                     self.mediator.assign_role(tag=w.tag, role=UnitRole.GATHERING)
                     w.gather(self.mineral_field.closest_to(w))
                 continue

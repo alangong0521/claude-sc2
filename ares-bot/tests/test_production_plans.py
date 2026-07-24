@@ -27,6 +27,7 @@ from bot.production_plans import (  # noqa: E402
     pre_fleet_cap,
     pre_fleet_spawn,
     rally_min_for_verdict,
+    redispatch_cooled_down,
     research_paused_for_rush,
     rush_needs_gateway,
     rush_triggers_defense,
@@ -529,10 +530,31 @@ class TestIdleBuilderCriteria(unittest.TestCase):
         self.assertFalse(builder_is_waiting(True, True, True))     # 侦查/接管/E6
 
     def test_alarm_threshold(self):
+        # o19fix 复验后阈值 1s→3s:1-2s 短等是常态噪声(存款贴 0 的花钱风格),
+        # 3s 仍 < O11 6s 撤回线,真钉点必曝光
         self.assertFalse(idle_builder_alarm(0.5))
-        self.assertFalse(idle_builder_alarm(1.0))   # 边界:>1s 才算
-        self.assertTrue(idle_builder_alarm(1.5))
+        self.assertFalse(idle_builder_alarm(1.5))
+        self.assertFalse(idle_builder_alarm(3.0))   # 边界:>3s 才算
+        self.assertTrue(idle_builder_alarm(3.5))
         self.assertTrue(idle_builder_alarm(10.0))
+
+
+class TestRedispatchCooledDown(unittest.TestCase):
+    """O19 二轮:O11 撤回后的重派冷却(redispatch_cooled_down)。
+
+    o19fix 实证:收入高时 dispatch_viable 恒真,「派工→钉 6s→O11 撤回→
+    下帧又派」循环(macro g05 同 tag 6 次 episode)——冷却断环。"""
+
+    def test_no_prior_release_allows_dispatch(self):
+        self.assertTrue(redispatch_cooled_down(None, now=100.0))
+
+    def test_within_cooldown_blocks(self):
+        self.assertFalse(redispatch_cooled_down(100.0, now=110.0))   # 10s < 15s
+        self.assertFalse(redispatch_cooled_down(100.0, now=114.9))
+
+    def test_after_cooldown_allows(self):
+        self.assertTrue(redispatch_cooled_down(100.0, now=115.0))
+        self.assertTrue(redispatch_cooled_down(100.0, now=200.0))
 
 
 class TestScoutVerdictTiming(unittest.TestCase):

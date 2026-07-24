@@ -575,11 +575,13 @@ def builder_is_waiting(in_tracker: bool, is_idle: bool, exempt_role: bool) -> bo
     return in_tracker and is_idle and not exempt_role
 
 
-def idle_builder_alarm(wait_age: float, threshold: float = 1.0) -> bool:
+def idle_builder_alarm(wait_age: float, threshold: float = 3.0) -> bool:
     """O19：连续干等超过 threshold 秒 → 该发 idle_builder 事件。纯逻辑，可单测。
 
-    1s 是司令章程的观测线（「>1s 不干活干等建造」要曝光）；与 O11 watchdog
-    的 6s 撤回不冲突——本判据只观测发事件，不改任何行为。
+    阈值沿革：1s（章程原始线）→ **3s**（o19fix bench 复验实证：全部 265 个
+    episode 干等时长都是 1s——本 bot 存款贴近 0 的花钱风格下，「到位等 1-2s
+    钱」是常态噪声而非问题；真问题是钉到 6s 被 O11 撤回的）。3s 仍 < O11
+    watchdog 的 6s 撤回线，真钉点必曝光；只观测发事件，不改任何行为。
     """
     return wait_age > threshold
 
@@ -654,3 +656,19 @@ def dispatch_viable(
     PHOTONCANNON 9-21 次/局、NEXUS 2-7 次/局）。
     """
     return minerals + income_per_sec * walk_time >= cost
+
+
+def redispatch_cooled_down(
+    last_release: float | None, now: float, cooldown: float = 15.0
+) -> bool:
+    """O19 防重派循环：O11 撤回某结构的建造工人后，cooldown 秒内不再重派同类。
+    纯逻辑，可单测。
+
+    背景（o19fix bench 实证）：矿紧期「派工 → 钉点 6s → O11 撤回 → 下帧
+    dispatch_viable 守卫又过（收入高时恒真）→ 再派」循环，同一农民反复进
+    idle_builder episode（macro g05 同一 tag 6 次）。撤回本身说明钱真不够，
+    冷却让经济先攒起来再派。rush 期 O11 豁免不撤回 → 天然无冷却（E4c 安全）。
+    """
+    if last_release is None:
+        return True
+    return now - last_release >= cooldown

@@ -1483,3 +1483,26 @@ ASSIMILATOR/FORGE/GATEWAY 零星。逐路径根因与修法：
   can_afford，框架层不改）——O11 watchdog 6s 撤回兜底，下轮 bench 复测
   若仍超标再归因。
 - 纯判据 `production_plans.dispatch_viable`；单测 318 例绿（+3）。
+
+### O19 二轮复验（o19fix-macro/rush 各 N=5）：episode 数没降——分层归因
+
+数据分层（去重 265 个 episode）：
+- **时长全是 1s**：所有 episode 的报警时刻干等时长 =1s（检测器首次越线即报，
+  上限 ~2s）。多数局塔 episode ≈ 建成塔数（macro g01 13 vs 11、g02 11 vs 12）
+  =「到位等 1-2s 钱」的常态噪声——本 bot 存款贴 0 花钱风格下不可避免，
+  经济无害。
+- **少数局是真循环**：macro g05 塔 episode 24 vs 建成 7、rush g05 21 vs 9，
+  同一农民 tag 反复出现（最高 6 次）——「dispatch_viable 通过（中期收入
+  30+/s 时恒真）→ 派工 → 钱被 warp-in/航母抽干 → 钉 6s → O11 撤回 →
+  下帧守卫又过 → 再派」的 E4c 型重派循环。假设（派工后被抽干）证实。
+- **NEXUS 1-6 次/局**：预走位是 E3k 故意设计（O11 对 TOWNHALL 豁免、
+  不撤回），episode ≈ 每矿一次，估算误差内，维持现状。
+
+修法（行为+检测各一刀）：
+1. **行为**：`redispatch_cooled_down`——O11 撤回某结构建造工人后 15s 内
+   不再重派同类（F2 门新增条件；main.py O11 撤回分支记录时刻）。断循环
+   不拖首派。rush 期 O11 豁免 → 天然无冷却（E4c 安全）。
+2. **检测**：`idle_builder_alarm` 阈值 1s→3s——1-2s 短等是噪声（章程
+   「>1s」线在本 bot 的花钱风格下全是误报），3s 仍 < O11 6s 撤回线，
+   真钉点必曝光。偏离章程字面，数据依据如上，待司令确认口径。
+单测 321 例绿（+3：冷却三态）。
