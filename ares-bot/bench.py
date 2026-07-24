@@ -266,10 +266,11 @@ def _curve_stats(game_dir: Path) -> dict:
     return {"max_minerals": max_minerals, "unit_first_seen": first_seen}
 
 
-def _postmortem(game_dir: Path, res: dict) -> list[str]:
+def _postmortem(game_dir: Path, res: dict, flow: str = "") -> list[str]:
     """单局自动复盘:从快照找「这局哪里做得不好」的启发式信号(供迭代回溯)。
     每条 = 问题标签 + 关键数据;不求全,专抓迭代里真踩过的坑(停产/花不出去/
-    碎兵/卡人口/单矿/被碾压)。"""
+    碎兵/卡人口/单矿/被碾压/农民干等建造)。
+    flow 用于 flow 感知阈值(one_base:carrier 6 分钟开矿是设计,放宽到 420s)。"""
     snaps = []
     for sp in sorted(game_dir.glob("state_*.json")):
         try:
@@ -314,10 +315,23 @@ def _postmortem(game_dir: Path, res: dict) -> list[str]:
     if block_t >= 60:
         issues.append(f"supply_block(卡人口 {block_t:.0f}s)")
 
-    # 单矿过久(地面流重点;天空流可忽略)
-    t300 = [s for s in snaps if s["time"] >= 300]
-    if t300 and t300[0]["bases"] == 1:
-        issues.append("one_base(300s 仍单矿)")
+    # 单矿过久(地面流重点;天空流可忽略)。O19:flow 感知阈值 —— carrier
+    # 6 分钟开矿是设计(O21),300s 阈值五连误报(E6c2 实证) → carrier 放宽到 420s。
+    one_base_thr = 420 if flow == "carrier" else 300
+    t_thr = [s for s in snaps if s["time"] >= one_base_thr]
+    if t_thr and t_thr[0]["bases"] == 1:
+        issues.append(f"one_base({one_base_thr}s 仍单矿)")
+
+    # 农民干等建造(O19 司令章程:>1s 不干活干等建造要曝光)——bot 局中发
+    # idle_builder 事件(main._detect_idle_builders),这里按 (t,msg) 去重计数
+    idle_builders = {
+        (e.get("t"), e.get("msg", ""))
+        for s in snaps
+        for e in s.get("events", [])
+        if "idle_builder" in e.get("msg", "")
+    }
+    if idle_builders:
+        issues.append(f"idle_builder(农民干等建造 ×{len(idle_builders)})")
 
     # 被碾压:败局且终局敌可见兵力 ≫ 我方
     if res.get("result") == "Defeat":
@@ -410,29 +424,40 @@ def main() -> int:
     ap.add_argument("--carrier-combat", default=None,
                     choices=["default", "carrier_offensive"],
                     help="覆盖 CARRIER 的 combat 类(E4 双通道对照);不设用 yml 原值")
+    ap.add_argument("--retro-only", action="store_true",
+                    help="不打局:只对 bench/<tag>/ 已有快照重跑 retro/汇总"
+                    "(O19:离线复验检测器/阈值改动,不重开 bench)")
     args = ap.parse_args()
 
     series_dir = _AREAS / "bench" / args.tag
     series_dir.mkdir(parents=True, exist_ok=True)
 
-    games: list[dict] = []
-    for i in range(1, args.n + 1):
-        t0 = time.time()
-        try:
-            res = _play_one(i, args, series_dir)
-        except subprocess.TimeoutExpired:
-            res = None
-        if res is None:
-            print(f"[bench] 第 {i} 局无结果(崩溃/超时),重试一次", flush=True)
+    if args.retro_only:
+        game_dirs = sorted(p for p in series_dir.glob("game_*") if p.is_dir())
+        games: list[dict] = [
+            _read_result(d) or {"result": None, "error": "no result json"}
+            for d in game_dirs
+        ]
+        print(f"[bench] retro-only: 复用 {len(games)} 局已有快照,不重开游戏")
+    else:
+        games = []
+        for i in range(1, args.n + 1):
+            t0 = time.time()
             try:
                 res = _play_one(i, args, series_dir)
             except subprocess.TimeoutExpired:
                 res = None
-        if res is None:
-            res = {"result": None, "error": "no result json after retry"}
-        games.append(res)
-        print(f"[bench] 第 {i}/{args.n} 局: {res.get('result') or 'ERROR'} "
-              f"({time.time() - t0:.0f}s)", flush=True)
+            if res is None:
+                print(f"[bench] 第 {i} 局无结果(崩溃/超时),重试一次", flush=True)
+                try:
+                    res = _play_one(i, args, series_dir)
+                except subprocess.TimeoutExpired:
+                    res = None
+            if res is None:
+                res = {"result": None, "error": "no result json after retry"}
+            games.append(res)
+            print(f"[bench] 第 {i}/{args.n} 局: {res.get('result') or 'ERROR'} "
+                  f"({time.time() - t0:.0f}s)", flush=True)
 
     summary = _aggregate(games, series_dir, args)
 
@@ -443,7 +468,7 @@ def main() -> int:
     for i, res in enumerate(games, 1):
         result = res.get("result") or "ERROR"
         issues = [] if res.get("result") is None else _postmortem(
-            series_dir / f"game_{i:02d}", res
+            series_dir / f"game_{i:02d}", res, args.flow
         )
         retro.append(f"- game_{i:02d} {result}: "
                      + ("; ".join(issues) if issues else "-"))

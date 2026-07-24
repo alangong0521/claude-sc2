@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bot.production_plans import (  # noqa: E402
     assimilator_attempt_stuck,
     base_rebuild_active,
+    builder_is_waiting,
     defense_syncs_with_nexus,
     expansion_cannon_count,
     expansion_reserve_active,
@@ -19,6 +20,7 @@ from bot.production_plans import (  # noqa: E402
     full_gas_bases,
     gas_gated_stargate_target,
     gas_target,
+    idle_builder_alarm,
     nexus_rebuild_active,
     nexus_rebuild_viable,
     pre_fleet_cap,
@@ -512,6 +514,22 @@ class TestBaseRebuild(unittest.TestCase):
     def test_rush_and_no_target_gate(self):
         self.assertFalse(base_rebuild_active(1, 2, 4, True, rush_active=True))
         self.assertFalse(base_rebuild_active(1, 2, None, True))  # 无 max_bases 流派
+
+
+class TestIdleBuilderCriteria(unittest.TestCase):
+    """O19 干等建造判据:builder_is_waiting / idle_builder_alarm。"""
+
+    def test_waiting_only_when_tracked_and_idle_and_not_exempt(self):
+        self.assertTrue(builder_is_waiting(True, is_idle=True, exempt_role=False))
+        self.assertFalse(builder_is_waiting(False, True, False))   # 无建造指派
+        self.assertFalse(builder_is_waiting(True, False, False))   # 走位/建造中
+        self.assertFalse(builder_is_waiting(True, True, True))     # 侦查/接管/E6
+
+    def test_alarm_threshold(self):
+        self.assertFalse(idle_builder_alarm(0.5))
+        self.assertFalse(idle_builder_alarm(1.0))   # 边界:>1s 才算
+        self.assertTrue(idle_builder_alarm(1.5))
+        self.assertTrue(idle_builder_alarm(10.0))
 
 
 class TestExpansionReserve(unittest.TestCase):

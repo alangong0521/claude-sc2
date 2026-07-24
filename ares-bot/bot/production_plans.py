@@ -562,3 +562,23 @@ def expansion_max_pending(
     if minerals > rich_threshold and headroom > 1:
         return min(rich_pending, headroom)
     return 1
+
+
+def builder_is_waiting(in_tracker: bool, is_idle: bool, exempt_role: bool) -> bool:
+    """O19：有建造指派的农民此刻是否处于「干等建造」状态。纯逻辑，可单测。
+
+    干等 = 在 ares building_tracker 里（有建造指派）+ 闲置（无任何命令）。
+    - 走位途中有 move 命令 → is_idle False → 自动排除；
+    - 已下建造命令（warp-in/建造中）→ 有命令非闲置 → 排除；
+    - 侦查 / 司令接管（PERSISTENT_BUILDER）/ E6 撤离（_EVAC_ROLE）→ exempt_role 排除。
+    """
+    return in_tracker and is_idle and not exempt_role
+
+
+def idle_builder_alarm(wait_age: float, threshold: float = 1.0) -> bool:
+    """O19：连续干等超过 threshold 秒 → 该发 idle_builder 事件。纯逻辑，可单测。
+
+    1s 是司令章程的观测线（「>1s 不干活干等建造」要曝光）；与 O11 watchdog
+    的 6s 撤回不冲突——本判据只观测发事件，不改任何行为。
+    """
+    return wait_age > threshold

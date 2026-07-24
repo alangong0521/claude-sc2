@@ -7,7 +7,9 @@ from ares.behaviors.macro import Mining, RestorePower
 from ares.consts import ID as TRACKER_ID
 from ares.consts import TIME_ORDER_COMMENCED, TOWNHALL_TYPES, UnitRole
 from bot.production_plans import (
+    builder_is_waiting,
     evacuation_clear,
+    idle_builder_alarm,
     nexus_rebuild_viable,
     pick_evacuation_base,
     should_evacuate_workers,
@@ -286,6 +288,9 @@ class MyBot(AresBot):
             pass  # 调参失败不挡开局
         # E6 农民被抄转移:被抄基地 th_tag -> {"pos","target","workers"}(撤离台账)
         self._evac_bases: dict[int, dict] = {}
+        # O19 idle_builder 检测:tag -> [干等起点时间, 本 episode 已发过事件]
+        self._builder_wait: dict[int, list] = {}
+        self._last_builder_scan: float = -10.0
 
     async def on_step(self, iteration: int) -> None:
         await super(MyBot, self).on_step(iteration)
@@ -306,6 +311,8 @@ class MyBot(AresBot):
         # 放在 production 之后:rush_active 是本帧最新;role 改动先于 _after_step
         # 的 Mining 执行生效,不会与 Mining 抢命令。
         update_worker_evacuation(self)
+        # O19(司令章程「对局后检查」):曝光 >1s 干等建造的农民(纯观测发事件)
+        self._detect_idle_builders()
 
         # 调研合并(community-tactics-research §2.3):电池主动充能 —— 纯增量微操,
         # 没电池/没残盾单位时零指令。异常静默,绝不崩主循环。
@@ -454,6 +461,58 @@ class MyBot(AresBot):
                 continue
             self.mediator.assign_role(tag=w.tag, role=UnitRole.GATHERING)
             w.gather(self.mineral_field.closest_to(w))
+
+    def _detect_idle_builders(self) -> None:
+        """O19(司令章程「对局后检查」):曝光「>1s 不干活干等建造」的农民。
+
+        纯观测,不改任何行为 —— 撤回是 O11 watchdog 的职责(钉点 >6s 且买不起),
+        这里 1s 只发事件,供 bench retro 的 idle_builder 标签归因(等钱/钉点/无指令)。
+        对象 = ares building_tracker 里有建造指派但闲置(无任何命令)的农民:
+        典型是钉在建造点等 can_afford,或被 TechUp/BuildStructure 派出却没拿到
+        建造命令。豁免:走位途中的(有 move 命令→非 idle)/侦查/司令接管/
+        E6 撤离(_EVAC_ROLE)。同一农民同一次干等只发一次(episode 去重:
+        干等结束出账,再干等算新 episode)。每 1 游戏秒扫一次。"""
+        if self.time - self._last_builder_scan < 1.0:
+            return
+        self._last_builder_scan = self.time
+        tracker = self.mediator.get_building_tracker_dict
+        now = self.time
+        waiting: set[int] = set()
+        for w in self.workers:
+            if w.tag not in tracker:
+                continue
+            role = self._current_role(w.tag)
+            exempt = w.tag in self._player_ctrl or role in (
+                UnitRole.SCOUTING.name,
+                UnitRole.PERSISTENT_BUILDER.name,
+                _EVAC_ROLE.name,
+            )
+            if not builder_is_waiting(True, w.is_idle, exempt):
+                continue
+            waiting.add(w.tag)
+            episode = self._builder_wait.get(w.tag)
+            if episode is None:
+                self._builder_wait[w.tag] = [now, False]  # [干等起点, 已发过事件]
+                continue
+            age = now - episode[0]
+            if not episode[1] and idle_builder_alarm(age):
+                episode[1] = True
+                sid = tracker[w.tag][TRACKER_ID]
+                reason = "等钱" if not self.can_afford(sid) else "未开工"
+                self._events.append(
+                    {
+                        "t": round(now, 1),
+                        "msg": (
+                            f"idle_builder: 农民{w.tag}"
+                            f"@{w.position.x:.0f},{w.position.y:.0f} "
+                            f"干等{age:.0f}s({reason}造{sid.name})"
+                        ),
+                    }
+                )
+        # 干等结束(拿到命令/被 O11 撤回/死了) → 出账,下次干等算新 episode
+        for tag in list(self._builder_wait):
+            if tag not in waiting:
+                self._builder_wait.pop(tag)
 
     def _current_role(self, tag: int) -> str | None:
         """反查某单位当前的 role 名（用于接管前记住、归还时恢复）。"""
