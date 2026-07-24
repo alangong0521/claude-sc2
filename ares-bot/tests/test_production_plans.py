@@ -38,6 +38,8 @@ from bot.production_plans import (  # noqa: E402
     should_expand_dynamic,
     should_register_autosupply,
     should_release_waiting_builder,
+    threat_ground_exemption,
+    threat_response_active,
     upgrade_tech_buildings,
     worker_target,
 )
@@ -680,6 +682,44 @@ class TestCannonTargetCapped(unittest.TestCase):
     def test_dynamic_below_min_untouched(self):
         # 动态数本来 ≤ min(理论防御) → 不抬不降
         self.assertEqual(cannon_target_capped(2, 3, 100, 350, False), 2)
+
+
+class TestThreatResponse(unittest.TestCase):
+    """E9 中局威胁响应:threat_response_active / threat_ground_exemption。
+
+    macro-fix1 实证:敌中局一波(15-25 作战单位)到脸时 bot 无响应(继续开矿/
+    憋航母/塔被限流)。判据:敌可见 supply ≥ max(10, 我方×1.5) 激活,
+    < max(6, 我方×1.0) 才解除(滞回)。"""
+
+    def test_activates_on_overwhelming_visible_supply(self):
+        # 敌 20 supply vs 我 8(≈6 叉+先知) → 激活(macro-fix1 典型画面)
+        self.assertTrue(threat_response_active(20, 8))
+        self.assertTrue(threat_response_active(12, 8))   # 12 ≥ 8×1.5
+        self.assertTrue(threat_response_active(10, 0))   # 绝对下限 10
+
+    def test_does_not_activate_on_parry_or_small(self):
+        self.assertFalse(threat_response_active(11, 8))  # 11 < 12
+        self.assertFalse(threat_response_active(9, 0))   # 不到绝对下限
+        self.assertFalse(threat_response_active(0, 0))
+
+    def test_hysteresis_holds_until_clear_line(self):
+        # 已激活:敌 10 掉到 8、我 8 → 8 ≥ max(6,8)=8 → 仍激活(滞回)
+        self.assertTrue(threat_response_active(8, 8, currently_active=True))
+        # 掉到 5 < 6 → 解除
+        self.assertFalse(threat_response_active(5, 8, currently_active=True))
+        # 我方涨上来:敌 10 我 12 → 10 < 12 → 解除
+        self.assertFalse(threat_response_active(10, 12, currently_active=True))
+
+    def test_ground_exemption_picks_only_ground(self):
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+        spawn = {UnitID.CARRIER: {}, UnitID.TEMPEST: {}, UnitID.ZEALOT: {},
+                 UnitID.STALKER: {}}
+        flying = {UnitID.CARRIER, UnitID.TEMPEST}
+        self.assertEqual(
+            threat_ground_exemption(spawn, flying),
+            {UnitID.ZEALOT, UnitID.STALKER},
+        )
+        self.assertEqual(threat_ground_exemption({}, flying), set())
 
 
 class TestExpansionReserve(unittest.TestCase):

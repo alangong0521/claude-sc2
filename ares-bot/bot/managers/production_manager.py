@@ -63,6 +63,8 @@ from bot.production_plans import (
     scout_verdict_timing,
     should_expand_dynamic,
     should_register_autosupply,
+    threat_ground_exemption,
+    threat_response_active,
     upgrade_tech_buildings,
     worker_target,
 )
@@ -74,6 +76,19 @@ if TYPE_CHECKING:
 _DEFENCE_WALK_TIME: float = 5.0
 # O19 二轮:O11 撤回塔工后的重派冷却(秒)——redispatch_cooled_down 用
 _DEFENCE_REDISPATCH_CD: float = 15.0
+# E9:threat 地面豁免用的神族空军类型表(sc2 Attribute 无 flying 判定,
+# 神族流派出兵表内可能出现的空军兵种全列;地面 = spawn 里不在此表的)
+_FLYING_UNITS = {
+    UnitID.CARRIER,
+    UnitID.TEMPEST,
+    UnitID.ORACLE,
+    UnitID.PHOENIX,
+    UnitID.VOIDRAY,
+    UnitID.MOTHERSHIP,
+    UnitID.MOTHERSHIPCORE,
+    UnitID.WARPPRISM,
+    UnitID.OBSERVER,
+}
 # O19:探机/农民移动速度(格/游戏秒),扩张走位时间估算用
 _WORKER_SPEED: float = 3.94
 
@@ -125,6 +140,8 @@ class ProductionManager(Manager):
         self._pivot_scout_tag: int | None = None
         self._pivot_redispatched: bool = False
         self._rush_active: bool = False
+        # E9 中局威胁响应(carrier):敌可见作战 supply 大幅压过我方 → True(滞回)
+        self._threat_active: bool = False
         self._rush_clear_since: float | None = None
         # 基地数峰值(重建模式的"真的丢过基地"门,E6b 回归修复:开局 1<max_bases 不算丢)
         self._peak_townhalls: int = 0
@@ -311,9 +328,14 @@ class ProductionManager(Manager):
             )
         ):
             ec = self._flow.expansion_cannons
-            cannons = (
-                2 if ec is None
-                else cannon_target_capped(
+            if ec is None:
+                cannons = 2
+            elif self._threat_active and not self._rush_active:
+                # E9:敌压境 → 塔目标拉满 ec.max(覆盖 cannon_target_capped 限流,
+                # 修正限流在中局一波时防御变弱的副作用);rush 期按 rush 走不叠加
+                cannons = ec.max
+            else:
+                cannons = cannon_target_capped(
                     # Macro 局塔重建限流(诊断 #2,o19b-macro 实证):憋舰队期
                     # (矿 < 舰队矿价 且非 rush)塔目标压回 min —— 16 座塔≈7 艘
                     # 航母的矿不该在气 2200 烂掉时继续出血;rush 期不限(保命)。
@@ -325,7 +347,6 @@ class ProductionManager(Manager):
                     self.ai.calculate_cost(self._primary_unit_id()).minerals,
                     self._rush_active,
                 )
-            )
             self.ai.register_behavior(
                 ProtossStaticDefence(
                     photon_cannons_per_base=cannons,
@@ -358,6 +379,7 @@ class ProductionManager(Manager):
         self._early_scout()      # pivot:2分钟自动派一个探机看对面开局
         self._evaluate_scout_intel()  # O9:侦查情报→开局决策(t≈170s,一局一次)
         self._update_rush_state()  # pivot:rush 检测/解除(响应包=叉子+塔+守家)
+        self._update_threat_state()  # E9:中局威胁检测/解除(carrier,塔满+地面豁免+停开矿)
         # B4③(QueenBot rush 应激清单)经济侧联动:停气+取消在建非关键科技。
         # 放 rush 检测之后:本帧最新状态;role 改动先于 _after_step 的 Mining 执行生效。
         self._rush_economy_response()
@@ -658,6 +680,31 @@ class ProductionManager(Manager):
                 self._rush_active = False
                 self._rush_clear_since = None
 
+    def _update_threat_state(self) -> None:
+        """E9 中局威胁检测与解除(只挂 carrier,判据纯函数
+        production_plans.threat_response_active)。
+
+        macro-fix1 五局实证:威胁响应原来只覆盖早期 rush,Macro AI 的中局一波
+        (t≈520-560 敌 15-25 作战单位到脸)bot 毫无反应——继续开矿/憋航母/
+        塔被限流压着,常备军 ≈6 叉对敌 20+,基地连丢。激活效果(update 各处):
+        塔目标=ec.max(覆盖 cannon_target_capped 限流)、save_up 不截地面防御
+        兵种、暂停开新矿。rush 六连动优先级更高(threat 与 rush 同时激活时
+        各效果按 rush 走,不叠加)。状态每帧更新,激活/解除各记一次事件。"""
+        if self._flow.name != "carrier":
+            return
+        own = self.ai.supply_used - self.ai.supply_workers
+        enemy = self._visible_enemy_army_supply()
+        was = self._threat_active
+        self._threat_active = threat_response_active(enemy, own, was)
+        if self._threat_active == was:
+            return
+        msg = (
+            f"E9:敌压境威胁响应(敌可见{enemy:.0f}supply vs 我{own:.0f})"
+            if self._threat_active
+            else "E9:威胁解除,恢复运营"
+        )
+        self.ai._events.append({"t": round(self.ai.time, 1), "msg": msg})
+
     # ────────────────────── B4 防守三角(2026-07,来源:sharpy/QueenBot) ──────────────────────
     def _rush_spawn_target(self) -> Point2:
         """B4 rush 折跃落点(取代 E3b 的"切回主基中心")。⚠️ 未验证(未跑局)。
@@ -817,6 +864,11 @@ class ProductionManager(Manager):
             floor_uid = getattr(UnitID, pf.id_name, None)
             if floor_uid in spawn:
                 exempt.add(floor_uid)
+        # E9:threat 激活(且非 rush) → 地面防御兵种全部 exempt —— 敌大部队
+        # 压境还憋舰队截地面就是裸奔(macro-fix1 实证:敌 20+ 到脸我方 6 叉)。
+        # rush 期六连动已全权接管,不叠加。
+        if self._threat_active and not self._rush_active:
+            exempt |= threat_ground_exemption(spawn, _FLYING_UNITS)
         return save_up_spawn(
             spawn,
             counts={
@@ -853,7 +905,8 @@ class ProductionManager(Manager):
             own_army_supply=self.ai.supply_used - self.ai.supply_workers,
             enemy_army_supply=self._visible_enemy_army_supply(),
             advantage_supply=ae.advantage_supply,
-            rush_active=self._rush_active,
+            # E9:threat 激活同样不开新矿(与 rush 不开矿同语义)
+            rush_active=self._rush_active or self._threat_active,
         )
 
     def _auto_expand(self, macro_plan: MacroPlan) -> None:

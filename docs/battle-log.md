@@ -1568,3 +1568,34 @@ ASSIMILATOR/FORGE/GATEWAY 零星。逐路径根因与修法：
   只影响配了 expansion_cannons 的 carrier 路径（ec=None 的流派走原常量 2）。
 - **C**：不修（见诊断 4）。
 单测 325 例绿（+4：cannon_target_capped 四态）。
+
+---
+
+## 2026-07-24 E9 中局威胁响应（Macro 第二轮，代码修复待 bench）
+
+macro-fix1（carrier vs Zerg VeryHard/Macro 0-5）实锤：t≈520-560 敌第一波主力
+（15-25 作战单位）到脸时，我方常备军 ≈6 叉+1 先知+0-1 航母，塔 5-7 座；
+save_up 憋航母掐了中局出兵，首艘 ~560s 才出，数量 1-2 时基地已丢光
+（g02 522s 3 基地 → 683s 清零）。威胁响应原来只有早期 rush 一路
+（rush_active/scout verdict），Macro 中局一波无任何反应。
+
+另：Macro 第一轮两项修复的方向验证——塔限流生效（峰值 13-16→8-12）但
+副作用=防御变弱丢矿更早（局时中位 815s→591s）；农民解截断方向正确但
+被战乱淹没（死亡速率 > 生产速率）。E9 的 2a（threat 时塔拉满）正是
+限流副作用的修正。
+
+### 机制（只挂 carrier）
+
+判据 `threat_response_active(enemy_supply, own_supply, active)`（滞回）：
+敌可见作战 supply ≥ max(10, 我方×1.5) 激活；< max(6, 我方×1.0) 才解除。
+口径用 `_visible_enemy_army_supply`（supply 求和，与 should_expand_dynamic
+同源；E2 塔数用的 `_visible_enemy_army_count` 是单位数，两口径并存不改）。
+
+激活效果（rush 同时激活时全部按 rush 走，不叠加）：
+- **塔目标 = ec.max**（覆盖 cannon_target_capped 限流，穷但压境保命优先）；
+- **save_up 不截地面防御**（`threat_ground_exemption` 把 spawn 里非空军兵种
+  全进 exempt；航母/风暴截断照旧，在产航母不停）；
+- **暂停开新矿**（_want_dynamic_expand 的 rush_active 门传入 rush|threat）。
+
+激活/解除各记一次事件（E9:敌压境威胁响应 / E9:威胁解除）供 retro 归因。
+单测 329 例绿（+4：激活/不激活/滞回/地面豁免）。

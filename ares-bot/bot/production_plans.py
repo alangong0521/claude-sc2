@@ -691,3 +691,34 @@ def cannon_target_capped(
     if rush_active or minerals >= fleet_mineral_cost:
         return dynamic_count
     return min(dynamic_count, min_count)
+
+
+def threat_response_active(
+    visible_enemy_army_supply: float,
+    own_army_supply: float,
+    currently_active: bool = False,
+) -> bool:
+    """E9 中局威胁响应（Macro 局敌大部队压境）。纯逻辑，可单测。
+
+    背景（macro-fix1 五局实证）：威胁响应原来只覆盖早期 rush（rush_active /
+    scout verdict），Macro AI 的中局一波（t≈520-560 敌 15-25 作战单位到脸）
+     bot 毫无反应——继续开矿、继续憋航母（save_up）、塔还被限流压着，常备军
+    ≈6 叉对敌 20+，基地连丢。
+
+    滞回判据（防边界抖动反复横跳）：
+    - 未激活 → 敌可见作战 supply ≥ max(10, 我方 army supply × 1.5) 激活；
+    - 已激活 → 敌可见 supply < max(6, 我方 × 1.0) 才解除。
+    """
+    if currently_active:
+        return visible_enemy_army_supply >= max(6.0, own_army_supply * 1.0)
+    return visible_enemy_army_supply >= max(10.0, own_army_supply * 1.5)
+
+
+def threat_ground_exemption(spawn: dict, flying: set) -> set:
+    """E9：threat 激活时 spawn 配方里的地面（防御）兵种集合。纯逻辑，可单测。
+
+    进 save_up_spawn 的 exempt——敌大部队压境时还憋舰队截地面就是裸奔
+    （E4b「敌可见 0=未知不是优势」同类教训）。航母/风暴等空军不在此集，
+    截断逻辑对它们照旧。
+    """
+    return {uid for uid in spawn if uid not in flying}
