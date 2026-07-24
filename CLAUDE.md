@@ -73,9 +73,11 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 ## 对局后检查（每次对局结束必做，司令指令 2026-07-23）
 
 1. **idle 建造农民检查（O19）**：每局结束后检查日志/快照，确认是否有农民
-   **>1s 不干活干等建造**（等钱、钉点、无指令）。bench 走 retro 检测器
-   （`idle_builder` 标签，E6 后落地）；观战局手动查 state 快照。
+   **>3s 不干活干等建造**（等钱、钉点、无指令）。bench 走 retro 检测器
+   （`idle_builder` 标签）；观战局手动查 state 快照。
    发现 → 记 battle-log 并优化建造顺序与拉农民建造的 timing。
+   （阈值 1s→3s：o19 复验数据实证 1-2s 短等是贴 0 花钱风格常态噪声，
+   3s 仍 < O11 watchdog 6s 撤回线，真钉点必曝光——司令 2026-07-24 拍板。）
 2. 其余 retro 标签照旧（supply_block / one_base / overrun / trickle / bank / stall）。
 
 ## 约束 / 踩过的坑
