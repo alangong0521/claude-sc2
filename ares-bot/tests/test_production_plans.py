@@ -25,11 +25,13 @@ from bot.production_plans import (  # noqa: E402
     nexus_rebuild_viable,
     pre_fleet_cap,
     pre_fleet_spawn,
+    rally_min_for_verdict,
     research_paused_for_rush,
     rush_needs_gateway,
     rush_triggers_defense,
     save_up_spawn,
     scout_verdict,
+    scout_verdict_timing,
     should_expand_dynamic,
     should_register_autosupply,
     should_release_waiting_builder,
@@ -530,6 +532,80 @@ class TestIdleBuilderCriteria(unittest.TestCase):
         self.assertFalse(idle_builder_alarm(1.0))   # 边界:>1s 才算
         self.assertTrue(idle_builder_alarm(1.5))
         self.assertTrue(idle_builder_alarm(10.0))
+
+
+class TestScoutVerdictTiming(unittest.TestCase):
+    """E7/O16 侦查断链:scout_verdict_timing 时机决策。
+
+    e6c2 实证根因:探机 100s 出发路 ~40s,Rush 局敌兵 129-141s 到脸触发 O4
+    撤回,4/5 局探机送达前被拉回 → verdict 落「无情报→保守rush」(结论碰巧对,
+    链条是断的)。判据要区分「还没走到」(等/补派)和「尽力未送达」(才按 rush)。"""
+
+    def test_pending_before_verdict_window(self):
+        self.assertEqual(
+            scout_verdict_timing(False, True, False, False, now=100.0), "pending"
+        )
+
+    def test_intel_delivered_evaluates_immediately(self):
+        # 有情报:不看探机状态,直接评(即使早于硬底线)
+        self.assertEqual(
+            scout_verdict_timing(True, False, False, False, now=170.0), "evaluate"
+        )
+        self.assertEqual(
+            scout_verdict_timing(True, True, False, True, now=200.0), "evaluate"
+        )
+
+    def test_no_intel_scout_en_route_waits(self):
+        # 探机还在路上(慢/绕路) → 等,不急着按 rush
+        self.assertEqual(
+            scout_verdict_timing(False, True, False, False, now=180.0), "wait"
+        )
+
+    def test_dead_scout_redispatches_once_when_not_rush(self):
+        # 探机死/被撤回 + 没补派过 + 非 rush → 补派一次
+        self.assertEqual(
+            scout_verdict_timing(False, False, False, False, now=170.0),
+            "redispatch",
+        )
+        # 补派过的再断 → 不再补(防无限续命送死)→ fallback
+        self.assertEqual(
+            scout_verdict_timing(False, False, True, False, now=200.0), "fallback"
+        )
+
+    def test_no_redispatch_during_rush(self):
+        # rush 中不补派(走进狗群=白送,且 rush 响应包已在跑) → 直接 fallback
+        # (= 旧「无情报→保守rush」行为,e6c2 各局路径不变)
+        self.assertEqual(
+            scout_verdict_timing(False, False, False, True, now=170.0), "fallback"
+        )
+
+    def test_hard_deadline_forces_fallback(self):
+        # 探机一直在路上但过了硬底线 → 尽力未送达,按 rush
+        self.assertEqual(
+            scout_verdict_timing(False, True, False, False, now=231.0), "fallback"
+        )
+
+
+class TestRallyMinForVerdict(unittest.TestCase):
+    """E8/O17/O18:侦查结论驱动 C3a 集结阈值(rally_min_for_verdict)。"""
+
+    def test_greedy_halves_rally(self):
+        # O17:敌贪 → 小股提早压,stalker 14→7,dt 4→2
+        self.assertEqual(rally_min_for_verdict(14, "greedy"), 7)
+        self.assertEqual(rally_min_for_verdict(4, "greedy"), 2)
+        self.assertEqual(rally_min_for_verdict(0, "greedy"), 0)  # 关着的保持关
+
+    def test_rush_tightens_with_floor(self):
+        # O18:敌 rush → 收紧;base 0 的 carrier 也至少有 floor 6 的纪律
+        self.assertEqual(rally_min_for_verdict(14, "rush"), 28)
+        self.assertEqual(rally_min_for_verdict(4, "rush"), 8)
+        self.assertEqual(rally_min_for_verdict(0, "rush"), 6)
+
+    def test_unknown_and_none_keep_base(self):
+        # 保守:未评估/无情报兜底 → 维持现状
+        self.assertEqual(rally_min_for_verdict(14, "unknown"), 14)
+        self.assertEqual(rally_min_for_verdict(14, None), 14)
+        self.assertEqual(rally_min_for_verdict(0, None), 0)
 
 
 class TestExpansionReserve(unittest.TestCase):

@@ -1251,6 +1251,19 @@ carrier vs Zerg VeryHard/Rush @AbyssalReefLE：
 侦查是 O17/O18 决策链的输入，断链则下游全是赌。排查：scout 路径点、
 被杀后是否补派、scout_verdict 超时回退逻辑。
 
+**E7 结案（2026-07-24，代码修复，待 E7+E8 bench 验证）**：e6c2 五局逐帧
+诊断——探机 100s 出发、路途 ~40s，而 Rush 局敌兵 129-141s 到脸触发 O4
+撤回，**4/5 局探机在送达前被拉回**（g02/03/04/05 敌建筑首见拖到 522-820s
+=陆军接触才看到；g01 撤回最晚 141.5s，探机 144.6s 摸到主基）。五局探机
+都活着（O4 事件只在有 SCOUTING 农民可撤时才发）——根因不是被杀/卡位，
+是**侦查窗口 < 路途**：O4 撤回抢在送达前，verdict 落「无情报→保守按rush」
+（Rush 局结论碰巧对，链条是断的；Macro 局探机死/卡同样会假 rush）。
+修法：`scout_verdict_timing` 纯判据（production_plans）——有情报照评；
+无情报但探机还在路上 → 宽限到 230s；探机死/被撤回且非 rush → **补派一次**
+（仅一次保防送死语义；rush 中不补派=白送且 verdict 已无意义）；硬底线仍无
+情报 → 才按「尽力未送达」保守 rush（=旧 unknown 行为，e6c2 各局路径不变）。
+补派/兜底都发事件供 retro 归因。单测 312 例绿。
+
 ### O17 侦查=扩张攀科技 → 叉叉提前压前线（不必等集结数）
 若侦查确认敌方早开分矿+攀科技（前期兵力薄），叉叉兵应**提早压前线**
 给压力/抓扩张timing，不用等 rally_min_army 集结数到齐。
@@ -1261,6 +1274,17 @@ carrier vs Zerg VeryHard/Rush @AbyssalReefLE：
 与 O17 是同一机制的两极：scout_verdict ∈ {rush, greedy, unknown}
 → stance ∈ {集结守, 提前压, 默认}。O9 已有 scout_verdict 闭环，
 O17/O18 是把它接到 rally/stance 决策上。
+
+**E8 结案（2026-07-24，代码修复，待 E7+E8 bench 验证）**：verdict 接到 C3a
+集结纪律（`production_plans.rally_min_for_verdict`，combat_manager 每帧算）——
+greedy → 阈值减半（小股提早压，O17）；rush → max(×2, floor 6)（集结积攒再打，
+O18；floor 6 与 carrier pre_fleet 保底叉 cap 同源量级，因 carrier rally 缺省 0=关，
+加倍无效需地板）；unknown/None → 维持。司令 stance 让位原则不动。
+与六连动同向不冲突：rush_active 时 attack_target 本就切主基守家，E8 的 rush
+地板只是让 rush 解除抖动期也不零散出门。非 carrier 流 verdict 恒 None → 零影响。
+注意：carrier 的 rally 缺省 0，O17 侧对 carrier 实为 no-op（集结本就关，且 E3g
+保底阶段守家是有意设计，不动）；E8 对 carrier 的有效增量是 O18 的 rush 地板。
+单测 315 例绿。
 
 ### O19 仍有农民干等建造（复发，升级为每局必查项）
 司令观察：对局中仍见农民傻等钱造建筑。司令指令（长期有效）：

@@ -57,6 +57,7 @@ from bot.production_plans import (
     rush_triggers_defense,
     save_up_spawn,
     scout_verdict,
+    scout_verdict_timing,
     should_expand_dynamic,
     should_register_autosupply,
     upgrade_tech_buildings,
@@ -108,6 +109,11 @@ class ProductionManager(Manager):
         # pivot 自适应状态(反rush/反空军)
         self._early_scout_done: bool = False
         self._scout_verdict_done: bool = False  # O9:侦查情报→开局决策,一局评一次
+        # E8:O9/E7 侦查结论(greedy/rush/unknown),combat 集结纪律读;未评估=None
+        self._verdict: str | None = None
+        # E7/O16 侦查断链:pivot 探机 tag(判"还在路上"用)+ 补派只一次(防送死)
+        self._pivot_scout_tag: int | None = None
+        self._pivot_redispatched: bool = False
         self._rush_active: bool = False
         self._rush_clear_since: float | None = None
         # 基地数峰值(重建模式的"真的丢过基地"门,E6b 回归修复:开局 1<max_bases 不算丢)
@@ -435,29 +441,78 @@ class ProductionManager(Manager):
         if w := self.ai.mediator.select_worker(target_position=enemy_main):
             self.ai.mediator.assign_role(tag=w.tag, role=UnitRole.SCOUTING)
             w.move(enemy_main)
+            self._pivot_scout_tag = w.tag  # E7:记下tag,断链判"还在路上"用
 
     # O9: 侦查情报→开局决策的评估时点(探机 100s 出发,留 70s 赶路/送死窗口)
     _SCOUT_VERDICT_AT: float = 170.0
+    # E7:无情报时的宽限/补派硬底线(之后按「侦查已尽力未送达」保守 rush)
+    _SCOUT_HARD_DEADLINE: float = 230.0
     # O9: rush 征兆的"早出兵建筑"(看到 ≥2 个即判 rush;与判据早期多兵互补)
     _MILITARY_STRUCTS = {
         UnitID.BARRACKS, UnitID.GATEWAY, UnitID.SPAWNINGPOOL, UnitID.ROACHWARREN,
     }
 
     def _evaluate_scout_intel(self) -> None:
-        """O9 侦查情报 → 开局决策闭环(carrier 流,一局一次,t≈170s)。
+        """O9+E7 侦查情报 → 开局决策闭环(carrier 流,一局一次,t≈170s)。
 
-        探机(_early_scout)/steer scout 的情报 → 三档(判据纯函数
-        production_plans.scout_verdict):
+        O9 三档(判据纯函数 production_plans.scout_verdict):
         (a) rush 征兆(早出兵建筑×2 / 早期多兵) → 提前置 _rush_active,
             复用现有响应包(出叉+铺塔+守家),比"敌兵压到 40 格"提前 ~1 分钟;
         (b) 对面开矿/科技开局 → 维持贪打法(什么都不做);
-        (c) 没探到(探机被杀/没找到主家,enemy_structures 空) → 保守按疑似 rush。
+        (c) 没探到 → 保守按疑似 rush。
+        E7(O16 侦查断链修复,时机判据纯函数 production_plans.scout_verdict_timing):
+        verdict 不再只看「情报有无」一锤定音 —— 区分「还没走到」和「尽力未送达」:
+        探机还在路上 → 宽限到 230s;探机死/被 O4 提前撤回且非 rush → 补派一次
+        (仅一次,防无限续命送死;rush 中不补派——走进狗群是白送,且 rush 响应包
+        已在跑);硬底线仍无情报 → 才按「尽力未送达」保守 rush(=旧 unknown 行为)。
         评估完把 SCOUTING 农民撤回采矿(情报已用,别留在敌家白送,同 O4 精神)。
         只挂 carrier:tempest/stalker 是已验证基线,行为一行不动。"""
         if self._scout_verdict_done or self._flow.name != "carrier":
             return
-        if self._flow.pivot is None or self.ai.time < self._SCOUT_VERDICT_AT:
+        if self._flow.pivot is None:
             return
+        intel = bool(self.ai.enemy_structures)
+        scout = (
+            self.ai.units.find_by_tag(self._pivot_scout_tag)
+            if self._pivot_scout_tag is not None
+            else None
+        )
+        en_route = scout is not None and scout.tag in (
+            self.manager_mediator.get_unit_role_dict[UnitRole.SCOUTING]
+        )
+        action = scout_verdict_timing(
+            intel=intel,
+            scout_en_route=en_route,
+            redispatched=self._pivot_redispatched,
+            rush_active=self._rush_active,
+            now=self.ai.time,
+            verdict_at=self._SCOUT_VERDICT_AT,
+            hard_deadline=self._SCOUT_HARD_DEADLINE,
+        )
+        if action in ("pending", "wait"):
+            return
+        if action == "redispatch":
+            enemy_main = self.ai.focused_enemy_start()
+            if w := self.ai.mediator.select_worker(target_position=enemy_main):
+                self.ai.mediator.assign_role(tag=w.tag, role=UnitRole.SCOUTING)
+                w.move(enemy_main)
+                self._pivot_scout_tag = w.tag
+                self.ai._events.append(
+                    {
+                        "t": round(self.ai.time, 1),
+                        "msg": "E7:侦查断链(未送达),补派探机一次(O16)",
+                    }
+                )
+            self._pivot_redispatched = True  # 没可选农民也只试这一次
+            return
+        if action == "fallback":
+            self.ai._events.append(
+                {
+                    "t": round(self.ai.time, 1),
+                    "msg": "E7:侦查未送达(尽力),按保守rush(O16)",
+                }
+            )
+        # evaluate / fallback → 一局一次 latch,按 O9 三档评估
         self._scout_verdict_done = True
         workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
         military = sum(
@@ -468,10 +523,11 @@ class ProductionManager(Manager):
             if not u.is_structure and u.type_id not in workers
         )
         verdict = scout_verdict(
-            intel=bool(self.ai.enemy_structures),
+            intel=intel,
             military_structs=military,
             early_army=army,
         )
+        self._verdict = verdict  # E8:存结论,combat 集结纪律(O17/O18)读它
         if verdict != "greedy":
             self._rush_active = True
             self._rush_clear_since = None
@@ -479,6 +535,13 @@ class ProductionManager(Manager):
             self.manager_mediator.assign_role(tag=s.tag, role=UnitRole.GATHERING)
             if self.ai.mineral_field:
                 s.gather(self.ai.mineral_field.closest_to(s))
+
+    @property
+    def verdict(self) -> str | None:
+        """O9/E7 侦查结论(greedy/rush/unknown;未评估=None)。
+        E8:combat_manager 的 C3a 集结纪律按它调阈值(rally_min_for_verdict)。
+        非 carrier 流恒 None(不评估)→ 集结行为不变。"""
+        return self._verdict
 
     @property
     def rush_active(self) -> bool:

@@ -582,3 +582,59 @@ def idle_builder_alarm(wait_age: float, threshold: float = 1.0) -> bool:
     的 6s 撤回不冲突——本判据只观测发事件，不改任何行为。
     """
     return wait_age > threshold
+
+
+def scout_verdict_timing(
+    intel: bool,
+    scout_en_route: bool,
+    redispatched: bool,
+    rush_active: bool,
+    now: float,
+    verdict_at: float = 170.0,
+    hard_deadline: float = 230.0,
+) -> str:
+    """E7/O16 侦查断链：verdict 时机决策。纯逻辑，可单测。
+
+    背景（e6c2 五局实证）：探机 100s 出发、路 ~40s，而 Rush 局敌兵 129-141s
+    到脸触发 O4 撤回——4/5 局探机在送达情报前被拉回，verdict 落在
+    「无情报→保守按 rush」（结论碰巧对，但链条是断的；Macro 局探机死/卡
+    同样会假 rush）。本判据区分「侦查还没走到」和「侦查已尽力未送达」：
+
+    - "pending"：还没到评估窗（now < verdict_at）；
+    - "evaluate"：有敌基情报 → 按 scout_verdict 正常评；
+    - "wait"：无情报但侦查农民还在路上（慢/绕路）→ 等它，不超 hard_deadline；
+    - "redispatch"：无情报 + 侦查农民死/被提前撤回 + 没补派过 + 非 rush
+      → 补派一次（仅一次，保 O9 防无限续命送死语义；rush 中不补派——
+      走进狗群是白送，且 rush 响应包已在跑，verdict 无关痛痒）；
+    - "fallback"：到 hard_deadline 仍无情报 / rush 中无法补派 →
+      侦查已尽力未送达，保守按 rush（= 旧「无情报→unknown」行为）。
+    """
+    if now < verdict_at:
+        return "pending"
+    if intel:
+        return "evaluate"
+    if scout_en_route and now < hard_deadline:
+        return "wait"
+    if not redispatched and not rush_active and now < hard_deadline:
+        return "redispatch"
+    return "fallback"
+
+
+def rally_min_for_verdict(
+    base_min: int, verdict: str | None, rush_floor: int = 6
+) -> int:
+    """E8/O17/O18：侦查结论驱动 C3a 集结阈值。纯逻辑，可单测。
+
+    - greedy（敌贪，前期兵力薄）→ 减半：小股提早压前线，不等集结数（O17）；
+      base 0（集结关，如 carrier）保持 0；
+    - rush → 收紧到 max(base×2, rush_floor)：集结积攒再打，叉不零散出门（O18）；
+      base 0 的流派也至少有 rush_floor 的纪律（rush_floor 取 carrier pre_fleet
+      保底叉 cap 6 同源量级）；
+    - unknown / None（未评估/非 carrier 流）→ 维持 base_min（保守）。
+    司令 stance 让位原则在调用方（combat_manager），不进本判据。
+    """
+    if verdict == "greedy":
+        return base_min // 2
+    if verdict == "rush":
+        return max(base_min * 2, rush_floor)
+    return base_min

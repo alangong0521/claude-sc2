@@ -24,7 +24,7 @@ from bot.combat.stalker_offensive import StalkerOffensive
 from bot.combat.templar_caster import TemplarCaster
 from bot.combat.tempest_offensive import TempestOffensive
 from bot.combat.warp_prism_offensive import WarpPrismOffensive
-from bot.production_plans import floor_army_defends_home
+from bot.production_plans import floor_army_defends_home, rally_min_for_verdict
 
 if TYPE_CHECKING:
     from ares import AresBot
@@ -237,7 +237,13 @@ class CombatManager(Manager):
         # 同一 combat class 的多兵种会各自 execute 一次(tempest/追猎各打各的),攻击点/焦点/机动共享。
         # C3a 集结纪律:兵力低于 rally_min_army 且司令没下 stance 时,先守家攒兵(治分批送死);
         # 司令下了 stance(attack/defend/...)以司令为准,集结让位。
-        if order.get("stance") is None and 0 < self._own_army_count() < self._rally_min:
+        # E8(O17/O18):阈值按侦查结论动态化(rally_min_for_verdict)——verdict=greedy
+        # 减半(小股提早压);=rush 收紧到 max(×2, 6)(集结积攒再打);=unknown/None 维持。
+        # 非 carrier 流 verdict 恒 None → 行为不变。
+        _rally = rally_min_for_verdict(
+            self._rally_min, getattr(self.ai.production_manager, "verdict", None)
+        )
+        if order.get("stance") is None and 0 < self._own_army_count() < _rally:
             attack_target = self.ai.start_location
         else:
             attack_target = self.attack_target
