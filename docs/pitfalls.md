@@ -70,3 +70,6 @@
 23. **状态文件必须原子写**——`promotion.json` 直接 `write_text` 时车道被 kill 会留下
     0 字节/半个 JSON，下次启动 `json.loads` 崩。修法：写 `.tmp` 再 `replace()`；
     `_load_state` 容忍损坏返回 `{}`——逐局 summary 在 `bench/<tag>/` 下，矩阵历史无损重放。
+24. **army_composition.yml 加新兵种要防 `cy_unit_pending` KeyError**——WARPPRISMPHASING
+    入 yml 后 `_own_army_count` 遍历 spec 时引擎不认识该 id，KeyError 崩全局（E6c 五连 ERROR）。
+    修法：pending 查询按 0 计跳过（11c037e）。新 unit id 入库前先跑一局 smoke 验证。
