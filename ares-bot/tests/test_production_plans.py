@@ -13,6 +13,7 @@ from bot.production_plans import (  # noqa: E402
     assimilator_attempt_stuck,
     base_rebuild_active,
     builder_is_waiting,
+    cannon_target_capped,
     defense_syncs_with_nexus,
     dispatch_viable,
     expansion_cannon_count,
@@ -654,6 +655,31 @@ class TestDispatchViable(unittest.TestCase):
         # 矿 50 + 25s×8/s = 250 < 400 → Nexus 不预走位
         self.assertFalse(dispatch_viable(50, 8.0, 25.0, 400))
         self.assertFalse(dispatch_viable(0, 0.0, 5.0, 150))
+
+
+class TestCannonTargetCapped(unittest.TestCase):
+    """Macro 修复(诊断 #2):憋舰队期塔重建限流(cannon_target_capped)。
+
+    o19b-macro 实证:g03 同时 16 座塔≈2400 矿≈7 艘航母,气 2200+ 烂掉矿贴 0。
+    矿 < 舰队矿价且非 rush → 压回 min;憋得起 / rush 期 → 原动态数。"""
+
+    def test_poor_and_not_rush_caps_to_min(self):
+        # 矿 100 < 350,敌兵推动态数到 8 → 压回 min 3
+        self.assertEqual(cannon_target_capped(8, 3, 100, 350, False), 3)
+        self.assertEqual(cannon_target_capped(8, 3, 0, 350, False), 3)
+
+    def test_rich_keeps_dynamic(self):
+        # 矿 ≥ 舰队矿价(憋得起)→ 不限流
+        self.assertEqual(cannon_target_capped(8, 3, 350, 350, False), 8)
+        self.assertEqual(cannon_target_capped(8, 3, 900, 350, False), 8)
+
+    def test_rush_never_caps(self):
+        # rush 期保命优先(六连动不变),矿再紧也不限
+        self.assertEqual(cannon_target_capped(8, 3, 0, 350, True), 8)
+
+    def test_dynamic_below_min_untouched(self):
+        # 动态数本来 ≤ min(理论防御) → 不抬不降
+        self.assertEqual(cannon_target_capped(2, 3, 100, 350, False), 2)
 
 
 class TestExpansionReserve(unittest.TestCase):

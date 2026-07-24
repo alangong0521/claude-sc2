@@ -672,3 +672,22 @@ def redispatch_cooled_down(
     if last_release is None:
         return True
     return now - last_release >= cooldown
+
+
+def cannon_target_capped(
+    dynamic_count: int,
+    min_count: int,
+    minerals: float,
+    fleet_mineral_cost: float = 350.0,
+    rush_active: bool = False,
+) -> int:
+    """Macro 局塔重建限流（诊断 #2：塔矿出血）。纯逻辑，可单测。
+
+    憋舰队期（矿存款 < 舰队矿价 且非 rush）塔目标压回 min——被打掉的塔
+    不立即按动态数重建，矿让给航母/农民（o19b-macro 实证：g03 同时 16 座塔
+    ≈2400 矿 ≈ 7 艘航母，气 2200+ 烂掉而矿贴 0）。矿 ≥ 舰队矿价（憋得起）
+    或 rush 期（保命优先，六连动不变）→ 按原动态数。
+    """
+    if rush_active or minerals >= fleet_mineral_cost:
+        return dynamic_count
+    return min(dynamic_count, min_count)

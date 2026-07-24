@@ -39,6 +39,7 @@ from bot.production_plans import (
     assimilator_attempt_stuck,
     bank_production_target,
     base_rebuild_active,
+    cannon_target_capped,
     defense_syncs_with_nexus,
     defensive_rally_point,
     dispatch_viable,
@@ -312,8 +313,17 @@ class ProductionManager(Manager):
             ec = self._flow.expansion_cannons
             cannons = (
                 2 if ec is None
-                else expansion_cannon_count(
-                    ec.min, ec.max, self._visible_enemy_army_count()
+                else cannon_target_capped(
+                    # Macro 局塔重建限流(诊断 #2,o19b-macro 实证):憋舰队期
+                    # (矿 < 舰队矿价 且非 rush)塔目标压回 min —— 16 座塔≈7 艘
+                    # 航母的矿不该在气 2200 烂掉时继续出血;rush 期不限(保命)。
+                    expansion_cannon_count(
+                        ec.min, ec.max, self._visible_enemy_army_count()
+                    ),
+                    ec.min,
+                    self.ai.minerals,
+                    self.ai.calculate_cost(self._primary_unit_id()).minerals,
+                    self._rush_active,
                 )
             )
             self.ai.register_behavior(
@@ -338,7 +348,11 @@ class ProductionManager(Manager):
 
         # E3d: rush 期间连造农民也让位(50 矿/个是防御链的最大竞争项)
         # E3k: 开矿攒钱预留期间同样让位(Nexus 不排在农民后)
-        if not self._rush_active and not _expansion_reserve and not _base_rebuild:
+        # Macro 修复(诊断 #3,o19b-macro 五局实证):_base_rebuild 不再截断造农民 ——
+        # 丢矿后(peak>current)重建模式一锁 100-300s,期间农民被放血零补员
+        # (g01 丢矿后 210s 农民 40→28、g03 36→26,gas 2000+ 烂掉)——农民就是
+        # 重建的经济来源,掐农民=掐重建。rush(E3d)与 E3k 短预留的让位保留。
+        if not self._rush_active and not _expansion_reserve:
             self._build_probes(self.ai.ready_townhalls)
         self._ensure_townhall()  # Q4:保底主基地(被打爆到 0 且有矿区价值时重建)
         self._early_scout()      # pivot:2分钟自动派一个探机看对面开局
