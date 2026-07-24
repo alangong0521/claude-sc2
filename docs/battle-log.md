@@ -1456,3 +1456,30 @@ production_manager 每帧维护 `_peak_townhalls`。rush/None-target 门不变�
 - `_own_army_count` 遇 WARPPRISMPHASING 时 cy_unit_pending KeyError 崩全局
   （E6c 首轮 5 连 ERROR 根因，B6 warp prism spec 引入）→ KeyError 按 0 计
   （11c037e）。
+
+---
+
+## 2026-07-24 O19 钉点修复：建造派工守卫（dispatch_viable）
+
+e7e8 bench（scout-macro/scout-rush 各 N=5）idle_builder 去重 episode：
+PHOTONCANNON 9-21 次/局（最大头）、NEXUS 2-7 次、PYLON 1-7 次、
+ASSIMILATOR/FORGE/GATEWAY 零星。逐路径根因与修法：
+
+- **PHOTONCANNON**：`ProtossStaticDefence → BuildStructure` 全程无 can_afford
+  （B1 守卫只加了 `_build_core_structure`，这条路径漏了）→ F2 注册点加
+  `dispatch_viable(矿, 收入/秒, 走位5s, 150)` 守卫，不到位可负担不注册。
+  塔起建时间不变（反正都要等钱到 150），农民不再钉点照采矿。
+- **NEXUS**：E3k 预走位（prioritize=True 欠费也派）是故意设计，但 episode
+  显示到位后干等（终局 1144s 仍有）→ 收窄为「预计到达时可负担」
+  （矿 + 走位时间×收入 ≥ 400，走位时间 = 最近空闲扩张点距离 ÷ 3.94）
+  才允许欠费派工；否则 EC 走默认 can_afford_check（不派不钉）。
+  E3k 攒钱预留（_expansion_reserve 停出兵/农民）语义不变。
+- **PYLON**：PSD 内部 pylon 同路径无守卫 → 被 cannon 门卫覆盖（150>100）；
+  AutoSupply E3h 紧急钉点（supply_left≤2）是故意设计，保留。
+- **FORGE/GATEWAY/ASSIMILATOR 零星**：FORGE 走 TechUp（已有 ares 层
+  can_afford 守卫）和 _build_core_structure（已有守卫）；GATEWAY 走
+  _rush_gateway_boost/_build_core_structure（已有守卫）；ASSIMILATOR@15s
+  与可能的 FORGE@113s 来自 **ares build runner 开局序列**（yml 派工点无
+  can_afford，框架层不改）——O11 watchdog 6s 撤回兜底，下轮 bench 复测
+  若仍超标再归因。
+- 纯判据 `production_plans.dispatch_viable`；单测 318 例绿（+3）。

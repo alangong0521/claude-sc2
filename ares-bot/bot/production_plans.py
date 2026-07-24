@@ -638,3 +638,19 @@ def rally_min_for_verdict(
     if verdict == "rush":
         return max(base_min * 2, rush_floor)
     return base_min
+
+
+def dispatch_viable(
+    minerals: float, income_per_sec: float, walk_time: float, cost: float
+) -> bool:
+    """派建造工人前的可负担估算（O19 钉点修复）。纯逻辑，可单测。
+
+    到位时钱够才派：当前矿 + 走位时间 × 收入速率 ≥ 造价 → 派（到位即开工，
+    零钉点）；不够 → 不派（建筑等下帧重估，农民继续采矿——缺钱时正确行为
+    是**不派**，不是派了再撤，E4c 撤回循环前科）。
+
+    背景：ares BuildStructure / ExpansionController(prioritize) 不查 can_afford
+    就派工，农民钉在建造点等钱（e7e8 bench idle_builder 实证：
+    PHOTONCANNON 9-21 次/局、NEXUS 2-7 次/局）。
+    """
+    return minerals + income_per_sec * walk_time >= cost

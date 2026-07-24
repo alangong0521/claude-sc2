@@ -14,6 +14,7 @@ from bot.production_plans import (  # noqa: E402
     base_rebuild_active,
     builder_is_waiting,
     defense_syncs_with_nexus,
+    dispatch_viable,
     expansion_cannon_count,
     expansion_reserve_active,
     floor_army_defends_home,
@@ -606,6 +607,31 @@ class TestRallyMinForVerdict(unittest.TestCase):
         self.assertEqual(rally_min_for_verdict(14, "unknown"), 14)
         self.assertEqual(rally_min_for_verdict(14, None), 14)
         self.assertEqual(rally_min_for_verdict(0, None), 0)
+
+
+class TestDispatchViable(unittest.TestCase):
+    """O19 钉点修复:dispatch_viable —— 到位可负担才派建造工人。
+
+    e7e8 bench 实证:ares BuildStructure/ExpansionController 不查 can_afford,
+    PHOTONCANNON 干等 9-21 次/局、NEXUS 2-7 次/局。缺钱时正确行为是不派
+    (农民照采,建筑等下帧),不是派了再撤(E4c 前科)。"""
+
+    def test_affordable_now_dispatches(self):
+        self.assertTrue(dispatch_viable(200, 10.0, 5.0, 150))   # 现钱就够
+        self.assertTrue(dispatch_viable(400, 0.0, 30.0, 400))   # 无收入但现钱够
+
+    def test_projected_affordable_on_arrival_dispatches(self):
+        # 矿 120 + 路上 5s×10/s = 170 ≥ 150 → 派(到位即开工,零钉点)
+        self.assertTrue(dispatch_viable(120, 10.0, 5.0, 150))
+        # Nexus 预走位(E3k 保留):矿 200 + 25s×8/s = 400 ≥ 400 → 派
+        self.assertTrue(dispatch_viable(200, 8.0, 25.0, 400))
+
+    def test_not_affordable_even_on_arrival_holds(self):
+        # 矿 20 + 5s×8/s = 60 < 150 → 不派(rush 矿紧钉点根因,修的就是这个)
+        self.assertFalse(dispatch_viable(20, 8.0, 5.0, 150))
+        # 矿 50 + 25s×8/s = 250 < 400 → Nexus 不预走位
+        self.assertFalse(dispatch_viable(50, 8.0, 25.0, 400))
+        self.assertFalse(dispatch_viable(0, 0.0, 5.0, 150))
 
 
 class TestExpansionReserve(unittest.TestCase):

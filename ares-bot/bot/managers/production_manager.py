@@ -41,6 +41,7 @@ from bot.production_plans import (
     base_rebuild_active,
     defense_syncs_with_nexus,
     defensive_rally_point,
+    dispatch_viable,
     expansion_cannon_count,
     expansion_max_pending,
     expansion_reserve_active,
@@ -66,6 +67,11 @@ from bot.production_plans import (
 
 if TYPE_CHECKING:
     from ares import AresBot
+
+# O19:防御塔派工的走位时间估算(基地内,秒)——dispatch_viable 用,见 F2 注册点
+_DEFENCE_WALK_TIME: float = 5.0
+# O19:探机/农民移动速度(格/游戏秒),扩张走位时间估算用
+_WORKER_SPEED: float = 3.94
 
 # 神族流派(造兵配方/科技链/升级/chrono/追加产能/一次性建造)全部进 flows.yml,
 # 按 BUILD env 选块(run.py 在起游戏前已把 BUILD 写进 os.environ 并归一)。
@@ -202,6 +208,9 @@ class ProductionManager(Manager):
         # plan 尾部的 ExpansionController 饿死(e3k game_03 实证)。
         # prioritize=True = 欠费也先派工人走位(钉在扩张点等 400 是正常开矿打法,
         # O11 watchdog 已对基地建筑豁免,见 main.py)。
+        # O19:预走位收窄 —— 「预计到达时可负担」才允许欠费派工(dispatch_viable);
+        # 到位还等不起的不派(农民照采,Nexus 起建时间不变),不再钉点干等
+        # (e7e8 bench:NEXUS 干等 2-7 次/局,终局 1144s 仍有)。
         # 基地重建也需要开矿
         if _want_expand or _base_rebuild:
             # B7③(QueenBot 扩张动态 max_pending):矿>1250 且离 max_bases 有富余时
@@ -213,11 +222,17 @@ class ProductionManager(Manager):
             _pending = expansion_max_pending(
                 self.ai.minerals, headroom=max(1, _headroom)
             )
+            _preposition = dispatch_viable(
+                self.ai.minerals,
+                self._mineral_income_per_sec(),
+                self._expansion_walk_time(),
+                self.ai.calculate_cost(UnitID.NEXUS).minerals,
+            )
             macro_plan.add(
                 ExpansionController(
                     to_count=self.ai.townhalls.amount + _pending,
                     max_pending=_pending,
-                    prioritize=True,
+                    prioritize=_preposition,
                 )
             )
         # 升级(O1/O8/O10):研究交 UpgradeController 并进 MacroPlan 且 prioritize=True ——
@@ -270,7 +285,16 @@ class ProductionManager(Manager):
         # F2: 按局势铺防御塔(B+F+Cannon)——框架自动建 forge + 光子炮 + 护盾电池并补前置科技。
         # E2: 配了 expansion_cannons 的流派塔数动态化(min + 敌可见作战单位//4,封顶 max),
         # 每帧重算重注册,ProtossStaticDefence 参数本就支持每帧变。
-        if self._should_build_defense(_order):
+        # O19:到位可负担才注册 —— ares ProtossStaticDefence→BuildStructure 全程不查
+        # can_afford,钱不够也派农民钉在塔点等钱(e7e8 bench idle_builder 最大头:
+        # PHOTONCANNON 9-21 次/局)。守卫后不派而非派了再撤(农民照采,塔起建时间不变,
+        # E4c 撤回循环前科不存在这个问题)。
+        if self._should_build_defense(_order) and dispatch_viable(
+            self.ai.minerals,
+            self._mineral_income_per_sec(),
+            _DEFENCE_WALK_TIME,
+            self.ai.calculate_cost(UnitID.PHOTONCANNON).minerals,
+        ):
             ec = self._flow.expansion_cannons
             cannons = (
                 2 if ec is None
@@ -1127,6 +1151,29 @@ class ProductionManager(Manager):
         """F1: 前线折跃点 —— 敌我之间偏敌 60%。让 WarpInManager 优先把兵折跃到前线
         水晶塔（而非主基地），配合 _build_forward_pylon 实现远程投送。"""
         return self.ai.start_location.towards(self.ai.focused_enemy_start(), 0.6)
+
+    def _mineral_income_per_sec(self) -> float:
+        """当前矿收入速率(矿/游戏秒)——dispatch_viable 的「路上收入」估算(O19)。
+        score 不可用时回退 0(=只认当前存款,最保守)。"""
+        try:
+            return self.ai.state.score.collection_rate_minerals / 60.0
+        except (AttributeError, TypeError):
+            return 0.0
+
+    def _expansion_walk_time(self) -> float:
+        """农民走到下一个空闲扩张点的估算时间(秒)——dispatch_viable 预走位用(O19)。
+        取「我基地 → 空闲扩张点」的最短距离 ÷ 农民速度;没有空闲点 → 0(只认现钱)。"""
+        if not self.ai.townhalls or not self.ai.expansion_locations_list:
+            return 0.0
+        free = [
+            el
+            for el in self.ai.expansion_locations_list
+            if not self.ai.townhalls.closer_than(5.0, el)
+        ]
+        if not free:
+            return 0.0
+        dist = min(el.distance_to(th) for el in free for th in self.ai.townhalls)
+        return dist / _WORKER_SPEED
 
     def _build_forward_pylon(self) -> None:
         """F1: 在前线造水晶塔，给折跃门提供前线电源（兵秒投前线，不全程走）。
