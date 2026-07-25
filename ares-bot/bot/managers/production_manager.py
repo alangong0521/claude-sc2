@@ -41,12 +41,14 @@ from bot.production_plans import (
     base_rebuild_active,
     cannon_target_capped,
     carrier_transition_ready,
+    chrono_primary_id,
     defense_syncs_with_nexus,
     defensive_rally_point,
     dispatch_viable,
     expansion_cannon_count,
     expansion_max_pending,
     expansion_reserve_active,
+    extra_production_mineral_gate,
     gas_gated_stargate_target,
     gas_target,
     is_combat_type,
@@ -66,6 +68,7 @@ from bot.production_plans import (
     scout_verdict_timing,
     should_expand_dynamic,
     should_register_autosupply,
+    stargate_gas_gate_bonus,
     tempest_primary_spawn,
     threat_ground_exemption,
     threat_response_active,
@@ -1210,6 +1213,9 @@ class ProductionManager(Manager):
         sid = getattr(UnitID, ep.id_name, None)
         if sid is None:
             return
+        # P2:pivot 模式(风暴主 C)产能解放——豁免矿门槛+气体闸门放宽;
+        # 非 pivot 时三处判据全走默认值,行为零变化
+        pivot = self._pivot_tempest_mode()
         have_structures: list[Unit] = list(structures_dict[sid])
         if sid == UnitID.GATEWAY:
             have_structures += structures_dict[UnitID.WARPGATE]
@@ -1221,13 +1227,20 @@ class ProductionManager(Manager):
                 .closer_than(12, th).amount
                 for th in self.ai.townhalls.ready
             ]
-            desired = gas_gated_stargate_target(ep.cap, gas_per_base)
+            desired = gas_gated_stargate_target(
+                ep.cap, gas_per_base,
+                # P2b:pivot 模式气体闸门放宽(单矿 2→3 星门,留数据空间不一步到4)
+                bonus=stargate_gas_gate_bonus(pivot),
+            )
         else:
             desired = min(ep.cap, ep.base + self.ai.townhalls.ready.amount)
         have = len(have_structures) + self.manager_mediator.get_building_counter[sid]
         if (
             have < desired
-            and self.ai.minerals > 400  # 只在矿有富余时追加，别抢科技/造兵的钱
+            # P2a:pivot 模式豁免「矿>400」追加门槛(风暴 150/100,矿紧也要产;
+            # E10b 实证单矿矿贴 0-300 永不追加,4/5 局星门只有 1 个);
+            # 非 pivot 门槛 400 原样
+            and self.ai.minerals > extra_production_mineral_gate(pivot)
             and self.ai.can_afford(sid)
         ):
             self.ai.register_behavior(
@@ -1435,7 +1448,12 @@ class ProductionManager(Manager):
                 break
         if not targets:
             return
-        primary = self._primary_unit_id()
+        # P2c:chrono 主 C 判定 verdict 化 —— pivot 风暴主 C 阶段认 TEMPEST
+        # (否则 primary_pending 等航母在产,星门整段无 chrono,E10b 实锤星门 1-2);
+        # 非 pivot 读 flows.yml 原主 C,行为零变化
+        primary = chrono_primary_id(
+            self._pivot_tempest_mode(), self._primary_unit_id(), UnitID.TEMPEST
+        )
         for nexus in self.ai.townhalls:
             if nexus.energy < 50:
                 continue

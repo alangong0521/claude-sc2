@@ -164,12 +164,13 @@ def full_gas_bases(gas_per_base: list[int], full: int = 2) -> int:
     return sum(1 for c in gas_per_base if c >= full)
 
 
-def gas_gated_stargate_target(cap: int, gas_per_base: list[int]) -> int:
-    """星门目标数的气体闸门（E2）：min(cap, 满采气基地数 + 1)。
+def gas_gated_stargate_target(cap: int, gas_per_base: list[int], bonus: int = 1) -> int:
+    """星门目标数的气体闸门（E2）：min(cap, 满采气基地数 + bonus)。
     +1 的理由（司令 2026-07-21）：气矿会有存款积累可爆兵，且风暴耗气更慢
     （175气/43s vs 航母 250气/64s），产能可以略超稳态气体收入。
-    例：单矿双气满采 → 2 星门；双矿四气满采 → 3 星门。纯逻辑。"""
-    return min(cap, full_gas_bases(gas_per_base) + 1)
+    例：单矿双气满采 → 2 星门；双矿四气满采 → 3 星门。
+    P2b：pivot 模式 bonus=2（单矿 → 3 星门，见 stargate_gas_gate_bonus）。纯逻辑。"""
+    return min(cap, full_gas_bases(gas_per_base) + bonus)
 
 
 def scout_verdict(*, intel: bool, military_structs: int, early_army: int) -> str:
@@ -789,3 +790,32 @@ def is_combat_type(type_id) -> bool:
         UnitID.OVERSEER,
         UnitID.OVERLORDTRANSPORT,
     }
+
+
+def extra_production_mineral_gate(pivot_active: bool, default_gate: float = 400.0) -> float:
+    """P2a：追加产兵建筑的「矿富余」门槛。纯逻辑，可单测。
+
+    E10b 实证：pivot 配比生效但 4/5 局星门只有 1 个——单矿矿贴 0-300，
+    「矿>400 才追加」永不触发，风暴海出不来。pivot 模式（风暴主 C）下
+    豁免门槛（风暴 150/100，矿紧也要产）；非 pivot 行为零变化。
+    """
+    return 0.0 if pivot_active else default_gate
+
+
+def stargate_gas_gate_bonus(pivot_active: bool) -> int:
+    """P2b：星门气体闸门的富余数（gas_gated_stargate_target 的 +N）。纯逻辑。
+
+    常规 +1（单矿满采 2 气 → 2 星门）；pivot 模式 +2（单矿 → 3 星门——
+    留数据空间，不一步到 4）。非 pivot 行为零变化。
+    """
+    return 2 if pivot_active else 1
+
+
+def chrono_primary_id(pivot_active: bool, default_primary, tempest_id):
+    """P2c：chrono 的主力兵种判定。纯逻辑，可单测。
+
+    E10 已知边界：chrono `when=primary_pending` 的主 C 判定读 flows.yml 的
+    CARRIER——pivot 风暴阶段星门整段无 chrono（≈20% 产能损失，E10b 实锤
+    星门峰值 1-2）。pivot 模式认 TEMPEST；非 pivot 行为零变化。
+    """
+    return tempest_id if pivot_active else default_primary

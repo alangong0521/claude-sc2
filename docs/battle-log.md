@@ -1704,3 +1704,21 @@ verdict 化。单测 333 例绿（+4：verdict 四态选主 C/对调保比例/�
   `_should_build_defense` 的 attackers 口径（F2 触发，行为已验证）。
   P2（科技节奏/chrono verdict 化）等下轮 bench 数据。
 - 单测 341 例绿（+8：口径 3 + 接线 5）。
+
+### P2 星门产能解放（同日，E10b 诊断落地）
+
+E10b 实锤：pivot 配比生效（greedy 5/5、TEMPEST 首出 397-426s）但风暴海从未
+成型——4/5 局星门只有 1 个、TEMPEST 恒 ×1-2。三处瓶颈各一刀（全部只在
+pivot 模式生效，非 pivot 行为零变化，纯判据 pivot 开/关双分支入测）：
+
+- **a) 矿门槛豁免**：`extra_production_mineral_gate(pivot)`——pivot 时追加
+  星门不再要求矿>400（单矿矿贴 0-300 是常态，旧门槛永不触发）；
+- **b) 气体闸门放宽**：`stargate_gas_gate_bonus(pivot)` + `gas_gated_stargate_target`
+  加 bonus 参数——pivot 时满采气基地数 +2（单矿 2→3 星门，留数据空间不一步到 4）；
+- **c) chrono verdict 化**：`chrono_primary_id(pivot, ...)`——pivot 阶段
+  chrono 主力判定认 TEMPEST（此前星门整段无 chrono，E10 时报备的已知边界，
+  E10b 实锤星门 1-2 的第三根因）。
+
+`_pivot_tempest_mode()` 现被 _effective_spawn/_build_extra_production/
+_chrono_structures 三处读取（转型 latch 一次性、幂等）。E9 停开矿与 rush
+开局序列（双气早产）按约定不动。单测 344 例绿（+3）。

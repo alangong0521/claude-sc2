@@ -15,10 +15,12 @@ from bot.production_plans import (  # noqa: E402
     builder_is_waiting,
     cannon_target_capped,
     carrier_transition_ready,
+    chrono_primary_id,
     defense_syncs_with_nexus,
     dispatch_viable,
     expansion_cannon_count,
     expansion_reserve_active,
+    extra_production_mineral_gate,
     floor_army_defends_home,
     full_gas_bases,
     gas_gated_stargate_target,
@@ -41,6 +43,7 @@ from bot.production_plans import (  # noqa: E402
     should_expand_dynamic,
     should_register_autosupply,
     should_release_waiting_builder,
+    stargate_gas_gate_bonus,
     tempest_primary_spawn,
     threat_ground_exemption,
     threat_response_active,
@@ -803,6 +806,33 @@ class TestIsCombatType(unittest.TestCase):
         # 对照:overlord 若计入(旧口径)early_army=10 → 必误判 rush
         self.assertEqual(
             scout_verdict(intel=True, military_structs=1, early_army=10), "rush"
+        )
+
+
+class TestP2StargateLiberation(unittest.TestCase):
+    """P2 pivot 星门产能解放:extra_production_mineral_gate /
+    stargate_gas_gate_bonus(+gas_gated_stargate_target bonus) / chrono_primary_id。
+    pivot 开/关两分支都测——非 pivot 行为必须零变化。"""
+
+    def test_mineral_gate(self):
+        self.assertEqual(extra_production_mineral_gate(False), 400.0)  # 非 pivot 原样
+        self.assertEqual(extra_production_mineral_gate(True), 0.0)     # pivot 豁免
+
+    def test_gas_gate_bonus(self):
+        self.assertEqual(stargate_gas_gate_bonus(False), 1)
+        self.assertEqual(stargate_gas_gate_bonus(True), 2)   # 单矿 2→3,不一步到 4
+        # 端到端:单矿满采 2 气 → 常规 2 星门 / pivot 3 星门
+        self.assertEqual(gas_gated_stargate_target(6, [2]), 2)
+        self.assertEqual(gas_gated_stargate_target(6, [2], bonus=2), 3)
+        self.assertEqual(gas_gated_stargate_target(6, [2, 2], bonus=2), 4)
+
+    def test_chrono_primary(self):
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+        self.assertEqual(
+            chrono_primary_id(False, UnitID.CARRIER, UnitID.TEMPEST), UnitID.CARRIER
+        )
+        self.assertEqual(
+            chrono_primary_id(True, UnitID.CARRIER, UnitID.TEMPEST), UnitID.TEMPEST
         )
 
 
