@@ -843,3 +843,41 @@ def oracle_before_fleet_allowed(pivot_active: bool, first_tempest_seen: bool) ->
     首艘 TEMPEST 已出/在产之后；非 pivot 行为零变化。
     """
     return (not pivot_active) or first_tempest_seen
+
+
+def expansion_blocked(
+    rush_active: bool,
+    threat_active: bool,
+    pivot_active: bool,
+    enemy_near_home: bool,
+) -> bool:
+    """B1：开矿阻断判据（E9 停开矿的 Macro 适配）。纯逻辑，可单测。
+
+    - rush_active → 永远停开（六连动不变，最高优先）；
+    - 非 pivot → threat 激活即停开（E9 原语义，rush 局/非 pivot 局零变化）；
+    - pivot → threat **不再**停开，改为「敌作战单位压到家 40 格内」才停
+      （rush 同款语义）。背景：E9 threat 判据（敌可见 supply ≥ max(10,我×1.5)）
+      在 Macro 局 359-397s 起常驻（敌暴兵是常态），两轮 bench 二矿拖到 700s+
+      或开不出（one_base×5/×1，单矿经济是战绩天花板）。E9 其它效果
+      （塔拉满/地面混编）不受影响。
+    """
+    if rush_active:
+        return True
+    if pivot_active:
+        return enemy_near_home
+    return threat_active
+
+
+def floor_exits(
+    primary_count: int, ground_combat_count: int, ground_min: int = 4
+) -> bool:
+    """C1：pre_fleet floor（地面保底）退出判据。纯逻辑，可单测。
+
+    现状「主 C>0 即退出」的实证问题（E10d）：叉子一波战死后 floor 已退，
+    地面零补员（trickle 根因）。改为**主 C 上线 且 地面作战单位 ≥ ground_min**
+    才退出——地面被打穿（<ground_min）即便舰队在线也继续补叉。
+    选这个方案（而非「主 C≥2 才退出」）的理由：它自校正——地面够才退、
+    被打穿就回补，无状态无横跳；「主 C≥2」只是把退出点推后，第二艘上线后
+    同样会断层。
+    """
+    return primary_count > 0 and ground_combat_count >= ground_min

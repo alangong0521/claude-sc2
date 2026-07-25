@@ -47,8 +47,10 @@ from bot.production_plans import (
     dispatch_viable,
     expansion_cannon_count,
     expansion_max_pending,
+    expansion_blocked,
     expansion_reserve_active,
     extra_production_mineral_gate,
+    floor_exits,
     gas_gated_stargate_target,
     gas_target,
     is_combat_type,
@@ -905,9 +907,26 @@ class ProductionManager(Manager):
             floor_cap=pre_fleet_cap(
                 pf.cap, pf.per_enemy, pf.max, self._visible_enemy_army_count()
             ),
-            fleet_online=self.manager_mediator.get_own_unit_count(
-                unit_type_id=self._primary_unit_id()
-            ) > 0,
+            # C1:floor 退出判据收紧 —— 主 C 上线 且 地面作战单位 ≥4 才退;
+            # 地面被打穿(<4)即便舰队在线也继续补叉(E10d 实证:叉子一波战死后
+            # floor 已退、地面零补员 = trickle 根因)。pre_fleet 只有 carrier 配,
+            # stalker/tempest/dt 无此配置,floor 语义天然不变。
+            fleet_online=floor_exits(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=self._primary_unit_id()
+                ),
+                self._ground_combat_count(),
+            ),
+        )
+
+    def _ground_combat_count(self) -> int:
+        """C1:我方地面作战单位数(ATTACKING 编制内非空军非建筑)。"""
+        return sum(
+            1
+            for u in self.manager_mediator.get_units_from_role(
+                role=UnitRole.ATTACKING
+            )
+            if not u.is_flying and not u.is_structure
         )
 
     def _apply_save_up(self, spawn: dict) -> dict:
@@ -973,8 +992,23 @@ class ProductionManager(Manager):
             own_army_supply=self.ai.supply_used - self.ai.supply_workers,
             enemy_army_supply=self._visible_enemy_army_supply(),
             advantage_supply=ae.advantage_supply,
-            # E9:threat 激活同样不开新矿(与 rush 不开矿同语义)
-            rush_active=self._rush_active or self._threat_active,
+            # B1(E9 停开矿的 Macro 适配):rush 恒停开;非 pivot 按 E9 threat 停;
+            # pivot 模式 threat 不再停开,改「敌作战单位压到家 40 格 ≥2」才停
+            # (rush 同款语义)——threat 在 Macro 局常驻,两轮 bench 二矿 700s+
+            # 或开不出(one_base×5,单矿经济是天花板)。E9 塔拉满/地面混编不变。
+            rush_active=expansion_blocked(
+                rush_active=self._rush_active,
+                threat_active=self._threat_active,
+                pivot_active=self._pivot_tempest_mode(),
+                enemy_near_home=sum(
+                    1
+                    for u in self.ai.enemy_units
+                    if not u.is_structure
+                    and is_combat_type(u.type_id)
+                    and u.position.distance_to(self.ai.start_location) < 40
+                )
+                >= 2,
+            ),
         )
 
     def _auto_expand(self, macro_plan: MacroPlan) -> None:

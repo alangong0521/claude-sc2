@@ -1745,3 +1745,24 @@ UnitID.FLEETBEACON)`。chrono(b)/气体闸门(c) 保留不动。单测 344 例�
 - 接线：`_first_tempest_seen()`（count>0 或 cy_unit_pending）供两处复用。
 - E9 停开矿/pre_fleet floor 按约定不动（等司令拍板）。单测 345 例绿
 （+1：oracle 门四分支；mineral_gate 扩为五断言三分支）。
+
+### B1+C1（同日，司令拍板，E9/floor 首次定向调整）
+
+- **B1（E9 停开矿的 Macro 适配）**：新判据 `expansion_blocked(rush, threat,
+  pivot, enemy_near_home)`——rush 恒停开（最高优先，六连动不变）；
+  非 pivot 按 E9 threat 停（原语义零变化）；**pivot 模式 threat 不再停开，
+  改「敌作战单位压到家 40 格 ≥2」才停**（rush 同款语义）。E9 其它效果
+  （塔拉满/地面混编）不变。背景：threat 在 Macro 局 359-397s 起常驻，
+  两轮 bench 二矿 700s+ 或开不出（one_base×5，单矿经济是天花板）。
+- **C1（floor 退出后地面补员）**：新判据 `floor_exits(primary_count,
+  ground_combat_count, ground_min=4)`——主 C 上线 **且** 地面作战单位 ≥4
+  才退出；地面被打穿（<4）即便舰队在线也继续补叉（E10d 实证：叉子一波
+  战死后 floor 已退、地面零补员 = trickle×5 根因）。选「地面数量闸」而非
+  「主 C≥2」：自校正（够才退、打穿回补）、无状态无横跳；「主 C≥2」只是
+  推后退出点，第二艘上线后同样断层。地面计数=ATTACKING 编制内非空军
+  非建筑（`_ground_combat_count`）。
+- 零变化保证：B1 的 pivot 分支只在 `_pivot_tempest_mode()`=True 时走
+  （rush 局/非 greedy 局恒 False → 旧 threat 门原样）；C1 的 pre_fleet 仅
+  carrier 流派配置（stalker/tempest/dt 无此配置，floor 语义天然不变）；
+  rush 期 spawn 叉子覆盖分支在 floor 之前 return，不受影响。
+- 单测 351 例绿（+6：B1 三分支组/C1 三分支组）。

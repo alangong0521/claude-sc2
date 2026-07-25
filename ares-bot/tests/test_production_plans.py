@@ -18,9 +18,11 @@ from bot.production_plans import (  # noqa: E402
     chrono_primary_id,
     defense_syncs_with_nexus,
     dispatch_viable,
+    expansion_blocked,
     expansion_cannon_count,
     expansion_reserve_active,
     extra_production_mineral_gate,
+    floor_exits,
     floor_army_defends_home,
     full_gas_bases,
     gas_gated_stargate_target,
@@ -865,6 +867,50 @@ class TestP2StargateLiberation(unittest.TestCase):
         self.assertEqual(
             chrono_primary_id(True, UnitID.CARRIER, UnitID.TEMPEST), UnitID.TEMPEST
         )
+
+
+class TestExpansionBlocked(unittest.TestCase):
+    """B1(E9 停开矿 Macro 适配):expansion_blocked 四因子分支。
+    rush 恒停;非 pivot 按 threat;pivot 改「敌压家 40 格」才停。"""
+
+    def test_rush_always_blocks(self):
+        for pivot in (False, True):
+            for threat in (False, True):
+                self.assertTrue(
+                    expansion_blocked(True, threat, pivot, False),
+                    (pivot, threat),
+                )
+
+    def test_non_pivot_follows_threat(self):
+        # E9 原语义零变化(rush 局/非 pivot 局)
+        self.assertTrue(expansion_blocked(False, True, False, False))
+        self.assertFalse(expansion_blocked(False, False, False, False))
+        self.assertFalse(expansion_blocked(False, False, False, True))
+
+    def test_pivot_ignores_threat_unless_enemy_at_home(self):
+        # pivot:threat 常驻也不停开(Macro 修复核心)
+        self.assertFalse(expansion_blocked(False, True, True, False))
+        # 敌作战单位压到家 40 格 → 停(rush 同款语义),与 threat 无关
+        self.assertTrue(expansion_blocked(False, True, True, True))
+        self.assertTrue(expansion_blocked(False, False, True, True))
+        self.assertFalse(expansion_blocked(False, False, True, False))
+
+
+class TestFloorExits(unittest.TestCase):
+    """C1:floor 退出判据 —— 主 C 上线 且 地面 ≥4 才退;打穿继续补叉。"""
+
+    def test_no_primary_never_exits(self):
+        self.assertFalse(floor_exits(0, 10))
+
+    def test_primary_online_with_ground_exits(self):
+        # 旧行为:主 C>0 且地面够 → 退出(零变化面)
+        self.assertTrue(floor_exits(1, 8))
+        self.assertTrue(floor_exits(1, 4))
+
+    def test_ground_wiped_stays_active(self):
+        # C1 核心:舰队在线但地面被打穿 → 不退,继续补叉(trickle 根因)
+        self.assertFalse(floor_exits(1, 3))
+        self.assertFalse(floor_exits(2, 0))
 
 
 class TestExpansionReserve(unittest.TestCase):
