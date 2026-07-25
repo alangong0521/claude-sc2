@@ -53,6 +53,7 @@ from bot.production_plans import (
     gas_target,
     is_combat_type,
     nexus_rebuild_active,
+    oracle_before_fleet_allowed,
     pivot_primary_id,
     pre_fleet_cap,
     pre_fleet_spawn,
@@ -425,9 +426,14 @@ class ProductionManager(Manager):
 
         # one off task to build an oracle（流派配置里 one_off 含 ORACLE 才造；
         # 需舰队航标 + 有空闲就绪星门）
+        # A2:pivot 模式下先知推迟到首艘 TEMPEST 之后(先知 150/150 插队星门
+        # 是首艘风暴晚 50-70s 的另一半原因);非 pivot 行为零变化
         if not self._built_single_oracle and UnitID.ORACLE in self._flow.one_off_ids():
             if (
                 self.ai.can_afford(UnitID.ORACLE)
+                and oracle_before_fleet_allowed(
+                    self._pivot_tempest_mode(), self._first_tempest_seen()
+                )
                 and len(structures_dict[UnitID.FLEETBEACON]) > 0
                 and self.ai.structures.filter(
                     lambda u: u.type_id == UnitID.STARGATE and u.is_ready and u.is_idle
@@ -846,6 +852,15 @@ class ProductionManager(Manager):
                     }
         return self._apply_save_up(self._apply_floor(spawn))
 
+    def _first_tempest_seen(self) -> bool:
+        """A1/A2:首艘 TEMPEST 是否已出或在产(在产也算——生产窗已被主 C 占上,
+        追加星门此时不再抢窗)。"""
+        return (
+            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+            > 0
+            or cy_unit_pending(self.ai, UnitID.TEMPEST)
+        )
+
     def _pivot_tempest_mode(self) -> bool:
         """E10:当前是否处于「风暴主 C 压制」模式(只挂 carrier × 侦查 greedy)。
 
@@ -1237,14 +1252,14 @@ class ProductionManager(Manager):
         have = len(have_structures) + self.manager_mediator.get_building_counter[sid]
         if (
             have < desired
-            # P2a:pivot 模式豁免「矿>400」追加门槛(风暴 150/100,矿紧也要产;
-            # E10b 实证单矿矿贴 0-300 永不追加,4/5 局星门只有 1 个);
-            # E10c 修正:豁免以 FB 就绪/在建为前置 —— 追加产能不能抢自己
-            # 前置科技(FleetBeacon)的钱(e10c 实证:星门拍到 3-4 个,
-            # FB 被饿 50-170s,风暴反而更晚);非 pivot 门槛 400 原样
+            # P2a:pivot 模式豁免「矿>400」追加门槛,两道前置:FB 就绪/在建
+            # (E10c:追加星门抢 FB 的钱)+ 首艘 TEMPEST 已出/在产(E10d:追加
+            # 星门卡「FB就绪→首艘风暴」窗,首艘晚 50-70s);非 pivot 门槛 400 原样
             and self.ai.minerals
             > extra_production_mineral_gate(
-                pivot, self._structure_present_or_pending(UnitID.FLEETBEACON)
+                pivot,
+                self._structure_present_or_pending(UnitID.FLEETBEACON),
+                self._first_tempest_seen(),
             )
             and self.ai.can_afford(sid)
         ):

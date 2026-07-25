@@ -1732,3 +1732,16 @@ pivot 且 FB 就绪/在建 → 0；pivot 但 FB 未就绪 → 400（先保 FB）
 非 pivot → 400 不变。传参用现成口径 `_structure_present_or_pending(
 UnitID.FLEETBEACON)`。chrono(b)/气体闸门(c) 保留不动。单测 344 例绿
 （test_mineral_gate 扩为四断言三分支）。
+
+### A1+A2（同日，E10d 诊断落地）
+
+- **A1**：`extra_production_mineral_gate` 加第三道闸——豁免条件从
+  「pivot + FB 就绪/在建」收紧为「pivot + FB 就绪/在建 **+ 首艘 TEMPEST
+  已出/在产**」（在产也算：生产窗已被主 C 占上）。E10d 实证：追加星门在
+  337-385s 开建恰好卡住 FB就绪→首艘风暴窗口，首艘系统性晚 50-70s。
+- **A2**：`oracle_before_fleet_allowed(pivot, first_tempest_seen)`——pivot
+  模式下 ORACLE one_off 推迟到首艘 TEMPEST 之后（先知 150/150 插队星门是
+  首艘晚的另一半原因）；非 pivot 恒 True 零变化。
+- 接线：`_first_tempest_seen()`（count>0 或 cy_unit_pending）供两处复用。
+- E9 停开矿/pre_fleet floor 按约定不动（等司令拍板）。单测 345 例绿
+（+1：oracle 门四分支；mineral_gate 扩为五断言三分支）。

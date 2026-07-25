@@ -793,19 +793,24 @@ def is_combat_type(type_id) -> bool:
 
 
 def extra_production_mineral_gate(
-    pivot_active: bool, fleet_beacon_ready: bool = False, default_gate: float = 400.0
+    pivot_active: bool,
+    fleet_beacon_ready: bool = False,
+    first_tempest_seen: bool = False,
+    default_gate: float = 400.0,
 ) -> float:
     """P2a：追加产兵建筑的「矿富余」门槛。纯逻辑，可单测。
 
     E10b 实证：pivot 配比生效但 4/5 局星门只有 1 个——单矿矿贴 0-300，
     「矿>400 才追加」永不触发，风暴海出不来。pivot 模式（风暴主 C）下
     豁免门槛（风暴 150/100，矿紧也要产）；非 pivot 行为零变化。
-    E10c 实证：豁免跑了火——追加星门（300 矿）抢在 FleetBeacon（风暴前置）
-    前面拍下，FB 被饿 50-170s、风暴更晚。原则：**追加产能永远不能抢自己
-    前置科技的钱**——pivot 且 FB 已就绪/在建才豁免；FB 未就绪 → 保 400
-    门槛（先保 FB 的钱）。
+    E10c 实证：裸豁免让追加星门（300 矿）抢在 FleetBeacon（风暴前置）前面，
+    FB 被饿 50-170s → 加 FB 前置。
+    E10d 实证：FB 前置还不够——追加星门在「FB 就绪 → 首艘风暴」窗口开建
+    （337-385s，300 矿/200 气 + 2×43s 建造周期），首艘 TEMPEST 系统性晚
+    50-70s → 再加首艘闸：**pivot 且 FB 就绪/在建 且首艘 TEMPEST 已出/在产**
+    才豁免为 0。原则：追加产能永远不抢自己前置科技/首艘主 C 的生产窗。
     """
-    if pivot_active and fleet_beacon_ready:
+    if pivot_active and fleet_beacon_ready and first_tempest_seen:
         return 0.0
     return default_gate
 
@@ -827,3 +832,14 @@ def chrono_primary_id(pivot_active: bool, default_primary, tempest_id):
     星门峰值 1-2）。pivot 模式认 TEMPEST；非 pivot 行为零变化。
     """
     return tempest_id if pivot_active else default_primary
+
+
+def oracle_before_fleet_allowed(pivot_active: bool, first_tempest_seen: bool) -> bool:
+    """A2：ORACLE one_off 是否允许现在造。纯逻辑，可单测。
+
+    E10d 实证：先知（150/150）在「FB 就绪 → 首艘风暴」窗口插队星门生产，
+    是首艘 TEMPEST 系统性晚 50-70s 的另一半原因（另一半是追加星门抢窗，
+    已由 extra_production_mineral_gate 的首艘闸管）。pivot 模式下推迟到
+    首艘 TEMPEST 已出/在产之后；非 pivot 行为零变化。
+    """
+    return (not pivot_active) or first_tempest_seen

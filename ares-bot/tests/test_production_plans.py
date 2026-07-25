@@ -29,6 +29,7 @@ from bot.production_plans import (  # noqa: E402
     is_combat_type,
     nexus_rebuild_active,
     nexus_rebuild_viable,
+    oracle_before_fleet_allowed,
     pivot_primary_id,
     pre_fleet_cap,
     pre_fleet_spawn,
@@ -817,16 +818,36 @@ class TestP2StargateLiberation(unittest.TestCase):
     def test_mineral_gate(self):
         self.assertEqual(extra_production_mineral_gate(False), 400.0)  # 非 pivot 原样
         self.assertEqual(
-            extra_production_mineral_gate(False, fleet_beacon_ready=True), 400.0
-        )  # 非 pivot 即使有 FB 也原样
-        # pivot 但 FB 未就绪 → 保 400(先保前置科技的钱,E10c 实证星门抢 FB 致晚)
+            extra_production_mineral_gate(
+                False, fleet_beacon_ready=True, first_tempest_seen=True
+            ),
+            400.0,
+        )  # 非 pivot 全条件满足也原样
+        # pivot+FB就绪 但首艘 TEMPEST 未出 → 守 400(E10d:追加星门抢首艘生产窗)
         self.assertEqual(
-            extra_production_mineral_gate(True, fleet_beacon_ready=False), 400.0
+            extra_production_mineral_gate(True, fleet_beacon_ready=True), 400.0
         )
-        # pivot 且 FB 就绪/在建 → 豁免(放手追加)
+        # pivot+FB就绪+首艘已出/在产 → 豁免为 0(放手追加)
         self.assertEqual(
-            extra_production_mineral_gate(True, fleet_beacon_ready=True), 0.0
+            extra_production_mineral_gate(
+                True, fleet_beacon_ready=True, first_tempest_seen=True
+            ),
+            0.0,
         )
+        # pivot 但 FB 未就绪 → 保 400(先保前置科技,E10c)
+        self.assertEqual(
+            extra_production_mineral_gate(
+                True, fleet_beacon_ready=False, first_tempest_seen=True
+            ),
+            400.0,
+        )
+
+    def test_oracle_before_fleet_gate(self):
+        # A2:非 pivot 随时可造(零变化);pivot 必须等首艘 TEMPEST
+        self.assertTrue(oracle_before_fleet_allowed(False, False))
+        self.assertTrue(oracle_before_fleet_allowed(False, True))
+        self.assertFalse(oracle_before_fleet_allowed(True, False))
+        self.assertTrue(oracle_before_fleet_allowed(True, True))
 
     def test_gas_gate_bonus(self):
         self.assertEqual(stargate_gas_gate_bonus(False), 1)
