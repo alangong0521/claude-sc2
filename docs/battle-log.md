@@ -1656,3 +1656,29 @@ bisect（同图同对手 N=5，git worktree 隔离）：
 - 后续方向（待司令定）：①vs Macro 对手策略 pivot：舰队成型前风暴主 C
   压制（认证打法），航母改后手；②E3k 攒钱预留/save_up 截断力度回收到
   C 点水平；③维持挂起，接受 Macro 墙。
+
+---
+
+## 2026-07-24 策略 pivot（E10）：侦查判非 rush → 风暴主 C 压制，成型转航母终结
+
+司令拍板：carrier vs 非 rush 对手时，舰队成型前以 TEMPEST 为主 C 打压制
+（9c2f89d 认证赢法：单矿风暴速胜，赢局 200-500s，TEMPEST×12），后期转
+CARRIER 终结；侦查判 rush 维持现状（叉顶/塔/憋航母）。**硬性约束：分流只读
+E7 verdict（侦查结论），绝不允许读 --ai-build 或对局配置。**
+
+实现（只动 spawn 配比层，E9/E6/O19 等机制未碰）：
+- `pivot_primary_id(verdict, ...)`：greedy → 风暴主 C；rush/unknown/**None
+  未判定** → 航母主 C（保守默认=现状，未判定绝不按 Macro 打，防被 rush 穿）。
+- `tempest_primary_spawn`：主次 C 的 priority 对调（proportion 保留）；
+  save_up 不动——风暴 p0 便宜几乎不触发截断，航母 p1 转型前自然被憋住。
+- `carrier_transition_ready(now, tempest_count, at_time=600, tempest_cap=10)`：
+  时间到（压不住）或风暴海成型（数量到）→ 一次性 latch 转回航母主 C，
+  不随数量回落横跳。verdict=greedy 落锤与转型各记一次事件（E10:...）。
+- pre_fleet 地面保底（叉）在风暴阶段持续（主 C 仍按 CARRIER 判 fleet_online），
+  风暴+叉复合压制；反空军 pivot 在 pivot 后配方上正常叠加。
+
+已知边界（如实）：chrono `when=primary_pending` 的主 C 判定仍读 flows.yml 的
+CARRIER——风暴阶段星门不吃 chrono（≈20% 产能损失）。本轮严守「只做 spawn
+配比层」未动；若 bench 显示风暴海成型偏慢，下一轮把 chrono 主 C 判定也
+verdict 化。单测 333 例绿（+4：verdict 四态选主 C/对调保比例/缺兵种 no-op/
+转型双触发）。

@@ -14,6 +14,7 @@ from bot.production_plans import (  # noqa: E402
     base_rebuild_active,
     builder_is_waiting,
     cannon_target_capped,
+    carrier_transition_ready,
     defense_syncs_with_nexus,
     dispatch_viable,
     expansion_cannon_count,
@@ -25,6 +26,7 @@ from bot.production_plans import (  # noqa: E402
     idle_builder_alarm,
     nexus_rebuild_active,
     nexus_rebuild_viable,
+    pivot_primary_id,
     pre_fleet_cap,
     pre_fleet_spawn,
     rally_min_for_verdict,
@@ -38,6 +40,7 @@ from bot.production_plans import (  # noqa: E402
     should_expand_dynamic,
     should_register_autosupply,
     should_release_waiting_builder,
+    tempest_primary_spawn,
     threat_ground_exemption,
     threat_response_active,
     upgrade_tech_buildings,
@@ -720,6 +723,48 @@ class TestThreatResponse(unittest.TestCase):
             {UnitID.ZEALOT, UnitID.STALKER},
         )
         self.assertEqual(threat_ground_exemption({}, flying), set())
+
+
+class TestStrategyPivot(unittest.TestCase):
+    """策略 pivot(侦查驱动):pivot_primary_id / tempest_primary_spawn /
+    carrier_transition_ready。
+
+    司令硬性约束:分流只读 E7 verdict(侦查结论),不读 --ai-build。
+    未判定(None)/unknown/rush → 保守默认(航母主 C=现状),绝不按 Macro 打。"""
+
+    def test_primary_selection_by_verdict(self):
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+        C, T = UnitID.CARRIER, UnitID.TEMPEST
+        self.assertEqual(pivot_primary_id("greedy", C, T), T)   # 判非rush → 风暴主C
+        self.assertEqual(pivot_primary_id("rush", C, T), C)     # rush → 维持现状
+        self.assertEqual(pivot_primary_id("unknown", C, T), C)  # 未送达 → 保守
+        self.assertEqual(pivot_primary_id(None, C, T), C)       # 未判定 → 保守
+
+    def test_tempest_primary_spawn_swaps_priority_keeps_proportion(self):
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+        spawn = {
+            UnitID.CARRIER: {"proportion": 0.7, "priority": 0},
+            UnitID.TEMPEST: {"proportion": 0.3, "priority": 1},
+        }
+        out = tempest_primary_spawn(spawn, UnitID.CARRIER, UnitID.TEMPEST)
+        self.assertEqual(out[UnitID.TEMPEST], {"proportion": 0.3, "priority": 0})
+        self.assertEqual(out[UnitID.CARRIER], {"proportion": 0.7, "priority": 1})
+        # 原 dict 不被改(纯函数)
+        self.assertEqual(spawn[UnitID.CARRIER]["priority"], 0)
+
+    def test_tempest_primary_spawn_missing_unit_is_noop(self):
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+        spawn = {UnitID.TEMPEST: {"proportion": 1.0, "priority": 0}}
+        self.assertEqual(
+            tempest_primary_spawn(spawn, UnitID.CARRIER, UnitID.TEMPEST), spawn
+        )
+
+    def test_transition_by_time_or_fleet_count(self):
+        self.assertFalse(carrier_transition_ready(400.0, 5))
+        self.assertTrue(carrier_transition_ready(600.0, 3))   # 时间到(压不住→转)
+        self.assertTrue(carrier_transition_ready(450.0, 10))  # 风暴海成型→转
+        # 阈值走参数不硬编码
+        self.assertFalse(carrier_transition_ready(450.0, 9, at_time=700, tempest_cap=12))
 
 
 class TestExpansionReserve(unittest.TestCase):

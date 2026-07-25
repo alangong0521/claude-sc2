@@ -49,6 +49,7 @@ from bot.production_plans import (
     gas_gated_stargate_target,
     gas_target,
     nexus_rebuild_active,
+    pivot_primary_id,
     pre_fleet_cap,
     pre_fleet_spawn,
     redispatch_cooled_down,
@@ -63,6 +64,7 @@ from bot.production_plans import (
     scout_verdict_timing,
     should_expand_dynamic,
     should_register_autosupply,
+    tempest_primary_spawn,
     threat_ground_exemption,
     threat_response_active,
     upgrade_tech_buildings,
@@ -139,6 +141,8 @@ class ProductionManager(Manager):
         # E7/O16 侦查断链:pivot 探机 tag(判"还在路上"用)+ 补派只一次(防送死)
         self._pivot_scout_tag: int | None = None
         self._pivot_redispatched: bool = False
+        # E10 策略 pivot:风暴压制 → 航母终结的一次性转型 latch
+        self._pivot_transitioned: bool = False
         self._rush_active: bool = False
         # E9 中局威胁响应(carrier):敌可见作战 supply 大幅压过我方 → True(滞回)
         self._threat_active: bool = False
@@ -602,6 +606,15 @@ class ProductionManager(Manager):
             early_army=army,
         )
         self._verdict = verdict  # E8:存结论,combat 集结纪律(O17/O18)读它
+        # E10:侦查判非 rush(greedy) → 策略 pivot 风暴主 C 压制(spawn 层分流,
+        # 见 _pivot_tempest_mode);rush/unknown 不 pivot,维持现状逻辑
+        if verdict == "greedy" and self._flow.name == "carrier":
+            self.ai._events.append(
+                {
+                    "t": round(self.ai.time, 1),
+                    "msg": "E10:侦查判非rush,风暴主C压制(成型后转航母)",
+                }
+            )
         if verdict != "greedy":
             self._rush_active = True
             self._rush_clear_since = None
@@ -791,7 +804,8 @@ class ProductionManager(Manager):
 
     def _effective_spawn(self) -> dict:
         """当前实际 spawn 配方 = 流派配方 + pivot 动态修正:
-        rush 中 → 只出叉子顶到 rush_zealots 个;对面爆空军 → 混入 anti_air_units。"""
+        rush 中 → 只出叉子顶到 rush_zealots 个;对面爆空军 → 混入 anti_air_units;
+        侦查判 greedy → E10 风暴主 C 压制(成型/中后期转回航母)。"""
         pv = self._flow.pivot
         if pv is None:
             return self._flow.spawn_dict()
@@ -802,6 +816,12 @@ class ProductionManager(Manager):
             )
             if zealots < pv.rush_zealots:
                 return {UnitID.ZEALOT: {"proportion": 1.0, "priority": 0}}
+        spawn = self._flow.spawn_dict()
+        # E10 策略 pivot(只挂 carrier × 侦查 verdict=greedy):舰队成型前
+        # 风暴主 C 压制(9c2f89d 认证赢法),成型/中后期转回航母主 C 终结。
+        # rush/unknown/未判定 → 不 pivot(保守默认,绝不按 Macro 打)。
+        if self._pivot_tempest_mode():
+            spawn = tempest_primary_spawn(spawn, UnitID.CARRIER, UnitID.TEMPEST)
         # 反空军 pivot:敌可见空军主力 ≥ trigger → 混入对空兵种
         air_threat = sum(
             1 for u in self.ai.enemy_units
@@ -810,15 +830,40 @@ class ProductionManager(Manager):
                                   UnitID.MEDIVAC, UnitID.OVERSEER)
         )
         if air_threat >= pv.anti_air_trigger and pv.anti_air_units:
-            spawn = dict(self._flow.spawn_dict())
             for name in pv.anti_air_units:
                 uid = getattr(UnitID, name, None)
                 if uid is not None:
                     spawn[uid] = {
                         "proportion": pv.anti_air_proportion, "priority": 0,
                     }
-            return self._apply_save_up(self._apply_floor(spawn))
-        return self._apply_save_up(self._apply_floor(self._flow.spawn_dict()))
+        return self._apply_save_up(self._apply_floor(spawn))
+
+    def _pivot_tempest_mode(self) -> bool:
+        """E10:当前是否处于「风暴主 C 压制」模式(只挂 carrier × 侦查 greedy)。
+
+        进入条件:verdict == greedy(E7 侦查判非 rush)且未到转型点;
+        退出(一次性 latch):carrier_transition_ready 到点/到量 → 记事件,
+        之后恒回航母主 C(不随风暴数量回落反复横跳)。"""
+        if self._flow.name != "carrier" or self._pivot_transitioned:
+            return False
+        if (
+            pivot_primary_id(self._verdict, UnitID.CARRIER, UnitID.TEMPEST)
+            != UnitID.TEMPEST
+        ):
+            return False
+        if carrier_transition_ready(
+            self.ai.time,
+            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST),
+        ):
+            self._pivot_transitioned = True
+            self.ai._events.append(
+                {
+                    "t": round(self.ai.time, 1),
+                    "msg": "E10:风暴压制转航母终结(转型点)",
+                }
+            )
+            return False
+        return True
 
     def _apply_floor(self, spawn: dict) -> dict:
         """E3e 舰队成型前地面保底:舰队主 C 出生前混入保底兵种(默认叉子,矿耗

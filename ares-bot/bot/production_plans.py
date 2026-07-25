@@ -722,3 +722,47 @@ def threat_ground_exemption(spawn: dict, flying: set) -> set:
     截断逻辑对它们照旧。
     """
     return {uid for uid in spawn if uid not in flying}
+
+
+def pivot_primary_id(verdict: str | None, carrier_id, tempest_id):
+    """策略 pivot：舰队成型前的主 C 选择（只挂 carrier 流，侦查驱动）。纯逻辑。
+
+    司令硬性约束：判定依据**只能是侦查结论**（E7 scout verdict），不许读
+    --ai-build 或任何对局配置。
+    - verdict == "greedy"（侦查判非 rush：Macro/扩张/攀科技）→ 风暴主 C
+      压制（9c2f89d 认证赢法：单矿风暴速胜，赢局 200-500s，TEMPEST×12）；
+    - rush / unknown / None（未判定）→ 航母主 C（保守默认=现状：
+      未判定期间绝不按 Macro 打，防被 rush 一波穿）。
+    """
+    return tempest_id if verdict == "greedy" else carrier_id
+
+
+def tempest_primary_spawn(spawn: dict, carrier_id, tempest_id) -> dict:
+    """把 spawn 配方的主次 C 对调：航母 p0/风暴 p1 → 风暴 p0/航母 p1。纯逻辑。
+
+    只换 priority（主 C 位），proportion 保留；save_up 机制不动——风暴 p0
+    便宜（150/100）几乎不触发截断，航母 p1 在转型前自然被憋住（省钱给风暴海）。
+    缺任一兵种 → 原样返回。
+    """
+    out = dict(spawn)
+    if carrier_id not in out or tempest_id not in out:
+        return out
+    carrier_pri = out[carrier_id]["priority"]
+    out[carrier_id] = {**out[carrier_id], "priority": out[tempest_id]["priority"]}
+    out[tempest_id] = {**out[tempest_id], "priority": carrier_pri}
+    return out
+
+
+def carrier_transition_ready(
+    now: float,
+    tempest_count: int,
+    at_time: float = 600.0,
+    tempest_cap: int = 10,
+) -> bool:
+    """风暴压制 → 航母终结的转型时点。纯逻辑，可单测。
+
+    简单可工作判据（阈值走参数，不硬编码死）：进入中后期（时间到 at_time）
+    **或**风暴压制阵容已成型（数量到 tempest_cap）→ 转航母主 C。
+    压得住时局已在 200-500s 内结束（认证赢法），到点压不住就补航母终结。
+    """
+    return now >= at_time or tempest_count >= tempest_cap
