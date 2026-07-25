@@ -24,6 +24,7 @@ from bot.production_plans import (  # noqa: E402
     gas_gated_stargate_target,
     gas_target,
     idle_builder_alarm,
+    is_combat_type,
     nexus_rebuild_active,
     nexus_rebuild_viable,
     pivot_primary_id,
@@ -765,6 +766,44 @@ class TestStrategyPivot(unittest.TestCase):
         self.assertTrue(carrier_transition_ready(450.0, 10))  # 风暴海成型→转
         # 阈值走参数不硬编码
         self.assertFalse(carrier_transition_ready(450.0, 9, at_time=700, tempest_cap=12))
+
+
+class TestIsCombatType(unittest.TestCase):
+    """P1 作战单位口径:is_combat_type —— 排除侦查/运输,QUEEN 保留。
+
+    E10 bench 诊断:旧口径「非工人即算兵」把 OVERLORD 算进作战单位,
+    Zerg Macro 常规运营在 ~170s 必 ≥6 → scout_verdict/early_swarm 误判 rush。"""
+
+    def test_workers_and_scouts_excluded(self):
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+        for uid in (UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE,
+                    UnitID.OVERLORD, UnitID.OVERSEER, UnitID.OVERLORDTRANSPORT):
+            self.assertFalse(is_combat_type(uid), uid.name)
+
+    def test_combat_units_kept(self):
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+        for uid in (UnitID.QUEEN, UnitID.ZERGLING, UnitID.ROACH,
+                    UnitID.HYDRALISK, UnitID.MARINE, UnitID.ZEALOT):
+            self.assertTrue(is_combat_type(uid), uid.name)
+
+    def test_zerg_macro_opener_not_misjudged_as_rush(self):
+        # 实测场景(E10-macro):pool×1 + HATCHERY + overlord×6 + queen×2 + ling×2
+        # → 军事建筑 1、作战单位 4(queen×2+ling×2,overlord 不计)→ 判 greedy
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+        seen = (
+            [UnitID.OVERLORD] * 6 + [UnitID.QUEEN] * 2 + [UnitID.ZERGLING] * 2
+            + [UnitID.DRONE] * 15
+        )
+        early_army = sum(1 for t in seen if is_combat_type(t))
+        self.assertEqual(early_army, 4)
+        self.assertEqual(
+            scout_verdict(intel=True, military_structs=1, early_army=early_army),
+            "greedy",
+        )
+        # 对照:overlord 若计入(旧口径)early_army=10 → 必误判 rush
+        self.assertEqual(
+            scout_verdict(intel=True, military_structs=1, early_army=10), "rush"
+        )
 
 
 class TestExpansionReserve(unittest.TestCase):

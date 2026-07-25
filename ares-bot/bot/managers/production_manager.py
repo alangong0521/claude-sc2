@@ -40,6 +40,7 @@ from bot.production_plans import (
     bank_production_target,
     base_rebuild_active,
     cannon_target_capped,
+    carrier_transition_ready,
     defense_syncs_with_nexus,
     defensive_rally_point,
     dispatch_viable,
@@ -48,6 +49,7 @@ from bot.production_plans import (
     expansion_reserve_active,
     gas_gated_stargate_target,
     gas_target,
+    is_combat_type,
     nexus_rebuild_active,
     pivot_primary_id,
     pre_fleet_cap,
@@ -592,13 +594,14 @@ class ProductionManager(Manager):
             )
         # evaluate / fallback → 一局一次 latch,按 O9 三档评估
         self._scout_verdict_done = True
-        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
         military = sum(
             1 for s in self.ai.enemy_structures if s.type_id in self._MILITARY_STRUCTS
         )
+        # P1:作战单位口径(is_combat_type)——排除 OVERLORD/OVERSEER 等侦查/运输,
+        # 否则 Zerg Macro 常规运营(pool+overlord 铺开)在 ~170s 必 ≥6 误判 rush
         army = sum(
             1 for u in self.ai.enemy_units
-            if not u.is_structure and u.type_id not in workers
+            if not u.is_structure and is_combat_type(u.type_id)
         )
         verdict = scout_verdict(
             intel=intel,
@@ -639,10 +642,10 @@ class ProductionManager(Manager):
         """E3d: rush 期间敌可见兵力超过在场叉子数时追加 gateway(封顶 2)。
         单 gateway ~28s 一叉是实证瓶颈——叉子永远分批到场被围殴(在场恒 1)。"""
         pv = self._flow.pivot
-        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        # P1:作战单位口径(is_combat_type),排除侦查/运输(见 _evaluate_scout_intel)
         enemy_army = sum(
             1 for u in self.ai.enemy_units
-            if not u.is_structure and u.type_id not in workers
+            if not u.is_structure and is_combat_type(u.type_id)
         )
         have = (
             len(self.manager_mediator.get_own_structures_dict[UnitID.GATEWAY])
@@ -671,16 +674,18 @@ class ProductionManager(Manager):
         if self._flow.pivot is None:
             return
         home = self.ai.start_location
-        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        # P1:作战单位口径(is_combat_type)——排除 OVERLORD/OVERSEER 侦查/运输;
+        # 旧口径「非工人即算兵」让 Zerg Macro 的 overlord 铺开每局误触发
+        # early_swarm(E10-macro 五局 169s 全误中,O4 误撤侦查农民)。
         near = sum(
             1 for u in self.ai.enemy_units
-            if not u.is_structure and u.type_id not in workers
+            if not u.is_structure and is_combat_type(u.type_id)
             and u.position.distance_to(home) < 40
         )
         early_swarm = (
             self.ai.time < 240
             and sum(1 for u in self.ai.enemy_units
-                    if not u.is_structure and u.type_id not in workers) >= 6
+                    if not u.is_structure and is_combat_type(u.type_id)) >= 6
         )
         if near >= 2 or early_swarm:
             self._rush_active = True

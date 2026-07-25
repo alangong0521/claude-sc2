@@ -766,3 +766,26 @@ def carrier_transition_ready(
     压得住时局已在 200-500s 内结束（认证赢法），到点压不住就补航母终结。
     """
     return now >= at_time or tempest_count >= tempest_cap
+
+
+def is_combat_type(type_id) -> bool:
+    """P1 作战单位口径：排除工人与侦查/运输单位，QUEEN 保留。纯逻辑，可单测。
+
+    背景（E10 bench 诊断）：rush/verdict 的「早期多兵」判据原来是
+    「非工人即算兵」，把 OVERLORD/OVERSEER（侦查/运输）也算进作战单位——
+    Zerg Macro 常规运营（pool + overlord 铺开）在 ~170s 可见非工人 ≥6 是常态
+    （实测 23-25），导致 scout_verdict 对 Zerg 系统性误判 rush、
+    early_swarm 每局误触发（macro 组 169s 全误中）。排除
+    OVERLORD/OVERSEER/OVERLORDTRANSPORT；QUEEN 能打仗，保留算作战。
+    """
+    from sc2.ids.unit_typeid import UnitTypeId as UnitID
+
+    return type_id not in {
+        UnitID.SCV,
+        UnitID.PROBE,
+        UnitID.DRONE,
+        UnitID.MULE,
+        UnitID.OVERLORD,
+        UnitID.OVERSEER,
+        UnitID.OVERLORDTRANSPORT,
+    }

@@ -1682,3 +1682,25 @@ CARRIER——风暴阶段星门不吃 chrono（≈20% 产能损失）。本轮�
 配比层」未动；若 bench 显示风暴海成型偏慢，下一轮把 chrono 主 C 判定也
 verdict 化。单测 333 例绿（+4：verdict 四态选主 C/对调保比例/缺兵种 no-op/
 转型双触发）。
+
+### P0+P1 修复（同日，E10 诊断落地）
+
+- **P0（实现 bug）**：`production_manager.py` import 补 `carrier_transition_ready`
+  ——E10-macro 唯一 verdict=greedy 的局（g03）在 pivot 判定第一帧 NameError
+  崩溃（ERROR 局根因）。新增 `tests/test_strategy_pivot.py` 接线测试
+  （`ProductionManager.__new__` 最小构造，走 verdict 四态/转型 latch/数量转型
+  五分支），挡住这类接线层遗漏。
+- **P1（verdict 口径）**：新纯判据 `is_combat_type`——作战单位计数排除
+  OVERLORD/OVERSEER/OVERLORDTRANSPORT（侦查/运输非作战），QUEEN 保留。
+  替换三处「非工人即算兵」口径：`_evaluate_scout_intel`（scout_verdict 的
+  early_army）、`_update_rush_state`（near + early_swarm）、
+  `_rush_gateway_boost`（enemy_army）。旧口径下 Zerg Macro 常规运营
+  （pool+overlord 铺开）~170s 可见非工人 ≥6 是常态 → verdict 系统性误判
+  rush（E10-macro 4/5 局）、early_swarm 每局误触发（169s O4 误撤侦查）。
+  实测场景入单测：pool×1+overlord×6+queen×2+ling×2+drone×15 → 作战=4 →
+  判 greedy（旧口径=10 必误判 rush）。
+- **故意不改**：`_visible_enemy_army_count/supply`（E2 塔数/E9 threat/开矿
+  优势口径，已验证机制；overlord supply=0 不影响 supply 口径）；
+  `_should_build_defense` 的 attackers 口径（F2 触发，行为已验证）。
+  P2（科技节奏/chrono verdict 化）等下轮 bench 数据。
+- 单测 341 例绿（+8：口径 3 + 接线 5）。
