@@ -1722,3 +1722,13 @@ pivot 模式生效，非 pivot 行为零变化，纯判据 pivot 开/关双分�
 `_pivot_tempest_mode()` 现被 _effective_spawn/_build_extra_production/
 _chrono_structures 三处读取（转型 latch 一次性、幂等）。E9 停开矿与 rush
 开局序列（双气早产）按约定不动。单测 344 例绿（+3）。
+
+### P2(a) 修正：矿门槛豁免加 FB 前置（同日，E10c 回退修复）
+
+E10c 实证：裸豁免让追加星门（300 矿）抢在 FleetBeacon（风暴前置）前面，
+FB 被饿 50-170s、风暴反而更晚（0-5 回退）。修正原则：**追加产能永远不能
+抢自己前置科技的钱**——`extra_production_mineral_gate(pivot, fb_ready)`：
+pivot 且 FB 就绪/在建 → 0；pivot 但 FB 未就绪 → 400（先保 FB）；
+非 pivot → 400 不变。传参用现成口径 `_structure_present_or_pending(
+UnitID.FLEETBEACON)`。chrono(b)/气体闸门(c) 保留不动。单测 344 例绿
+（test_mineral_gate 扩为四断言三分支）。

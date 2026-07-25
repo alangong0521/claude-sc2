@@ -816,7 +816,17 @@ class TestP2StargateLiberation(unittest.TestCase):
 
     def test_mineral_gate(self):
         self.assertEqual(extra_production_mineral_gate(False), 400.0)  # 非 pivot 原样
-        self.assertEqual(extra_production_mineral_gate(True), 0.0)     # pivot 豁免
+        self.assertEqual(
+            extra_production_mineral_gate(False, fleet_beacon_ready=True), 400.0
+        )  # 非 pivot 即使有 FB 也原样
+        # pivot 但 FB 未就绪 → 保 400(先保前置科技的钱,E10c 实证星门抢 FB 致晚)
+        self.assertEqual(
+            extra_production_mineral_gate(True, fleet_beacon_ready=False), 400.0
+        )
+        # pivot 且 FB 就绪/在建 → 豁免(放手追加)
+        self.assertEqual(
+            extra_production_mineral_gate(True, fleet_beacon_ready=True), 0.0
+        )
 
     def test_gas_gate_bonus(self):
         self.assertEqual(stargate_gas_gate_bonus(False), 1)

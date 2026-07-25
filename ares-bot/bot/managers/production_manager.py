@@ -1239,8 +1239,13 @@ class ProductionManager(Manager):
             have < desired
             # P2a:pivot 模式豁免「矿>400」追加门槛(风暴 150/100,矿紧也要产;
             # E10b 实证单矿矿贴 0-300 永不追加,4/5 局星门只有 1 个);
-            # 非 pivot 门槛 400 原样
-            and self.ai.minerals > extra_production_mineral_gate(pivot)
+            # E10c 修正:豁免以 FB 就绪/在建为前置 —— 追加产能不能抢自己
+            # 前置科技(FleetBeacon)的钱(e10c 实证:星门拍到 3-4 个,
+            # FB 被饿 50-170s,风暴反而更晚);非 pivot 门槛 400 原样
+            and self.ai.minerals
+            > extra_production_mineral_gate(
+                pivot, self._structure_present_or_pending(UnitID.FLEETBEACON)
+            )
             and self.ai.can_afford(sid)
         ):
             self.ai.register_behavior(
