@@ -70,3 +70,22 @@ def wounded_state(shield_health_perc: float, currently_wounded: bool) -> bool:
     if shield_health_perc >= WOUNDED_RECOVER_PERC:
         return False
     return currently_wounded
+
+
+# O25:航母攻击目标优先级(辅助 > 对空威胁 > 杂兵)
+_CARRIER_SUPPORT_TYPES = ("MEDIVAC", "RAVEN", "QUEEN")  # 加血/护盾/输血辅助
+_CARRIER_AA_THREAT_TYPES = (  # 对空威胁(航母死穴)
+    "THOR", "THORAP", "VIKINGFIGHTER", "MISSILETURRET",
+    "WIDOWMINE", "WIDOWMINEBURROWED", "CYCLONE", "LIBERATORAGMODE",
+)
+
+
+def carrier_target_priority(type_name: str) -> int:
+    """O25:航母攻击优先级评分(高=优先打)。纯逻辑,可单测。
+    辅助(医疗机/科学船/皇后,修/盾让敌军打不死)最高;对空威胁(雷神/维京/导弹塔/
+    寡妇雷,航母死穴)次之;杂兵最低。与 levers.FOCUS_PRIORITY 解耦(航母 Thor 必杀≠地面兵)。"""
+    if type_name in _CARRIER_SUPPORT_TYPES:
+        return 100
+    if type_name in _CARRIER_AA_THREAT_TYPES:
+        return 50
+    return 10

@@ -152,11 +152,17 @@ class PoweredPlacementStrategy(BasePlacementStrategy):
             if len(close_to_pylon) < 4:
                 build_near = optimal_pylon[0]
 
-        closest_to: Point2 = (
-            base_location
-            if not self.req.wall
-            else self.placement_manager.ai.main_base_ramp.bottom_center
-        )
+        # O31:static_defence(塔/电池)且显式传了 closest_to → 用它(主基堵口塔堆 ramp 口,
+        # 集结火力);其余维持原逻辑(wall→ramp.bottom,否则 base_location),减小对其他建筑影响。
+        _req_ct = getattr(self.req, "closest_to", None)
+        if _req_ct is not None and getattr(self.req, "static_defence", False):
+            closest_to: Point2 = _req_ct
+        else:
+            closest_to = (
+                base_location
+                if not self.req.wall
+                else self.placement_manager.ai.main_base_ramp.bottom_center
+            )
 
         final_placement = self.placement_manager._find_placement_near_pylon(
             available, build_near, self.req.pylon_build_progress, closest_to

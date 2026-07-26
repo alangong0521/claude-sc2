@@ -24,7 +24,11 @@ from bot.combat.stalker_offensive import StalkerOffensive
 from bot.combat.templar_caster import TemplarCaster
 from bot.combat.tempest_offensive import TempestOffensive
 from bot.combat.warp_prism_offensive import WarpPrismOffensive
-from bot.production_plans import floor_army_defends_home, rally_min_for_verdict
+from bot.production_plans import (
+    carrier_rally_against_aa,
+    floor_army_defends_home,
+    rally_min_for_verdict,
+)
 
 if TYPE_CHECKING:
     from ares import AresBot
@@ -193,6 +197,7 @@ class CombatManager(Manager):
             primary_count=self.manager_mediator.get_own_unit_count(
                 unit_type_id=self.ai.production_manager._primary_unit_id()
             ),
+            enemy_race_name=getattr(getattr(self.ai, "enemy_race", None), "name", None),
         ):
             return self.ai.start_location
 
@@ -243,7 +248,13 @@ class CombatManager(Manager):
         _rally = rally_min_for_verdict(
             self._rally_min, getattr(self.ai.production_manager, "verdict", None)
         )
-        if order.get("stance") is None and 0 < self._own_army_count() < _rally:
+        # O23:航母流且敌有对空威胁时,航母数<gate → 守家攒兵(1-2 航母撞雷神/维京=送)
+        _aa_hold = order.get("stance") is None and carrier_rally_against_aa(
+            self._flow.name,
+            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER),
+            self._enemy_aa_count(),
+        )
+        if (order.get("stance") is None and 0 < self._own_army_count() < _rally) or _aa_hold:
             attack_target = self.ai.start_location
         else:
             attack_target = self.attack_target
@@ -268,6 +279,14 @@ class CombatManager(Manager):
                     maneuver=order.get("maneuver"),  # ④机动意图
                     regroup_center=regroup_center,   # B6 归队锚点(仅 generic 用,其余忽略)
                 )
+
+    def _enemy_aa_count(self) -> int:
+        """O23:敌可见对空威胁单位数(雷神/维京/导弹塔/寡妇雷/枪兵等 can_attack_air)。
+        复用 carrier_offensive._aa_threats 同款口径(e.can_attack_air)。"""
+        return sum(
+            1 for e in self.ai.enemy_units
+            if not e.is_structure and getattr(e, "can_attack_air", False)
+        )
 
     def _own_army_count(self) -> int:
         """当前 ATTACKING 编制内的兵力数(按 army_composition 登记兵种数)。"""

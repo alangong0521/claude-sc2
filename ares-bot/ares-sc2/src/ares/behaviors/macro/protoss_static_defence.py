@@ -45,6 +45,7 @@ class ProtossStaticDefence(MacroBehavior):
     exclude_base_locations: set[Point2] = field(default_factory=set)
     max_on_route: int = 1
     tech_base_location: Point2 | None = None
+    closest_to_override: Point2 | None = None  # O31:塔/pylon/电池跟此点(主基堵口 ramp 集结),None=原 base_loc
 
     def execute(self, ai: "AresBot", config: dict, mediator: ManagerMediator) -> bool:
         if ai.race != Race.Protoss:
@@ -90,7 +91,7 @@ class ProtossStaticDefence(MacroBehavior):
                     structure_id=UnitID.PYLON,
                     max_on_route=self.max_on_route,
                     to_count_per_base=self.pylons_per_base,
-                    closest_to=base_loc,
+                    closest_to=self.closest_to_override or base_loc,
                     find_alternative=False,
                     production=False,
                 ).execute(ai, config, mediator):
@@ -103,7 +104,7 @@ class ProtossStaticDefence(MacroBehavior):
                     max_on_route=self.max_on_route,
                     static_defence=True,
                     to_count_per_base=self.photon_cannons_per_base,
-                    closest_to=base_loc,
+                    closest_to=self.closest_to_override or base_loc,
                     find_alternative=False,
                 ).execute(ai, config, mediator):
                     return True
@@ -115,7 +116,7 @@ class ProtossStaticDefence(MacroBehavior):
                     max_on_route=self.max_on_route,
                     static_defence=True,
                     to_count_per_base=self.shield_batteries_per_base,
-                    closest_to=base_loc,
+                    closest_to=self.closest_to_override or base_loc,
                     find_alternative=False,
                 ).execute(ai, config, mediator):
                     return True

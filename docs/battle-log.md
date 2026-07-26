@@ -1766,3 +1766,236 @@ UnitID.FLEETBEACON)`。chrono(b)/气体闸门(c) 保留不动。单测 344 例�
   carrier 流派配置（stalker/tempest/dt 无此配置，floor 语义天然不变）；
   rush 期 spawn 叉子覆盖分支在 floor 之前 return，不受影响。
 - 单测 351 例绿（+6：B1 三分支组/C1 三分支组）。
+
+## 2026-07-25 carrier @NewkirkPrecinctTE vs Terran Harder/Macro（进行中）
+
+### scout 探机撤回后又深入敌家送死（bug，局后修）
+
+- **现象**：scout=on 派的探机 t=72 看到对面兵营后本该撤，t=128 却又深入对面主基（看到 CC/气矿），被 marine 打死。司令观战质疑。
+- **根因**（Explore 查证，全在 `bot/main.py:374-409` `_handle_scout`）：
+  - 撤回条件**只有一个**：`scout.distance_to(enemy_main) < 12`（`main.py:395`）。人族首兵营常建在 ramp 外围、距 CC 13-20，**没进 12 内 → 撤回不触发**。
+  - 探机 idle 就被 `scout.move(enemy_main)`（`main.py:399-400`）反复往敌家推，直到摸进 12 格。
+  - "撤回"是假的：只 `assign_role(GATHERING)` + 清 `_scout_tag`（`main.py:395-398`），**没有 move(home)/gather(自家矿) 显式回家命令**（注释写"撤回家采矿"但代码没做）。
+  - role 切 GATHERING 后，idle 清扫 `_handle_idle_workers`（`main.py:466-469`）用 `mineral_field.closest_to(w)` 指派最近矿——探机在敌家，最近可视矿 = 对面矿线 → 继续往敌矿走，被 marine 打死。
+  - 同一反模式（`gather(closest_to(w))` 不分敌我矿）还在 `production_manager.py:635-638`、`810-813`、`main.py:78-80`、`159-161`。
+- **附带澄清**：「司令接管 PROBE」事件（`main.py:565-567`）遍历所有自己单位、不区分角色，司令在家操作闲置农民也会触发——曾误判为司令操作侦查探机，实为 bot 自送。
+- **修复方向**：撤回时显式 `scout.move(self.start_location)` 或 `gather(自家最近矿)`，不只切 role；或 idle 清扫对"距最近自家 townhall > N"的 GATHERING 农民先 move 回家。
+- **状态**：✅ 已修（2026-07-25，见 plan robust-puzzling-toast + 单测 tests/test_scout_return.py、tests/test_steer_meta.py）。
+
+### scout=on 在 clear 后无法重派（bug，局后修）
+
+- **现象**：clear + scout=on 重派第二个探机，bot 收到命令（`order.scout='on'`）但 180s 不派，司令看不到探机出动。
+- **根因**：`bot/main.py:408` 派探机后置 `self._scout_done=True`（一次性 latch）。`clear` 只清 steer 命令层（orders.json），**清不掉 bot 内部 `_scout_done`** → 再下 scout=on 进 `main.py:391` 的 `if self._scout_done:` 分支直接 return，不重派。
+- **修复方向**：clear 时重置 `_scout_done`（steer_cli clear 或 bot 读到 clear 信号时清 latch），或 scout 命令支持显式重派语义。
+- **状态**：✅ 已修（2026-07-25，_scout_ts 时间戳机制，见 plan robust-puzzling-toast + tests/test_steer_meta.py）。
+
+
+### 需求3 敌军压上主基补大量光子塔（已实现 2026-07-25）
+
+- **现象**：carrier vs Harder Macro Terran(NewkirkPrecinctTE)，t≈600 人族 MMM+维京压上，
+  主基光子塔不足（矿紧造不出），航母流主力未成型挡不住，司令要求认输。
+- **司令要求**：敌军压上时主基果断补大量光子塔，全部神族流派都要。
+- **实现**：
+  - `flows.yml` 全流派(carrier/tempest/stalker/dt)加 `main_siege: {cannons: 12, radius: 25, threshold: 4}`；
+  - `flow_config.py` 加 `MainSiege` dataclass + 解析；
+  - `production_manager.py` `_main_under_siege`(复用 `is_combat_type`，主基 townhall 25 格内敌地面作战单位 ≥4 触发)
+    + 双实例 `ProtossStaticDefence`(exclude_base_locations 互补：实例 A 只主基 cannons=12，实例 B 其余基地原 cannons；to_count_per_base 是 per-base_loc 故不叠加超造)；
+  - `production_plans.py` 加 `main_siege_active` 纯判据。
+- **状态**：✅ 已实现（2026-07-25，见 plan robust-puzzling-toast + 单测 tests/test_main_siege.py），待实机验证主基压境时塔数 ~3→≥10。
+
+
+### O21 建造农民钱不够时钉点干等，应先采矿等钱够再去（司令 2026-07-25 提）
+
+- **现象**：开局 t≈30 派一个农民去造第一个水晶(PYLON)，钱不够钉在建造点干等，
+  t≈67(1分07s)才造出 —— 干等 ~37s，开局经济亏一个农民，且连锁导致 supply 21/21 卡人口。
+- **司令要求**：农民有建造指令时，若建造点距矿区足够近，钱不够**不要钉点干等**，
+  先回矿采矿，钱够了再去建造点。
+- **根因(待查)**：疑似 ares build_runner 开局序列派的 PyLON 农民无 dispatch_viable 守卫
+  (CLAUDE.md 记"ares build runner 开局序列派工仍无守卫，O11 watchdog 兜底")，
+  但本例干等 37s 远超 O11 的 6s 撤回线 → 要么 O11 未覆盖开局序列农民、要么撤回被
+  build_runner 立即重派形成钉点。需读 main.py O11 watchdog + build_runner 交互确认。
+- **修复方向**：钱不够时让建造农民 gather(最近矿,可复用 home_mineral 或主基矿)、
+  钱够(can_afford)时再 move 到建造点造 —— 派工/到点双阶段守卫。复用 dispatch_viable
+  的"到位可负担才派"语义，补"到点买不起先采矿"分支。
+- **状态**：未修，待查根因 + 设计。
+
+
+### O22 scout 探机遇敌兵应微操逃跑，别傻傻被打死（司令 2026-07-25 提）
+
+- **现象**：scout 探机去敌家路上遇人族枪兵(marine)，不躲不逃，傻傻走到敌家被追打。
+- **司令要求**：探机遇敌兵立刻微操往家跑，不在敌方基地送死。
+- **根因**：`_handle_scout`(main.py:374-409) 撤回条件只有 `distance(enemy_main)<12`，
+  探机要走到敌家 12 格才撤，途中遇 marine 不躲。Bug1 修了"撤回回家不死"，但
+  "遇敌主动逃跑"未实现(本局探机侥幸没死,但遇 marine 集结时仍会送)。
+- **修复方向**：`_handle_scout` 加"探机被攻击 / 附近(如 <8 格)有敌作战单位 →
+  立刻 move(home_mineral 或家)逃跑"分支,优先级高于 idle move(enemy_main)。
+  复用 `is_combat_type` 判敌兵 + distance 判威胁圈。
+- **状态**：未修，待设计(与 Bug1 同处 _handle_scout，可一起改)。
+
+
+### 需求3 方向修正（司令 2026-07-25 第二局）：分矿(前线)重点防御，不是主基
+
+- **司令战术**：分矿(2 矿) = 前线门户/咽喉，敌正面陆军从分矿方向压来；**重点防御分矿
+  → 挡住敌陆军 → 主基自然安全**(不需主基堆塔)。地形依据：分矿是敌陆军进主基的必经咽喉。
+- **观察**：2 矿防御 cannon 不够(当前 `expansion_cannons {min:3, max:8}` 动态偏少)。
+- **修正需求3**：已实现的 `main_siege`(只主基补 12 塔)方向要调整 —— 压上时应加强
+  **【前线/分矿】** cannon(门户防御)，而非主基。两条可选路线(局后和司令定)：
+  ① `main_siege` 改针对分矿(最靠近敌方的基地，而非 start_location 主基)；
+  ② 调高 `expansion_cannons.min`(分矿常规就多塔，如 min:5/6)。
+- **状态**：需求3 已实现(主基方向)，待调整为分矿/前线方向(局后改，连同 O21/O22)。
+
+
+### O23 航母出击阈值：敌有防空时航母数量不够不出击（司令 2026-07-25 二局）
+
+- **现象**：carrier 流只有 1-2 艘航母时，敌方有防空(雷神/维京/寡妇雷/导弹塔)，
+  航母上 = 送死(本局 2 航母撞雷神4+坦克7+寡妇雷，风暴已死 2)。
+- **司令要求**：敌方有防空能力时，1-2 艘航母构不成威胁，应**适当囤兵(攒航母)
+  后再上**。
+- **修复方向**：carrier 加航母出击阈值 —— 敌可见对空单位(雷神/维京/导弹塔/寡妇雷)
+  ≥N 时，航母数量 < 阈值(如 3-4)则不出击(守家攒兵，复用 rally_min_army 或专门
+  carrier_count_gate)。carrier 流当前无 rally_min_army(dt:4/stalker:14 有)。
+- **状态**：未修，待设计。
+
+### O24 航母地形微操：利用地形陆军打不到的位置进攻 + 残血撤（司令 2026-07-25 二局）
+
+- **司令要求**：航母利用地形优势，在**陆军打不到的位置**(悬崖/地形高差/射程外)
+  输出；残血航母撤回来保船。
+- **现状**：`carrier_offensive.py` 已有残血撤退(<40%/≥55% 滞回，O12/O14) + 锚点
+  避让对空威胁圈/地形高差。但本局航母/风暴仍被点掉(风暴死2) → 要核查锚点是否
+  真选了"陆军打不到的位置"、残血撤阈值是否生效。
+- **修复方向**：核查/强化 carrier_offensive 锚点选择(优先悬崖上方/射程边缘白嫖，
+  陆军地面单位 pathing 够不到的点)；确认残血撤退实际触发。
+- **状态**：待核查 carrier_offensive.py 实机表现。
+
+
+### O25 航母攻击目标优先级：先杀加血/护盾辅助 + 对空威胁（司令 2026-07-25 二局）
+
+- **司令要求**：航母优先攻击：
+  ① 有加血/加护盾功能的单位（医疗机 MEDIVAC / 科学船 RAVEN 等辅助）—— 否则它们
+     修/盾让敌军打不死;
+  ② 对空射程对航母有威胁的单位（雷神 THOR / 维京 VIKINGFIGHTER / 导弹塔 MISSILETURRET
+     / 寡妇雷 WIDOWMINE）—— 打掉防空保航母;
+  最后才打杂兵。
+- **现状**：`carrier_offensive.py` 目标选择(AttackTarget)当前按 focus(weakest/closest/
+  兵种名),无"辅助>防空>其他"优先级列表。steer `focus` 是单值,不能设优先级。
+- **修复方向**：carrier_offensive 目标选择加优先级评分 ——
+  辅助(MEDIVAC/RAVEN/MEDIVAC 等)最高分 → 对空威胁(THOR/VIKING/MISSILETURRET/WIDOWMINE)
+  次之 → 其余最低;AttackTarget 选最高分目标。优先级表可配 army_composition.yml 或硬编码。
+- **状态**：未修，待设计(与 O23/O24 同在 carrier_offensive/出击逻辑,可一起改)。
+
+
+### O26 3 矿成型后没造气矿，气体断航母补充不上（司令 2026-07-25 二局）
+
+- **现象**：3 矿(第三基地)成型后没有建造气矿(ASSIMILATOR)，气体收入不足，
+  航母(250气/艘)后续补充不上，舰队断档。
+- **根因(待查)**：CLAUDE.md O13 `_ensure_expansion_gas` 应"每个就绪基地双气满采，
+  在建气矿 45s 不落地拆 tracker 重派"。3 矿就绪后没造气矿 → 疑似
+  ① _ensure_expansion_gas 未覆盖 3 矿(只查了主/2 矿)；② threat/rush 期误停非主矿
+  气矿；③ O21 idle_builder(造气矿农民干等钱/钉点)。
+- **修复方向**：核查 `_ensure_expansion_gas` 对新就绪基地(含 3 矿)的覆盖；确认
+  threat/rush 让位是否误伤分矿气矿；与 O21(建造农民先采矿)联动。
+- **状态**：未修，待查根因。
+
+
+### O27 司令手动拉农民造气矿被卡（人机共驾冲突，2026-07-25 二局）
+
+- **现象**：司令手动选中农民去分矿造气矿(ASSIMILATOR)，指令被卡住、造不了。
+- **根因(待查)**：O2 人机共驾冲突变种 —— 司令手动操作农民，但 bot 的 idle 清扫 /
+  Mining / BuildingManager 抢回农民(role 冲突)，或造气矿的 build 指令被覆盖。
+  CLAUDE.md O2(PERSISTENT_BUILDER + _player_ctrl)对"手动建造气矿"是否覆盖待查
+  (O2 实证的是"建造中"农民接管,本例是"手动下新建气矿"被卡)。
+- **临时绕过**：用 steer `build=assimilator` 一次性命令(bot 自己派农民造)，比手动
+  SC2 操作稳(走 bot 建造链路，不和司令抢)。
+- **状态**：未修，待查根因(人机共驾对手动新建建筑的覆盖)。
+
+
+### O28 set target= 清图命令报错（steer_cli 不支持空值，2026-07-25 二局）
+
+- **现象**：skill 词表说"清图 = `set target= stance=attack`"，但 `set target=` 报错
+  ⛔ "target 值 '' 不合法(可用: enemy_main ...)"(validate 不接受空值)。
+- **根因**：`steer_vocab.validate_field` 对 target 空值报错(TARGETS 枚举不含空)；
+  `steer_cli set target=` 解析为 target="" → validate 失败、不写盘。
+- **修复方向**：steer_cli 对 "target=" 空值特殊处理(设 None = 清空固定目标 → bot 轮巡)，
+  或 validate 对 target 空值放行(语义=清空)。或 skill 文档改用 `clear`+`stance=attack`。
+- **状态**：未修(本局已 Victory 结束，清图命令没用到；局后修)。
+
+---
+
+## 2026-07-25 carrier @NewkirkPrecinctTE vs Terran Harder/Macro —— ✅ Victory
+
+航母流翻盘局：开局航母死穴全开(雷神4+维京+寡妇雷+导弹塔+3矿)、一度只剩 2 航母，
+但攒到航母 11 + 风暴 5 大军成型后碾压。修复验证 Bug1✅(探机不送死) Bug2✅(clear+scout 重派)。
+暴露 O21-O28 共 8 项待改 + 需求3 方向修正(分矿重点防御)，全记上文，局后系统改。
+
+
+---
+
+## 第一批修复完成（2026-07-25）
+
+O21 / O23 / O26 + 需求3修正 已实现，单测 380 全绿 + carrier/tempest 编译过。
+
+- **O21**(建造干等先采矿)：`main.py` O11 放松 `PERSISTENT_BUILDER`(在 tracker 的 build_runner
+  农民放行进 O11 撤回) + `TOWNHALL` 硬豁免改 `grace=30`(保 E3k 开矿预走位)。⚠️ build_runner
+  兼容性(撤后 do_step 重派 PYLON)**待实机验证**，若混乱回退。
+- **O26**(3 矿气矿)：`production_manager._build_gas` 去全局 `ASSIMILATOR!=0` 一票否决 +
+  距离 `<12`→`<15`(治 3 矿双气串行/派不出)。
+- **O23**(航母出击阈值)：`production_plans.carrier_rally_against_aa` 纯函数 + `combat_manager`
+  rally 块加 carrier gate(航母<3 且敌有防空 → 守家攒兵)。
+- **需求3修正**(分矿防御)：`_main_townhall` 从最靠近 start_location 改成最靠近敌方的
+  ready townhall(前线分矿)，`_main_under_siege`/双实例注册跟随。
+
+**第二批待改**：O22(探机遇敌逃跑) / O24(航母地形微操) / O25(航母攻击优先级) / O27(手动造气卡) / O28(set target= bug)。
+
+
+---
+
+## 第二批修复完成（2026-07-25）
+
+O22 / O24 / O25 / O27 / O28 已实现,单测全绿 + carrier 编译过。
+
+- **O22**(探机遇敌逃跑):`main.py _handle_scout` 加逃跑分支(邻近 <`_SCOUT_FLEE_RADIUS=8` 格敌地面作战单位 → `gather(home_mineral)` 逃跑),复用 `is_combat_type`。
+- **O24**(航母微操):启用 `carrier_offensive`(`army_composition.yml` CARRIER combat→carrier_offensive)+ 调参(`_AA_BUFFER 2→4`/`_retreat_ref` 撤退 5→15)+ engage 放机后 `PathUnitToTarget` 拉开到 AA 射程外。⚠️ **E4g 回归待实机验证**。
+- **O25**(航母优先级):`carrier_logic.carrier_target_priority`(辅助 MEDIVAC/RAVEN/QUEEN > 对空威胁 THOR/VIKING/MISSILETURRET/WIDOWMINE > 杂兵);`carrier_offensive` engage 无 focus 时用它取代最低血量。
+- **O27**(手动造气卡):`main.py _handle_player_control` BUILD_* 命令长倒计时(30s,`player_yield_for_ability`),治 3s 倒计时太短被 Mining 抢回。
+- **O28**(set target= bug):`steer_vocab.validate_field` 对 target 空值放行(清图 set target= stance=attack 不报错)。
+
+
+### O21b（深化）开局阶段建造农民干等 grace 太长（司令 2026-07-25 验局）
+
+- **现象**：carrier Harder Zerg 验局,开局第一个水晶(PYLON)农民干等 >5s(司令观战)。
+  O21(第一批)放松 PERSISTENT_BUILDER 后开局水晶进 O11,但 grace=6(should_release_
+  waiting_builder production_plans.py:308,O11 main.py 开局也 6)→ 开局贴 0 存款、
+  50 矿攒 ~10s,农民干等 5-6s 才够。O21 治了 37s(不撤)但 6s 对开局仍太长。
+- **司令要求**:开局阶段任何农民等待 >1s 都会滚雪球(经济差距越拉越大),要 <1s。
+- **修复方向**:开局阶段(time<120 或 supply<某阈值)用更短 grace(如 1.0,甚至 0 立刻撤),
+  中段维持 6.0,TOWNHALL 维持 30。O11 调 should_release_waiting_builder 时按 time 分档传 grace。
+  注意:开局 grace 太短 + 撤后重派循环(已部署 redispatch_cooled_down 15s 防中段,但
+  开局 PERSISTENT_BUILDER 走 build_runner 重派,不走 redispatch → 需确认 build_runner 兼容)。
+- **状态**:未修,局后改(与 O21 同处 main.py O11)。
+
+
+### O29 carrier vs Zerg：E9 反复压境停 macro → 单矿经济崩（2026-07-25 验局）
+
+- **现象**：carrier Harder Zerg AbyssalReefLE,t=550→767 一直单矿(bases=1),workers 卡 20
+  不涨,航母补充极慢(2 艘)。对面 Zerg 双矿 76 supply 飞龙/刺蛇/感染坑,我 37 supply 劣势。
+- **根因(待查)**:E9 threat_response_active 反复触发/解除(t=647/676/747),期间疑似停造农民/
+  停开矿(保命优先)→ workers 卡 20 < auto_expand 爆仓门槛 22 → 永不开 2 矿 → 单矿气少 →
+  航母慢 → 守不住 → E9 再触发,恶性循环。需查 E9 threat_response_active 期间是否误停
+  造农民/开矿(应只停 save_up/转防御,不该掐农民/开矿)。
+- **影响**:carrier vs 持续压境种族(Zerg 飞龙/刺蛇)经济崩,舰队起不来。
+- **修复方向**:E9 threat 期间不应停造农民/开矿(只停 save_up/转防御塔);或 auto_expand
+  在 E9 期间放宽(劣势更要开矿补经济,而非停)。
+- **状态**:未修,局后查 E9 macro 行为。
+
+
+### O30 carrier 开 2 矿时机太晚(爆仓模式 + E9 卡死,2026-07-25 验局)
+
+- **司令问**:游戏 12 分钟(t=767)还没开 2 矿是不是太晚?carrier 正常多久开?
+- **正常时机**:carrier 先知骚扰 + 舰队航标好后 **t≈180-300(3-5 分钟)就该开 2 矿**
+  (build_meta:先知骚扰拖经济→开二矿追经济,空中火力护分矿)。
+- **bot 现状**:`auto_expand when_workers:22` 爆仓模式 —— 单矿攒到 22 农民才触发开 2 矿。
+  问题:① 爆仓门槛太高(单矿 22 农民本身要 ~t300+,该先开矿再扩农民,不是榨干才开);
+  ② 叠加 O29(E9 停造农民,workers 卡 20<22)→ 永不触发 → t=767 仍单矿。
+- **修复方向**:carrier 早开 2 矿 —— 降 when_workers(如 16)或加时间触发(t≈200 强开,
+  先知/风暴护分矿)。爆仓模式适合 4 矿+,2 矿该早。
+- **状态**:未修,局后改 flows.yml carrier auto_expand + 与 O29(E9 停 macro)联动。

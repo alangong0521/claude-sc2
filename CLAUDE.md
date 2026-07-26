@@ -113,3 +113,29 @@ poetry run python -m unittest discover -s tests
 REALTIME=True BUILD=stalker DIFF=Medium OPPONENT_RACE=Random poetry run python run.py
 ```
 跑局看：兵营>1、bot 日志有 `Researching ...`、`state.army` 含 STALKER+ZEALOT、开局农民不骤减、防御塔/blink 微操。
+
+## carrier vs Zerg 优化（2026-07-26 实机迭代；HEAD E10 单矿 Defeat → 多轮改）
+
+carrier vs Zerg Harder/Macro 是对局劣势（Zerg 双矿爆兵 vs carrier 慢）。HEAD(E10) 全程单矿 Defeat，多轮迭代修复（详记 battle-log O21-O33）：
+
+### 已改（scout/macro/combat）
+- **scout**：Bug1 探机撤回回家不死（`home_mineral`）+ Bug2 clear+scout 重派（`_scout_ts` 时间戳）+ O22 探机遇敌逃跑（`_SCOUT_FLEE_RADIUS=8`）+ O27 手动造气 BUILD 长倒计时（`player_yield_for_ability` 30s）+ O28 set target= 清图（validate 空值放行）。
+- **macro**：O21 建造干等先采矿（grace 开局 1s/中段 6s/TOWNHALL 30s）+ O26 3 矿气矿（去全局 assimilator 守卫 + 距离 15）+ O29 E9 停开矿扩散（`expansion_blocked` 非 pivot 走 `enemy_near_home` + 首扩 `bases<=1` 放行）+ O30 `first_expand_at` 时间触发 + `when_workers` 16 + **O32 vs Zerg 不 pivot**（`should_pivot_tempest` 否决 Zerg —— 航母主 C 龟缩，不烧舰队链矿给 Nexus）+ **O33 叉减量**（pre_fleet cap 3/per_enemy 0.3/max 8）+ `first_expand_at` 150。
+- **combat**：O24 启用 carrier_offensive（放机后拉开 AA 射程外 + `_AA_BUFFER` 4 + 残血撤 15 格）+ O25 航母优先级（`carrier_target_priority` 辅助>对空威胁>杂兵）+ 航母 engage 被推家锚点 `ref=敌重心`（主动找敌放机，治"憋家不战斗"）+ O31 塔堵口（`placement_strategy` closest_to 优先 + `ProtossStaticDefence.closest_to_override=defensive_rally_point`）+ O23 航母出击阈值（`carrier_rally_against_aa`：航母<3 + 敌防空→守家攒兵）。
+
+### 待改（carrier vs Zerg combat 难点，Explore 诊断）
+- **问题① 航母被推家没 engage（矿区待着不防守，司令两轮指出）**：根因锚点 `ref=home` 远离敌。已改 ref=敌重心（rec7 改善 macro 起），但 **rec8 仍矿区待着**（单矿航母 1 兵少守不住 + engage 改条件可能没满足/残血撤退干扰）。**深查**：被推家 attack_target=home 是否触发（floor primary<3/rush/defend）+ engage 改 ref=敌重心是否生效（attack_target.distance_to(start)<20 + near 非空）+ 残血撤退（<40% 走 retreat_ref 不走敌重心）+ O24 AA retreat（Hydralisk air_range 6 后撤 10 格 > engage 9.5 横跳）。可能要：被推家航母强制 attack 最近敌（不只锚点）+ 残血阈值降/被推家不撤。
+
+> **元指示（司令 2026-07-26）**：后续所有司令在聊天框发的优化建议，**全部落地本文件（CLAUDE.md）**，优化流派/bot 时重点参考。
+- **问题② 持续侦查不足**：Probe scout 一次性不补（`_handle_scout`）+ Oracle `one_off` 死了不补。改：vs Zerg 循环 scout（60-75s 自动重派）+ Oracle 维持 1 架。**司令指示**：叉子配合先知探路+牵制（不全程 floor 守家）。
+- **问题③ 塔防御不足/晚**：6 分钟自动塔偏晚（roach all-in 5:00）+ 反应式（敌到 40 格才建）。改：vs Zerg 自动塔提前 240s（`_should_build_defense`）+ scout 驱动塔 + threat 阈值降（`max(8,own×1.2)`）。**司令指示**：防御主要靠光子塔（不靠叉堆）。
+
+### 司令核心指示（2026-07-26）
+- **侦查是最重要的优化方向**（防 rush 一波）：前期做好侦查，**先知 + 叉叉兵要和敌方主力部队接触**（持续了解敌我兵力），供主基地/分矿**建造足够光子塔 + 护盾电池**做防御判断。即"侦查接触敌 → 了解兵力 → 造塔防御"闭环。
+- **分矿防御模型**（塔性价比 > 兵）：分矿 Nexus 建好 → **立刻落地水晶** → 水晶好 → **补 3 个光子塔**（最低防御）→ 侦查驱动逐步增加。塔围绕**地形入口**集结（兵营 gateway 顶前面堵口，塔密集后方），不让敌直冲推平主基。防御塔同等金钱守家打出比兵更多伤害。
+- **分矿堵口方案**（司令 2026-07-26）：分矿 ramp 前**排一个兵营（gateway）堵口**，**后排放若干光子塔密集防守**（塔射程覆盖 gateway —— 敌打 gateway 时塔集火）。gateway 顶前 + 塔后排 = wall-in 堵口防御。expansion_cannons min:3（min 5 挤矿 macro 差,实证 rec11 vs rec10/Lane2）。
+- **双车道 SC2 不可行**（SC2 二进制单实例锁互踢,两进程 10s 内都退）。只能串行单车道 headless。
+- **叉叉兵减量**（防御靠塔，叉配合先知侦查+牵制）→ 省矿给 2 矿 + 航母尽早成型。
+- **2 矿更早**（10 分钟 2 矿没开 = 经济死，敌方 3 矿碾压单矿）。
+- **航母尽早成型** + 被推家该 engage 防御（不憋家）。
+- **双车道后台 SC2 验证**（两实例并行跑 headless，加速矩阵迭代）。

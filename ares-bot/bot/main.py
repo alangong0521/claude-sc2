@@ -10,6 +10,7 @@ from bot.production_plans import (
     builder_is_waiting,
     evacuation_clear,
     idle_builder_alarm,
+    is_combat_type,
     nexus_rebuild_viable,
     pick_evacuation_base,
     should_evacuate_workers,
@@ -34,6 +35,8 @@ _STEER_EVERY: float = 4.0
 _EVAC_RADIUS: float = 15.0    # 敌地面单位距 Nexus 多少格内算"进矿区"
 _EVAC_THRESHOLD: int = 4      # 进矿区敌地面 ≥ 此数 → 该基地视为被抄
 _CANNON_COVER: float = 9.0    # 就绪塔距 Nexus ≤ 此值 → 矿区在塔射程内
+_SCOUT_FLEE_RADIUS: float = 8.0  # O22:侦查探机邻近此距离内遇敌地面作战单位 → 立即逃跑(marine 射程 5+缓冲)
+_SCOUT_LOOP_INTERVAL: float = 60.0  # O34:vs Zerg 循环 scout 间隔(持续盯兵力/转型)
 # 撤离农民挂 CONTROL_GROUP_ONE(ares 枚举里"use for anything not specified"的
 # 兜底 role,vendored ares 无任何消费者):Mining/ResourceManager/idle 清扫/建造派工
 # 都只认 GATHERING,撤离期间他们彻底不碰这些农民;敌退后归位 GATHERING 自动重上岗。
@@ -79,6 +82,39 @@ def recall_scouting_workers(ai) -> int:
         if ai.mineral_field:
             s.gather(ai.mineral_field.closest_to(s))
     return len(scouts)
+
+
+def home_mineral(ai):
+    """离主基 townhall 最近的矿脉(撤回侦查农民用,Bug1)。
+
+    撤回/重派场景必须用「离主基最近的矿」,不能用 mineral_field.closest_to(worker)
+    ——后者含敌方矿,探机在敌家会被派去采对面矿越走越深送死(Bug1:t=128 被 marine)。
+    主基 townhall = 最靠近 start_location 的 ready townhall(全代码惯例,见
+    update_worker_evacuation main.py:182 同款 <5 格判定)。返回 None = 没就绪基地/
+    没矿(调用方回退 move(start_location))。纯函数,可单测。"""
+    ths = getattr(ai, "ready_townhalls", None)
+    mfs = getattr(ai, "mineral_field", None)
+    if not ths or not mfs:
+        return None
+    main_th = min(ths, key=lambda th: th.position.distance_to(ai.start_location))
+    return mfs.closest_to(main_th)
+
+
+def scout_should_redispatch(prev_ts, new_ts, scout_done) -> bool:
+    """scout 命令是否该重派探机(Bug2)。纯函数,可单测。
+
+    clear+scout=on 同步执行时 bot 4s 轮询读不到 clear 中间态(_scout_done 不重置),
+    改用 steer_cli set scout 时盖的 _scout_ts 时间戳判"scout 又被下发一次"。
+    返回 True → 重置 _scout_done 重派。判定:
+      - scout_done 已 False → 本来就能派,不需要这个机制(返回 False)
+      - new_ts None → 没时间戳(老 CLI 或被清),不触发(返回 False)
+      - prev None / new > prev → True(第一次下令 / 又下了一次)
+      - new == prev → False(同一个 scout 持续中,不补)"""
+    if not scout_done:
+        return False
+    if new_ts is None:
+        return False
+    return prev_ts is None or new_ts > prev_ts
 
 
 def update_worker_evacuation(ai) -> None:
@@ -234,6 +270,17 @@ def update_worker_evacuation(ai) -> None:
 # BuildingManager（按 building_tracker 记账、无视 role）→ 接管时用
 # release_from_build_tracker 把它从 tracker 摘除（O2 修复）。
 _PLAYER_YIELD: float = 3.0
+_PLAYER_BUILD_YIELD: float = 30.0  # O27: 司令下 BUILD_* 命令(造建筑)的让权倒计时(远位气矿要走+拍)
+
+
+def player_yield_for_ability(ability_name: str) -> float:
+    """O27:司令下 BUILD_* 类命令(造建筑) → 长倒计时(30s,远位气矿要走+拍);
+    其他命令(移动/攻击)→ 默认 _PLAYER_YIELD(3s)。纯函数,可单测。
+    根因:3s 倒计时太短,农民走向气矿途中 role 还原 GATHERING 被 Mining 抢回,
+    gather(mineral) 覆盖 BUILD → 气矿拍不下(司令手动造气被卡)。"""
+    if ability_name.startswith("BUILD"):
+        return _PLAYER_BUILD_YIELD
+    return _PLAYER_YIELD
 
 
 class MyBot(AresBot):
@@ -262,6 +309,10 @@ class MyBot(AresBot):
         # 侦察：一次 scout=on 只派一个农民，看完撤回/死了不补（_scout_done 防止无限续命送死）
         self._scout_tag: int | None = None
         self._scout_done: bool = False
+        # Bug2:上次见到的 scout 命令时间戳(steer_cli set scout 时盖的 _scout_ts)。
+        # clear+scout=on 同步执行时 bot 4s 轮询读不到 clear → _scout_done 不重置,
+        # 改用时间戳变化判"又下了一次 scout",见 scout_should_redispatch。
+        self._last_scout_ts: float | None = None
         # 滚动事件日志：bot 侧检测值得注意的事（丢矿/被骚扰/损兵/发现敌情），
         # 只留最近 N 条写进 state.json，参谋长只读这个尾巴 → 拿"最近发生了啥"而不必翻旧对话。
         self._events: list[dict] = []
@@ -378,23 +429,67 @@ class MyBot(AresBot):
         多人混战：默认摸**最近的敌人**（E1）；想摸别家先 enemy=E2 再 scout=on。"""
         enemy_main = self.focused_enemy_start()
         if (self.steer_order or {}).get("scout") != "on":
-            # 命令撤销 → 把还在路上的侦查农民拉回采矿(别留着 SCOUTING role 继续送),
-            # 并重置 _scout_done 允许下次重新派
-            if self._scout_tag:
-                scout = self.units.find_by_tag(self._scout_tag)
-                if scout is not None:
-                    self.mediator.assign_role(tag=scout.tag, role=UnitRole.GATHERING)
-                self._scout_tag = None
+            # O34 循环 scout(vs Zerg 持续盯兵力/转型):司令没下 scout + vs Zerg +
+            # 距上次派 >_SCOUT_LOOP_INTERVAL → 自动重派(不 return,继续下面派新探机)
+            _er = getattr(getattr(self, "enemy_race", None), "name", None)
+            if (
+                _er == "Zerg"
+                and self._scout_done
+                and self.time - getattr(self, "_last_scout_finished", 999.0)
+                > _SCOUT_LOOP_INTERVAL
+            ):
+                self._scout_done = False  # 重置 → 不 return,下面派新探机
+            else:
+                # 原逻辑:命令撤销 → 撤回侦查农民 + 重置
+                if self._scout_tag:
+                    scout = self.units.find_by_tag(self._scout_tag)
+                    if scout is not None:
+                        self.mediator.assign_role(tag=scout.tag, role=UnitRole.GATHERING)
+                    self._scout_tag = None
+                self._scout_done = False
+                return
+
+        # Bug2:clear+scout=on 同步执行时 bot 4s 轮询读不到 clear → _scout_done 不重置。
+        # steer_cli set scout=on 时盖了 _scout_ts,这里检测时间戳变化判"又下了一次 scout"。
+        new_ts = (self.steer_order or {}).get("_scout_ts")
+        if scout_should_redispatch(self._last_scout_ts, new_ts, self._scout_done):
             self._scout_done = False
-            return
+            self._scout_tag = None  # 清旧 tag,否则还指着已撤回/已死的探机
+        self._last_scout_ts = new_ts if new_ts is not None else self._last_scout_ts
 
         if self._scout_done:
             # 已经派过一个了：活着的就管它撤回，死了不补
             scout = self.units.find_by_tag(self._scout_tag) if self._scout_tag else None
             if scout is not None:
-                if scout.distance_to(enemy_main) < 12:
-                    # 摸到对面了，看够了 → 撤回家采矿（"要么回来"）
+                # O22: 途中遇敌(marine/坦克等)立即逃跑 —— 邻近 <_SCOUT_FLEE_RADIUS 格内有
+                # 敌地面作战单位 → gather(home_mineral) 撤退。优先级高于摸敌家撤回/idle 推进,
+                # 否则探机傻傻走到敌家被打死。复用 is_combat_type(排除工人/overlord/飞行)。
+                threat = next(
+                    (e for e in self.enemy_units
+                     if is_combat_type(e.type_id) and not e.is_flying
+                     and scout.distance_to(e) < _SCOUT_FLEE_RADIUS),
+                    None,
+                )
+                if threat is not None:
                     self.mediator.assign_role(tag=scout.tag, role=UnitRole.GATHERING)
+                    target = home_mineral(self) or self.start_location
+                    if isinstance(target, Unit):
+                        scout.gather(target)
+                    else:
+                        scout.move(target)
+                    self._scout_tag = None
+                    return
+                if scout.distance_to(enemy_main) < 12:
+                    # 摸到对面了，看够了 → 撤回家采矿。必须显式下回家命令(Bug1):
+                    # 仅 assign_role 不给指令 → 下一帧 _handle_idle_workers 用
+                    # mineral_field.closest_to(w) 派去"离探机最近的矿"=敌方矿线,
+                    # 深入送死(t=128 实证)。改用离主基最近的矿(home_mineral)。
+                    self.mediator.assign_role(tag=scout.tag, role=UnitRole.GATHERING)
+                    target = home_mineral(self) or self.start_location
+                    if isinstance(target, Unit):   # 矿脉 → gather
+                        scout.gather(target)
+                    else:                           # Point2 回退 → move
+                        scout.move(target)
                     self._scout_tag = None
                 elif scout.is_idle:
                     scout.move(enemy_main)
@@ -407,6 +502,7 @@ class MyBot(AresBot):
             w.move(enemy_main)
             self._scout_tag = w.tag
             self._scout_done = True
+            self._last_scout_finished = self.time  # O34:循环 scout 计时(距此 >60s 自动重派)
 
     def _handle_idle_workers(self) -> None:
         """闲置农民清扫(司令观察实证):除被司令接管(PERSISTENT_BUILDER)/侦查(SCOUTING)
@@ -425,11 +521,13 @@ class MyBot(AresBot):
             role = self._current_role(w.tag)
             # E6: _EVAC_ROLE 的撤离农民由 update_worker_evacuation 全权维护
             # (途中补 move/到点就地采/敌退回采),这里别抢回去采被抄矿区的矿。
-            if role in (
-                UnitRole.SCOUTING.name,
-                UnitRole.PERSISTENT_BUILDER.name,
-                _EVAC_ROLE.name,
-            ):
+            if role in (UnitRole.SCOUTING.name, _EVAC_ROLE.name):
+                continue
+            # PERSISTENT_BUILDER:司令接管的(已摘 tracker,O2)不抢;但在 tracker 里的是
+            # ares build_runner 开局序列农民(如第一个 PYLON),钱不够钉点干等 → 放行进下面
+            # O11 分支撤回采矿(O21:治开局水晶干等 37s)。build_runner 兼容性靠实机验证
+            # (撤后 do_step 发现 PYLON 没建应重派新 worker)。
+            if role == UnitRole.PERSISTENT_BUILDER.name and w.tag not in tracker:
                 continue
             if w.tag in tracker:
                 # E4c:rush 期间一切建造钉点豁免 —— 矿紧时塔/兵营工人到点等钱
@@ -448,11 +546,16 @@ class MyBot(AresBot):
                 sid = info[TRACKER_ID]
                 if sid == UnitID.PYLON and self.supply_left <= 2:
                     continue
-                if sid in TOWNHALL_TYPES:
-                    continue
+                # O21:TOWNHALL 不再硬豁免,改加长 grace(Nexus 400 矿攒钱需时间,
+                # grace=30s 保 E3k 开矿预走位语义;原硬豁免致 Nexus 农民干等到死)。
+                # 其余建筑 grace=6s(短暂等钱容忍,真没钱就撤回采矿、钱够再来)。
+                # O21b:开局(time<120)普通建筑 grace=1s(开局贴 0 存款,等>1s 就撤回采矿,
+                # 不滚雪球——开局每等 1s 都拉大经济差距);中段 6s(容忍短暂等钱);TOWNHALL 30s。
+                grace = 30.0 if sid in TOWNHALL_TYPES else (1.0 if self.time < 120 else 6.0)
                 if should_release_waiting_builder(
                     self.can_afford(sid),
                     self.time - info[TIME_ORDER_COMMENCED],
+                    grace=grace,
                 ):
                     release_from_build_tracker(self.mediator, w.tag)
                     # O19 防重派循环:记录撤回时刻,production_manager 对同类结构
@@ -542,8 +645,13 @@ class MyBot(AresBot):
         debug = bool(os.environ.get("STEER_DEBUG"))
 
         cmd_tags: set[int] = set()
+        cmd_ability: dict[int, str] = {}  # O27: tag→ability_name(判 BUILD 长倒计时)
         for a in self.state.actions_unit_commands:
             cmd_tags.update(a.unit_tags)
+            aname = getattr(getattr(a, "ability_id", None), "name", "")
+            if aname:
+                for t in a.unit_tags:
+                    cmd_ability[t] = aname
 
         for u in self.units:  # 自己的非建筑单位（农民 + 军队）
             if not u.is_selected:
@@ -561,7 +669,10 @@ class MyBot(AresBot):
                 # move/build 命令，与司令指令对抢，救不回来。摘除后生产侧下帧自动
                 # 换别的矿工重派同一建筑。
                 release_from_build_tracker(self.mediator, tag)
-                self._player_ctrl[tag] = {"role": prev, "until": now + _PLAYER_YIELD}
+                self._player_ctrl[tag] = {
+                    "role": prev,
+                    "until": now + player_yield_for_ability(cmd_ability.get(tag, "")),
+                }
                 self._events.append(
                     {"t": round(now, 1), "msg": f"司令接管 {u.type_id.name}"}
                 )
@@ -569,7 +680,9 @@ class MyBot(AresBot):
                     print(f"[player-ctrl] t={now:.1f} 接管 {u.type_id.name} "
                           f"tag={tag} 原role={prev}", flush=True)
             elif has_cmd:  # 已让权 + 又有新命令（bot 不碰它→必是司令的）→ 刷新倒计时
-                self._player_ctrl[tag]["until"] = now + _PLAYER_YIELD
+                self._player_ctrl[tag]["until"] = now + player_yield_for_ability(
+                    cmd_ability.get(tag, "")
+                )
                 if debug:
                     print(f"[player-ctrl] t={now:.1f} 刷新 tag={tag}", flush=True)
 

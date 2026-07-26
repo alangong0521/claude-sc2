@@ -14,6 +14,7 @@ from bot.production_plans import (  # noqa: E402
     base_rebuild_active,
     builder_is_waiting,
     cannon_target_capped,
+    carrier_rally_against_aa,
     carrier_transition_ready,
     chrono_primary_id,
     defense_syncs_with_nexus,
@@ -285,6 +286,8 @@ class TestShouldExpandDynamic(unittest.TestCase):
         kw.setdefault("enemy_army_supply", 0)
         kw.setdefault("advantage_supply", 12)
         kw.setdefault("rush_active", False)
+        kw.setdefault("now", 0.0)
+        kw.setdefault("first_expand_at", 0.0)
         return should_expand_dynamic(**kw)
 
     def test_saturation_triggers(self):
@@ -315,6 +318,16 @@ class TestShouldExpandDynamic(unittest.TestCase):
 
     def test_no_trigger(self):
         self.assertFalse(self._run(supply_workers=10))
+
+    def test_first_expand_at_time_trigger(self):
+        # O30:首扩时间触发(bases=1 + now>=first_expand_at → True,不等爆仓)
+        self.assertTrue(self._run(bases=1, now=200.0, first_expand_at=200.0))
+        self.assertTrue(self._run(bases=1, now=250.0, first_expand_at=200.0, supply_workers=0))
+        self.assertFalse(self._run(bases=1, now=199.0, first_expand_at=200.0))  # 时间没到
+        # 2 矿后(bases>=2)首扩时间不再触发(走爆仓/优势)
+        self.assertFalse(self._run(bases=2, now=999.0, first_expand_at=200.0, supply_workers=0))
+        # rush 仍拦首扩
+        self.assertFalse(self._run(bases=1, now=999.0, first_expand_at=200.0, rush_active=True))
 
 
 class TestExpansionCannonCount(unittest.TestCase):
@@ -492,6 +505,17 @@ class TestBuilderReleaseRules(unittest.TestCase):
         self.assertTrue(defense_syncs_with_nexus(1, 1))
         self.assertTrue(defense_syncs_with_nexus(0, 2))
         self.assertFalse(defense_syncs_with_nexus(0, 1))  # 单矿无在建 → 不启动
+
+    def test_townhall_longer_grace_o21(self):
+        # O21:TOWNHALL(Nexus)用 grace=30(开矿攒 400 矿需时间);原 6s 撤会误撤开矿
+        self.assertFalse(should_release_waiting_builder(False, 10.0, grace=30.0))
+        self.assertFalse(should_release_waiting_builder(False, 29.0, grace=30.0))
+        self.assertTrue(should_release_waiting_builder(False, 31.0, grace=30.0))
+
+    def test_opening_short_grace_o21b(self):
+        # O21b:开局普通建筑 grace=1s(等>1s 就撤回采矿,不滚雪球)
+        self.assertTrue(should_release_waiting_builder(False, 1.5, grace=1.0))
+        self.assertFalse(should_release_waiting_builder(False, 0.5, grace=1.0))
 
 
 class TestNexusRebuild(unittest.TestCase):
@@ -881,11 +905,18 @@ class TestExpansionBlocked(unittest.TestCase):
                     (pivot, threat),
                 )
 
-    def test_non_pivot_follows_threat(self):
-        # E9 原语义零变化(rush 局/非 pivot 局)
-        self.assertTrue(expansion_blocked(False, True, False, False))
-        self.assertFalse(expansion_blocked(False, False, False, False))
-        self.assertFalse(expansion_blocked(False, False, False, True))
+    def test_non_pivot_follows_enemy_near_home(self):
+        # O29:非 pivot 也走 enemy_near_home(扩散 pivot 修复——threat 常驻不再锁死)
+        # bases>=2:敌压家停,threat 不停(原非 pivot threat 停已废)
+        self.assertTrue(expansion_blocked(False, True, False, True, bases=3))    # 压家停
+        self.assertFalse(expansion_blocked(False, True, False, False, bases=3))  # threat 不停
+
+    def test_first_expand_release_o29(self):
+        # O29:首扩(bases<=1)放行,不管 threat/near_home(carrier 早开 2 矿)
+        self.assertFalse(expansion_blocked(False, True, False, True, bases=1))
+        self.assertFalse(expansion_blocked(False, True, True, True, bases=1))
+        # 2 矿后(bases>=2)按 enemy_near_home
+        self.assertTrue(expansion_blocked(False, True, False, True, bases=2))
 
     def test_pivot_ignores_threat_unless_enemy_at_home(self):
         # pivot:threat 常驻也不停开(Macro 修复核心)
@@ -924,6 +955,37 @@ class TestExpansionReserve(unittest.TestCase):
 
     def test_not_triggered_no_reserve(self):
         self.assertFalse(expansion_reserve_active(False, False))
+
+
+class TestCarrierRallyAgainstAA(unittest.TestCase):
+    """O23:航母流且敌有对空威胁时,航母数<gate → 守家攒兵(1-2 航母撞雷神/维京=送)。"""
+
+    def test_non_carrier_flow_never_holds(self):
+        # 非 carrier 流(tempest/stalker/dt)恒 False,基线零变化
+        for flow in ("tempest", "stalker", "dt"):
+            self.assertFalse(carrier_rally_against_aa(flow, 0, 10))
+            self.assertFalse(carrier_rally_against_aa(flow, 2, 5))
+
+    def test_no_enemy_aa_never_holds(self):
+        # carrier 但敌无对空威胁 → 不守(没威胁不必攒)
+        self.assertFalse(carrier_rally_against_aa("carrier", 1, 0))
+        self.assertFalse(carrier_rally_against_aa("carrier", 2, 0))
+
+    def test_carrier_below_gate_with_aa_holds(self):
+        # carrier + 敌有防空 + 航母<3 → 守家攒兵
+        self.assertTrue(carrier_rally_against_aa("carrier", 0, 4))
+        self.assertTrue(carrier_rally_against_aa("carrier", 1, 2))
+        self.assertTrue(carrier_rally_against_aa("carrier", 2, 10))  # 2 < 3
+
+    def test_carrier_at_or_above_gate_advances(self):
+        # 航母攒够(≥gate)→ 出击
+        self.assertFalse(carrier_rally_against_aa("carrier", 3, 10))
+        self.assertFalse(carrier_rally_against_aa("carrier", 5, 20))
+
+    def test_gate_param_overridable(self):
+        # gate 参数化(默认 3,可调)
+        self.assertTrue(carrier_rally_against_aa("carrier", 3, 5, gate=5))
+        self.assertFalse(carrier_rally_against_aa("carrier", 5, 5, gate=5))
 
 
 if __name__ == "__main__":

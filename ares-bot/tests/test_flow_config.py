@@ -193,8 +193,9 @@ class TestPivotRushCannons(unittest.TestCase):
         self.assertEqual(
             (fc.auto_expand.max_bases, fc.auto_expand.when_workers,
              fc.auto_expand.advantage_supply),
-            (4, 22, 12),
+            (4, 16, 12),  # O30:when_workers 22→16(早开 2 矿)
         )
+        self.assertEqual(fc.auto_expand.first_expand_at, 150.0)  # O33:首扩 t=150(早 2 矿)
         self.assertEqual(
             (fc.expansion_cannons.min, fc.expansion_cannons.max), (3, 8)
         )
@@ -206,11 +207,11 @@ class TestPivotRushCannons(unittest.TestCase):
             "PROTOSSAIRWEAPONSLEVEL3", "PROTOSSAIRARMORSLEVEL3",
             "PROTOSSSHIELDSLEVEL2", "PROTOSSSHIELDSLEVEL3",
         ])
-        # E3e/E3f:舰队成型前地面保底(随敌兵力伸缩);E5-B 臂 0.5/16→0.7/20
+        # E3e/E3f:舰队成型前地面保底;O33:vs Zerg 叉减量(原 6/0.5/16 太多挤矿)
         self.assertEqual(
             (fc.pre_fleet.id_name, fc.pre_fleet.cap,
              fc.pre_fleet.per_enemy, fc.pre_fleet.max),
-            ("ZEALOT", 6, 0.5, 16),
+            ("ZEALOT", 3, 0.3, 8),
         )
         # stalker 旧式 auto_expand 不受影响(冻结块)
         sk = FlowConfig.load("stalker")

@@ -60,6 +60,7 @@ class AutoExpand:
     when_workers: int = 0      # 旧式:触发农民数(0=只看时间);动态:每矿饱和农民数
     max_bases: int = 0         # >0 走动态模式,基地数上限
     advantage_supply: int = 0  # 动态:我方 army supply 领先敌可见 army supply 此值 → 提前开
+    first_expand_at: float = 0.0  # O30:首扩(1→2 矿)时间硬触发(0=关);carrier 该 t≈200 早开,不等爆仓
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,17 @@ class ExpansionCannons:
     min 是保守线(给回援争取时间),max 封顶防塔烧钱拖垮经济。"""
     min: int = 3
     max: int = 8
+
+
+@dataclass(frozen=True)
+class MainSiege:
+    """需求3:敌大军压上主基时只在主基加强光子塔(双实例 exclude 互补,不叠加超造)。
+    cannons=主基塔目标数(覆盖 expansion_cannons 的 per-base 值);radius=压境判定半径
+    (放大到 25,造塔~29s,敌到 15 格再建来不及);threshold=主基 radius 内敌地面作战
+    单位 ≥ 此数 → 触发(复用 is_combat_type 口径,排除工人/侦查/运输)。"""
+    cannons: int = 12
+    radius: float = 25.0
+    threshold: int = 4
 
 
 @dataclass(frozen=True)
@@ -112,6 +124,7 @@ class FlowConfig:
     save_up: int = 0             # O5 憋气机制:p0 气缺口 ≤N 时截断低优先生成攒气(0=关)
     expansion_cannons: ExpansionCannons | None = None  # 分矿塔数区间(None=固定 2)
     pre_fleet: PreFleet | None = None  # E3e 舰队成型前地面保底(None=关)
+    main_siege: MainSiege | None = None  # 需求3:敌压上主基加强塔(None=关)
 
     @classmethod
     def from_dict(cls, name: str, data: dict) -> "FlowConfig":
@@ -168,12 +181,21 @@ class FlowConfig:
                 int(ae_raw.get("when_workers", 0)),
                 int(ae_raw.get("max_bases", 0)),
                 int(ae_raw.get("advantage_supply", 0)),
+                float(ae_raw.get("first_expand_at", 0.0)),
             )
         ec_raw = data.get("expansion_cannons")
         expansion_cannons = None
         if ec_raw:
             expansion_cannons = ExpansionCannons(
                 int(ec_raw.get("min", 3)), int(ec_raw.get("max", 8)),
+            )
+        ms_raw = data.get("main_siege")
+        main_siege = None
+        if ms_raw:
+            main_siege = MainSiege(
+                int(ms_raw.get("cannons", 12)),
+                float(ms_raw.get("radius", 25.0)),
+                int(ms_raw.get("threshold", 4)),
             )
         pf_raw = data.get("pre_fleet")
         pre_fleet = None
@@ -207,6 +229,7 @@ class FlowConfig:
             save_up=int(data.get("save_up", 0) or 0),
             expansion_cannons=expansion_cannons,
             pre_fleet=pre_fleet,
+            main_siege=main_siege,
         )
 
     @classmethod

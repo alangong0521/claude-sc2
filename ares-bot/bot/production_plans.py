@@ -131,16 +131,16 @@ def should_expand_dynamic(
     enemy_army_supply: float,
     advantage_supply: float,
     rush_active: bool,
+    now: float = 0.0,
+    first_expand_at: float = 0.0,
 ) -> bool:
     """动态开矿触发判定（E2，carrier 流）。纯逻辑，可单测。
 
     爆仓触发：农民 ≥ workers_per_base × 当前基地数（矿线饱和，开分矿消化农民）；
-    优势触发：我方 army supply ≥ 敌可见 army supply + advantage_supply（前线有优势提前开）。
-    约束：rush_active 期间不开（rush 响应优先）、到 max_bases 停、已有 nexus 在建不叠加
-    （配合 ExpansionController max_pending=1，逐矿评估，局势变了就停）。
-    E4b 修正：敌可见 army supply 为 0 时**禁止优势触发**——0 可见不是优势是未知
-    （敌兵藏迷雾时"假优势"曾导致裸奔扩张+预留停产自绞，E4b 实证）；
-    爆仓触发不依赖敌情，不受影响。
+    优势触发：我方 army supply ≥ 敌可见 army supply + advantage_supply（前线有优势提前开）；
+    O30 首扩时间触发：bases==1 且 first_expand_at>0 且 now>=first_expand_at（carrier 该
+      t≈200 早开 2 矿,不等爆仓——爆仓 when_workers 模式在塔吃矿下永不可达致单矿锁死）。
+    约束：rush_active 期间不开（rush 响应优先）、到 max_bases 停、已有 nexus 在建不叠加。
     """
     if rush_active or bases >= max_bases or nexus_pending:
         return False
@@ -149,13 +149,22 @@ def should_expand_dynamic(
         enemy_army_supply > 0
         and own_army_supply >= enemy_army_supply + advantage_supply
     )
-    return saturated or advantage
+    first_due = bases == 1 and first_expand_at > 0 and now >= first_expand_at
+    return saturated or advantage or first_due
 
 
 def expansion_cannon_count(ec_min: int, ec_max: int, enemy_army: int) -> int:
     """分矿塔数估算（E2）：clamp(min, min + 敌可见作战单位//4, max)。
     min=保守线(给回援争取时间)，每多 4 个敌兵 +1 塔，max 封顶防塔烧钱。纯逻辑。"""
     return max(ec_min, min(ec_max, ec_min + max(0, enemy_army) // 4))
+
+
+def main_siege_active(enemy_ground_near: int, threshold: int) -> bool:
+    """需求3:敌大军压上主基 → 触发主基加强光子塔(只在主基,双实例 exclude)。
+    主基 townhall radius 内敌地面作战单位 ≥ threshold → True。纯判据,可单测。
+    radius 放大(默认 25,比 E6 矿区 15 大)给造塔 ~29s 留提前量(敌压脸上再建来不及)。
+    enemy_ground_near 由调用方按 is_combat_type 口径算好(排除工人/侦查/运输/飞行)。"""
+    return enemy_ground_near >= threshold
 
 
 def full_gas_bases(gas_per_base: list[int], full: int = 2) -> int:
@@ -271,16 +280,38 @@ def pre_fleet_cap(base: int, per_enemy: float, hard_max: int, enemy_army: int) -
     return max(base, min(hard_max, round(enemy_army * per_enemy)))
 
 
-def floor_army_defends_home(has_pre_fleet: bool, primary_count: int) -> bool:
+def floor_army_defends_home(
+    has_pre_fleet: bool, primary_count: int, enemy_race_name: str | None = None
+) -> bool:
     """舰队成型前（pre_fleet 保底阶段）地面兵是否默认守家（E3g trickle 实证）。
     纯逻辑，可单测。
 
     E3g game_01：无 stance、rush_active=False 时 combat 默认 attack_target=最近
     敌建筑，6 个保底叉子被拉过全图送进蟑螂群（敌波到脸前清零）。规则：
-    流派配了 pre_fleet 且舰队主 C 计数为 0（未成型）→ 默认守家；主 C 上线
-    恢复默认进攻。司令 stance/target 命令与 rush 联动优先级更高，不受影响。
-    """
-    return has_pre_fleet and primary_count == 0
+    流派配了 pre_fleet 且舰队主 C 未成型 → 默认守家；主 C 上线恢复默认进攻。
+    O32:vs Zerg(primary<3 才出门,攒 3 航母龟缩憋航母);非 Zerg(primary==0,原行为)。
+    司令 stance/target 命令与 rush 联动优先级更高,不受影响。"""
+    if not has_pre_fleet:
+        return False
+    if enemy_race_name == "Zerg":
+        return primary_count < 3
+    return primary_count == 0
+
+
+def should_pivot_tempest(
+    verdict: str | None, flow_name: str, enemy_race_name: str | None = None
+) -> bool:
+    """O32:是否走风暴主 C pivot(E10)。纯逻辑,可单测。
+    - 非 carrier / 非 greedy → False(不 pivot);
+    - vs Zerg → False(Zerg Macro 双矿爆兵,风暴压不死;carrier 该航母主 C 龟缩
+      憋航母 + 早 2 矿,不烧舰队链矿给 Nexus);
+    - 其余(carrier + greedy + 非 Zerg) → True(风暴压制 vs Terran/Protoss 贪开局速胜)。
+    注:转型点(carrier_transition_ready)由调用方判,本函数只判 pivot 倾向。"""
+    if flow_name != "carrier" or verdict != "greedy":
+        return False
+    if enemy_race_name == "Zerg":
+        return False
+    return True
 
 
 def should_register_autosupply(
@@ -643,6 +674,19 @@ def rally_min_for_verdict(
     return base_min
 
 
+def carrier_rally_against_aa(
+    flow_name: str, carrier_count: int, enemy_aa_count: int, gate: int = 3
+) -> bool:
+    """O23:航母流且敌有对空威胁时,航母数 < gate → 守家攒兵(不送)。
+    carrier 主 C 是高价值慢产兵(250气/64s),1-2 艘撞雷神/维京/导弹塔/寡妇雷=送;
+    gate=3 让它攒齐再出门。flow_name != 'carrier' 恒 False(基线零变化);
+    enemy_aa_count<=0(没防空)恒 False(没威胁不必守)。纯逻辑,可单测。
+    司令 stance 让位在调用方(combat_manager)。"""
+    if flow_name != "carrier" or enemy_aa_count <= 0:
+        return False
+    return carrier_count < gate
+
+
 def dispatch_viable(
     minerals: float, income_per_sec: float, walk_time: float, cost: float
 ) -> bool:
@@ -850,22 +894,22 @@ def expansion_blocked(
     threat_active: bool,
     pivot_active: bool,
     enemy_near_home: bool,
+    bases: int = 99,
 ) -> bool:
     """B1：开矿阻断判据（E9 停开矿的 Macro 适配）。纯逻辑，可单测。
 
     - rush_active → 永远停开（六连动不变，最高优先）；
-    - 非 pivot → threat 激活即停开（E9 原语义，rush 局/非 pivot 局零变化）；
-    - pivot → threat **不再**停开，改为「敌作战单位压到家 40 格内」才停
-      （rush 同款语义）。背景：E9 threat 判据（敌可见 supply ≥ max(10,我×1.5)）
-      在 Macro 局 359-397s 起常驻（敌暴兵是常态），两轮 bench 二矿拖到 700s+
-      或开不出（one_base×5/×1，单矿经济是战绩天花板）。E9 其它效果
-      （塔拉满/地面混编）不受影响。
+    - O29 首扩放行:bases<=1(1→2 矿)→ 不停(carrier 该早开 2 矿,配合 O30 first_expand_at;
+      被拆也比单矿经济崩强 —— 验局 carrier vs Zerg 单矿锁死 t=767 的根因);
+    - O29 扩散 pivot 修复:pivot/非 pivot 统一走 enemy_near_home(敌压家 40 格≥2 才停),
+      不再裸 threat_active(threat 在 Macro 局常驻曾锁死非 pivot carrier 单矿)。
+    threat_active 参数保留兼容签名但不再单独使用;E9 塔拉满/地面混编不受影响。
     """
     if rush_active:
         return True
-    if pivot_active:
-        return enemy_near_home
-    return threat_active
+    if bases <= 1:
+        return False
+    return enemy_near_home
 
 
 def floor_exits(

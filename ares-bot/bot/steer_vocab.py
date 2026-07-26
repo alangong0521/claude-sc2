@@ -55,6 +55,10 @@ FIELDS: tuple[str, ...] = (
     "stance", "target", "focus", "maneuver", "harass", "trigger",
     "expand", "build", "scout", "enemy", "note", "defend",
 )
+# 元字段(下划线前缀,内部用):不进 FIELDS、不进 vocab 展示、cmd_show 不展示、validate 跳过。
+# 目前仅 _scout_ts:scout 命令刷新时间戳,让 bot 感知"scout 被重新下发"(Bug2:
+# clear+scout=on 同步执行时 bot 4s 轮询读不到 clear 中间态,_scout_done 不重置)。
+META_FIELDS: tuple[str, ...] = ("_scout_ts",)
 # 每个字段的合法取值(用于 CLI 校验)。note/enemy 之外都是受限枚举。
 # None 表示"自由取值/不校验":note=自由文本;build=BUILDABLE+别名+任意引擎结构名(运行时再判);
 # focus 除 weakest/closest/workers 外还接受任意兵种名(如 SIEGETANK),故不封死。
@@ -114,6 +118,14 @@ def validate_field(field: str, value: str) -> list[str]:
     Pure logic — no ares/sc2 import, safe to run headless.
     """
     errs: list[str] = []
+    if field.startswith("_"):
+        # 元字段(下划线前缀,CLI 内部维护如 _scout_ts):不校验、不让用户直接写。
+        # 比白名单更通用,未来加 _* 元字段不用改这里。
+        return errs
+    if field == "target" and str(value).strip() == "":
+        # O28:target= 空值 = 清空固定目标(bot 轮巡清图)。attack_target property
+        # 对 "" falsy 走默认轮巡,无需改 bot 侧。skill 词表"清图=set target= stance=attack"。
+        return errs
     if field not in FIELDS:
         errs.append(f"未知命令字段 '{field}'(可用: {' '.join(FIELDS)})")
         return errs

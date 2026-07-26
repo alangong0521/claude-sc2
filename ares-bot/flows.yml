@@ -66,6 +66,7 @@ flows:
       anti_air_proportion: 0.3
       anti_air_trigger: 3           # 敌可见空军 ≥N 架触发
       rush_zealots: 4               # rush 时先出的叉子数
+    main_siege: {cannons: 12, radius: 25, threshold: 2}   # 需求3:敌压上主基时主基果断补大量塔
 
   # 纯追猎 blink 流(骨架,待跑局验证)
   stalker:
@@ -85,6 +86,7 @@ flows:
     rally_min_army: 14
     auto_expand: {at: 150, to: 2, when_workers: 18}
     freeflow: true
+    main_siege: {cannons: 12, radius: 25, threshold: 2}   # 需求3:敌压上主基时主基果断补大量塔
 
   # 航母黄金舰队(新,待跑局验证):科技链与暴风舰完全相同,航母主 C、暴风舰副 C
   carrier:
@@ -107,16 +109,17 @@ flows:
     one_off: [ORACLE]
     freeflow: true
     save_up: 250                    # O5 憋气:航母占比落后时截断风暴生成,攒气等航母
-    pre_fleet: {id: ZEALOT, cap: 6, per_enemy: 0.5, max: 16}   # E3e 保底+E3f 伸缩:敌 30 兵→15 叉;E5-B 臂 0.7/20 否决(0-5)
+    pre_fleet: {id: ZEALOT, cap: 3, per_enemy: 0.3, max: 8}   # O33:vs Zerg 叉减量(原 6/0.5/16 太多挤矿),省矿给 2 矿+航母;防御靠塔
     # E2 动态开矿(司令:有能力开到 4 矿):爆仓(农民 ≥ 22×基地数)或
     # 前线优势(我方 army supply ≥ 敌可见 + 12)时逐矿 +1,rush 期间不开
-    auto_expand: {max_bases: 4, when_workers: 22, advantage_supply: 12}
+    auto_expand: {max_bases: 4, when_workers: 16, advantage_supply: 12, first_expand_at: 150}
     expansion_cannons: {min: 3, max: 8}   # E2 分矿塔数区间:3 + 敌可见作战单位//4,封顶 8;E5-C 臂 4/12 否决(0-5)
     pivot:                          # 自适应机制(反rush/反空军,2026-07 迭代)
       anti_air_units: [STALKER]
       anti_air_proportion: 0.3
       anti_air_trigger: 3
       rush_zealots: 4
+    main_siege: {cannons: 12, radius: 25, threshold: 2}   # 需求3:敌压上主基时主基果断补大量塔
 
   # 隐刀 rush(2026-07-21 落地):黑暗圣堂速出白打农民,对面出反隐就转运营
   dt:
@@ -138,3 +141,4 @@ flows:
       anti_air_proportion: 0.3
       anti_air_trigger: 3
       rush_zealots: 2
+    main_siege: {cannons: 12, radius: 25, threshold: 2}   # 需求3:敌压上主基时主基果断补大量塔

@@ -18,6 +18,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from bot.steer_vocab import (
@@ -55,6 +56,9 @@ def cmd_state() -> None:
 
 def cmd_show() -> None:
     o = _load(ORDERS_FILE)
+    if o:
+        # 过滤内部元字段(下划线前缀,如 _scout_ts),只给用户看真正的命令
+        o = {k: v for k, v in o.items() if not k.startswith("_")}
     print(json.dumps(o, ensure_ascii=False, indent=2) if o else "(当前无命令，bot 走默认行为)")
 
 
@@ -91,6 +95,11 @@ def cmd_set(args: list, dry_run: bool = False) -> None:
         print(f"(dry-run) 校验通过,将写入: {json.dumps(merged, ensure_ascii=False)}")
         return
 
+    # Bug2:scout 被重新下发 → 盖时间戳,让 bot 检测到"又下了一次 scout"重置 latch
+    # (clear+scout=on 同步执行时 bot 4s 轮询读不到 clear,_scout_done 不重置)。
+    # 只在改 scout 时刷,set 别的字段不该触发 scout 重派。
+    if "scout" in pending:
+        order["_scout_ts"] = time.time()
     order.update(pending)
     _save(order)
     print("已下令:", json.dumps(order, ensure_ascii=False))

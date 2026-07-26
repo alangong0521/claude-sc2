@@ -54,6 +54,7 @@ from bot.production_plans import (
     gas_gated_stargate_target,
     gas_target,
     is_combat_type,
+    main_siege_active,
     nexus_rebuild_active,
     oracle_before_fleet_allowed,
     pivot_primary_id,
@@ -70,6 +71,7 @@ from bot.production_plans import (
     scout_verdict,
     scout_verdict_timing,
     should_expand_dynamic,
+    should_pivot_tempest,
     should_register_autosupply,
     stargate_gas_gate_bonus,
     tempest_primary_spawn,
@@ -359,19 +361,64 @@ class ProductionManager(Manager):
                     self.ai.calculate_cost(self._primary_unit_id()).minerals,
                     self._rush_active,
                 )
-            self.ai.register_behavior(
-                ProtossStaticDefence(
-                    photon_cannons_per_base=cannons,
-                    # E3d 实证:rush 期间电池必须让位 —— 电池要 CYBERNETICSCORE,
-                    # ares 会先 TechUp 科技(无 can_afford 守卫,工人被钉在建造点)
-                    # 且 _tech_required 满足前直接 return,炮塔整条被饿死
-                    # (game_01 零炮塔败北)。rush 解除后恢复 1/矿。
-                    shield_batteries_per_base=0 if self._rush_active else 1,
-                    # E3f:允许 2 座同建 —— 塔目标随敌兵爬升(敌 30 → 10/矿),
-                    # 单线建造 ~29s/座永远追不上两段式 rush 的主力波
-                    max_on_route=2,
+            # E3d:rush 期电池让位(要 CYBERNETICSCORE,_tech_required 阻塞塔链,
+            # game_01 零炮塔败北);E3f:max_on_route=2 允许 2 座同建(塔目标随敌兵
+            # 爬升,单线 ~29s 追不上两段式 rush)。两实例共用。
+            batt = 0 if self._rush_active else 1
+            mor = 2
+            # O31:主基堵口塔跟 ramp 口(集中火力,不散基地周边)。ramp.top 朝基地 -4 格
+            # (= defensive_rally_point 同款 sharpy PlanHeatDefender)。没 ramp → None 不 override。
+            rally = None
+            _ramp = getattr(self.ai, "main_base_ramp", None)
+            if _ramp is not None and getattr(_ramp, "top_center", None) and getattr(_ramp, "bottom_center", None):
+                try:
+                    rally = _ramp.top_center.towards(_ramp.bottom_center, -4)
+                except Exception:
+                    rally = None
+            ms = self._flow.main_siege
+            siege = self._main_under_siege() if ms else False
+            if siege and ms is not None:
+                # 需求3:敌大军压上分矿(前线)→ 双实例(exclude 互补:只前线加强,
+                # 不叠加超造 —— to_count_per_base 是 per-base_loc)。造塔~29s,radius
+                # 放大(默认 25)给塔成型留提前量(敌压脸上再建来不及)。
+                base_locs = list(self.manager_mediator.get_placements_dict.keys())
+                if base_locs:
+                    main_loc = min(
+                        base_locs,
+                        key=lambda bl: bl.distance_to(self.ai.focused_enemy_start()),
+                    )
+                    others = set(base_locs) - {main_loc}
+                    self.ai.register_behavior(   # A:只前线分矿,高 cannons
+                        ProtossStaticDefence(
+                            photon_cannons_per_base=ms.cannons,
+                            shield_batteries_per_base=batt,
+                            max_on_route=mor,
+                            exclude_base_locations=others,
+                        )
+                    )
+                    self.ai.register_behavior(   # B:其余基地,原 cannons(排除主基)
+                        ProtossStaticDefence(
+                            photon_cannons_per_base=cannons,
+                            shield_batteries_per_base=batt,
+                            max_on_route=mor,
+                            exclude_base_locations={main_loc},
+                        )
+                    )
+                else:
+                    self.ai.register_behavior(   # 兜底:拿不到 placements → 全局
+                        ProtossStaticDefence(
+                            photon_cannons_per_base=ms.cannons,
+                            shield_batteries_per_base=batt, max_on_route=mor,
+                        )
+                    )
+            else:
+                self.ai.register_behavior(
+                    ProtossStaticDefence(
+                        photon_cannons_per_base=cannons,
+                        shield_batteries_per_base=batt, max_on_route=mor,
+                        closest_to_override=rally,  # O31:塔跟主基 ramp 堵口(没 ramp=None 不变)
+                    )
                 )
-            )
 
         # custom behavior for all other production, using ares-sc2 to help
         building_counter: dict[UnitID, int] = self.manager_mediator.get_building_counter
@@ -868,13 +915,12 @@ class ProductionManager(Manager):
 
         进入条件:verdict == greedy(E7 侦查判非 rush)且未到转型点;
         退出(一次性 latch):carrier_transition_ready 到点/到量 → 记事件,
-        之后恒回航母主 C(不随风暴数量回落反复横跳)。"""
-        if self._flow.name != "carrier" or self._pivot_transitioned:
+        之后恒回航母主 C(不随风暴数量回落反复横跳)。
+        O32:vs Zerg 不 pivot(Zerg Macro 双矿爆兵,风暴压不死;航母主 C 龟缩憋航母+早2矿)。"""
+        if self._pivot_transitioned:
             return False
-        if (
-            pivot_primary_id(self._verdict, UnitID.CARRIER, UnitID.TEMPEST)
-            != UnitID.TEMPEST
-        ):
+        _er = getattr(getattr(self.ai, "enemy_race", None), "name", None)
+        if not should_pivot_tempest(self._verdict, self._flow.name, _er):
             return False
         if carrier_transition_ready(
             self.ai.time,
@@ -992,6 +1038,8 @@ class ProductionManager(Manager):
             own_army_supply=self.ai.supply_used - self.ai.supply_workers,
             enemy_army_supply=self._visible_enemy_army_supply(),
             advantage_supply=ae.advantage_supply,
+            now=self.ai.time,
+            first_expand_at=ae.first_expand_at,
             # B1(E9 停开矿的 Macro 适配):rush 恒停开;非 pivot 按 E9 threat 停;
             # pivot 模式 threat 不再停开,改「敌作战单位压到家 40 格 ≥2」才停
             # (rush 同款语义)——threat 在 Macro 局常驻,两轮 bench 二矿 700s+
@@ -1008,6 +1056,7 @@ class ProductionManager(Manager):
                     and u.position.distance_to(self.ai.start_location) < 40
                 )
                 >= 2,
+                bases=self.ai.townhalls.amount,  # O29:首扩(bases<=1)放行
             ),
         )
 
@@ -1196,17 +1245,19 @@ class ProductionManager(Manager):
 
     def _build_gas(self, near: Unit | None = None) -> None:
         """在离某个基地最近的空气矿上建一个气矿厂（自动选农民）。含分矿的气矿。
-        near: 指定只建该基地 12 格内的气矿(O13 按基地补气);None=全局最近的。"""
+        near: 指定只建该基地 15 格内的气矿(O13 按基地补气);None=全局最近的。
+        O26:去掉全局 assimilator!=0 一票否决(原 forcing 串行 → 3 矿双气被锁、
+        气断航母补充不上),改由 _ensure_expansion_gas 的 have+pending<2 按基地
+        自控 + can_afford 守卫 + assimilator_attempt_stuck 反卡死兜底。"""
         if (
-            self.manager_mediator.get_building_counter[UnitID.ASSIMILATOR] != 0
-            or not self.ai.can_afford(UnitID.ASSIMILATOR)
+            not self.ai.can_afford(UnitID.ASSIMILATOR)
             or not self.ai.townhalls
         ):
             return
         ref = near.position if near is not None else self.ai.start_location
         geysers: Units = self.ai.vespene_geyser.filter(
             lambda vg: not self.ai.gas_buildings.closer_than(2, vg)
-            and vg.distance_to(ref) < 12
+            and vg.distance_to(ref) < 15
         )
         if not geysers:
             return
@@ -1243,8 +1294,8 @@ class ProductionManager(Manager):
             if info[TRACKER_ID] == UnitID.ASSIMILATOR and info.get(TARGET)
         ]
         for th in self.ai.townhalls.ready:
-            have = self.ai.gas_buildings.closer_than(12, th).amount
-            pending = sum(1 for p in pending_at if th.position.distance_to(p) < 12)
+            have = self.ai.gas_buildings.closer_than(15, th).amount
+            pending = sum(1 for p in pending_at if th.position.distance_to(p) < 15)
             if have + pending < 2:
                 self._build_gas(near=th)
 
@@ -1395,7 +1446,9 @@ class ProductionManager(Manager):
         defend=yes 和 6 分钟自动铺不受影响,司令始终能手动铺)。"""
         if order.get("defend") == "yes":
             return True
-        if self.ai.time > 360:  # 6 分钟后自动铺防御
+        # vs Zerg 提前到 4 分钟自动铺塔(roach/ravager all-in ~5:00,hydra push ~5:30;原 6 分钟太晚)
+        _er = getattr(self.ai, "enemy_race", None)
+        if self.ai.time > (240 if _er == Race.Zerg else 360):
             return True
         pv = self._flow.pivot
         if pv is not None and not pv.rush_cannons:
@@ -1422,6 +1475,35 @@ class ProductionManager(Manager):
             and u.position.distance_to(home) < 40
         )
         return attackers >= 2
+
+    def _main_townhall(self):
+        """需求3:压境防御锚定的 townhall = 最靠近敌方的 ready townhall(前线门户/分矿)。
+        司令战术:分矿=前线咽喉,守分矿=挡住正面陆军=主基自然安全(2026-07-25 修正:
+        原选最靠近 start_location 的主基,方向错 → 敌压分矿时主基堆塔没用)。单基地
+        时退化(唯一 townhall 即前线)。没有就绪基地 → None。"""
+        ths = [t for t in self.ai.townhalls if t.is_ready]
+        if not ths:
+            return None
+        enemy = self.ai.focused_enemy_start()
+        return min(ths, key=lambda t: t.position.distance_to(enemy))
+
+    def _main_under_siege(self) -> bool:
+        """需求3:敌大军压上分矿(前线门户)。复用 is_combat_type 口径(排除工人/侦查/运输),
+        前线 townhall(最靠近敌方)radius 内敌地面作战单位 ≥ threshold → True。radius
+        放大(默认 25)给造塔 ~29s 留提前量(敌到 15 格再建来不及)。"""
+        ms = self._flow.main_siege
+        if ms is None:
+            return False
+        th = self._main_townhall()
+        if th is None:
+            return False
+        n = sum(
+            1 for u in self.ai.enemy_units
+            if not u.is_structure and not u.is_flying
+            and is_combat_type(u.type_id)
+            and u.position.distance_to(th.position) < ms.radius
+        )
+        return main_siege_active(n, ms.threshold)
 
     def _resolve_buildable(self, name: str) -> UnitID | None:
         """build=<名> → UnitID。先走 levers.resolve_build_name 归一(复用 CLI 同一份逻辑),

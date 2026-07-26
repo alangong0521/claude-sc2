@@ -24,6 +24,7 @@ from bot.steer_vocab import (  # noqa: F401  (re-exported for callers of this mo
     FOCUS,
     HARASS,
     MANEUVERS,
+    META_FIELDS as _META_FIELDS,
     STANCES,
     TARGETS,
     TRIGGERS,
@@ -50,7 +51,7 @@ def read_order() -> dict:
         return {}
     if not isinstance(raw, dict):
         return {}
-    return {k: raw.get(k) for k in _FIELDS}
+    return {k: raw.get(k) for k in (*_FIELDS, *_META_FIELDS)}
 
 
 def publish_state(state: dict) -> None:

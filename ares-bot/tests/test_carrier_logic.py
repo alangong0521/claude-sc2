@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bot.combat.carrier_logic import (  # noqa: E402
     anchor_score,
     best_anchor,
+    carrier_target_priority,
     is_wounded,
     wounded_state,
 )
@@ -112,6 +113,39 @@ class TestWoundedState(unittest.TestCase):
         # 40%-55% 之间:残血的保持残血,健康的保持健康(不乒乓)
         self.assertTrue(wounded_state(0.48, True))
         self.assertFalse(wounded_state(0.48, False))
+
+
+class TestCarrierTargetPriority(unittest.TestCase):
+    """O25:航母攻击优先级(辅助>对空威胁>杂兵)。"""
+
+    def test_support_highest(self):
+        # 辅助(医疗机/科学船/皇后)最高 —— 修/盾让敌军打不死,先杀
+        self.assertEqual(carrier_target_priority("MEDIVAC"), 100)
+        self.assertEqual(carrier_target_priority("RAVEN"), 100)
+        self.assertEqual(carrier_target_priority("QUEEN"), 100)
+
+    def test_aa_threat_high(self):
+        # 对空威胁(雷神/维京/导弹塔/寡妇雷)次高 —— 航母死穴
+        self.assertEqual(carrier_target_priority("THOR"), 50)
+        self.assertEqual(carrier_target_priority("THORAP"), 50)
+        self.assertEqual(carrier_target_priority("VIKINGFIGHTER"), 50)
+        self.assertEqual(carrier_target_priority("MISSILETURRET"), 50)
+        self.assertEqual(carrier_target_priority("WIDOWMINE"), 50)
+
+    def test_fodder_lowest(self):
+        # 杂兵(枪兵/劫掠/坦克)最低
+        self.assertEqual(carrier_target_priority("MARINE"), 10)
+        self.assertEqual(carrier_target_priority("MARAUDER"), 10)
+        self.assertEqual(carrier_target_priority("SIEGETANK"), 10)
+
+    def test_support_beats_aa_beats_fodder(self):
+        # 排序:辅助 > 对空威胁 > 杂兵
+        self.assertGreater(
+            carrier_target_priority("MEDIVAC"), carrier_target_priority("THOR")
+        )
+        self.assertGreater(
+            carrier_target_priority("THOR"), carrier_target_priority("MARINE")
+        )
 
 
 if __name__ == "__main__":

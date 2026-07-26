@@ -11,7 +11,12 @@ from sc2.unit import Unit
 from sc2.units import Units
 
 from bot.combat.base_unit import BaseUnit
-from bot.combat.carrier_logic import LAUNCH_RANGE, best_anchor, wounded_state
+from bot.combat.carrier_logic import (
+    LAUNCH_RANGE,
+    best_anchor,
+    carrier_target_priority,
+    wounded_state,
+)
 from bot.levers import pick_focus_key
 
 if TYPE_CHECKING:
@@ -21,8 +26,8 @@ if TYPE_CHECKING:
 _DIRECTIONS: int = 12
 # 敌对空射程数据缺失时的兜底对空威胁半径(刺蛇 6/防空塔 7 量级)
 _AA_FALLBACK_RANGE: float = 7.0
-# 对空威胁圈缓冲(射程 + 缓冲 = 避让圈)
-_AA_BUFFER: float = 2.0
+# 对空威胁圈缓冲(射程 + 缓冲 = 避让圈)。O24:2→4,让锚点真正离开 Thor(9)/Viking(9) 射程
+_AA_BUFFER: float = 4.0
 # 放机判定余量(拦截机机动半径之外的缓冲)
 _ENGAGE_BUFFER: float = 1.5
 
@@ -83,21 +88,59 @@ class CarrierOffensive(BaseUnit):
             ]
             if engage:
                 # 放机第一:射程内有敌就打(对齐 GenericOffensive),锚点不插手
-                target = pick_focus_key(engage, focus, origin=unit) or (
-                    cy_pick_enemy_target(Units(engage, self.ai))
-                )
-                maneuver.add(AttackTarget(unit=unit, target=target))
-            else:
-                # 不在放机射程:去锚点(带对空避让/地形/滞回的站位优化)
-                if unit.tag in self._wounded_tags:
-                    ref, ideal = self._retreat_ref(unit, healthy)
+                # O25:无 focus 时航母按优先级选(辅助>对空威胁>杂兵),取代旧
+                # cy_pick_enemy_target(最低血量 → 打枪兵不打雷神)。司令下 focus 仍优先。
+                if focus:
+                    target = pick_focus_key(engage, focus, origin=unit)
                 else:
-                    ref, ideal = attack_target, LAUNCH_RANGE
-                anchor: Point2 = self._anchor(unit, ref, ideal, near)
-                if anchor.distance_to(unit.position) > 1.0:
-                    maneuver.add(
-                        PathUnitToTarget(unit, self.mediator.get_air_grid, anchor)
+                    target = max(
+                        engage, key=lambda e: carrier_target_priority(e.type_id.name)
                     )
+                if target is None:
+                    target = cy_pick_enemy_target(Units(engage, self.ai))
+                maneuver.add(AttackTarget(unit=unit, target=target))
+                # O24:放机后主体拉开到对空威胁射程外 —— 航母主体退 >敌 air_range 仍持续输出
+                # (拦截机飞出去打,主体不挨打)。否则航母停在 9.5 格被 Thor(9)/Viking(9) 白嫖。
+                aa = next(
+                    (e for e in engage if getattr(e, "can_attack_air", False)), None
+                )
+                if aa is not None:
+                    aa_range = (
+                        getattr(aa, "air_range", None) or _AA_FALLBACK_RANGE
+                    ) + _AA_BUFFER
+                    if unit.distance_to(aa) < aa_range:
+                        retreat = unit.position.towards(self.ai.start_location, aa_range)
+                        maneuver.add(
+                            PathUnitToTarget(unit, self.mediator.get_air_grid, retreat)
+                        )
+            else:
+                # 不在放机射程
+                if unit.tag in self._wounded_tags:
+                    # 残血:撤(锚点 retreat_ref)
+                    ref, ideal = self._retreat_ref(unit, healthy)
+                    anchor: Point2 = self._anchor(unit, ref, ideal, near)
+                    if anchor.distance_to(unit.position) > 1.0:
+                        maneuver.add(
+                            PathUnitToTarget(unit, self.mediator.get_air_grid, anchor)
+                        )
+                elif attack_target.distance_to(self.ai.start_location) < 20 and near:
+                    # 被推家:直接接近敌重心(强制 engage 放机,绕过 _anchor AA 降权 ——
+                    # 否则航母选矿区(AA 少)不接近敌,矿区待着不防守)。engage 后 AA retreat 兜底。
+                    _ps = [e.position for e in near]
+                    _centroid = Point2((
+                        sum(p.x for p in _ps) / len(_ps),
+                        sum(p.y for p in _ps) / len(_ps),
+                    ))
+                    maneuver.add(
+                        PathUnitToTarget(unit, self.mediator.get_air_grid, _centroid)
+                    )
+                else:
+                    # 出击:锚点(对空避让/地形/滞回)
+                    anchor: Point2 = self._anchor(unit, attack_target, LAUNCH_RANGE, near)
+                    if anchor.distance_to(unit.position) > 1.0:
+                        maneuver.add(
+                            PathUnitToTarget(unit, self.mediator.get_air_grid, anchor)
+                        )
             self.ai.register_behavior(maneuver)
 
     def _retreat_ref(self, unit: Unit, healthy: list[Unit]) -> tuple[Point2, float]:
@@ -105,7 +148,8 @@ class CarrierOffensive(BaseUnit):
         没有健康编队则主基方向 5 格。"""
         if healthy:
             return min(healthy, key=lambda u: u.distance_to(unit)).position, 2.0
-        return unit.position.towards(self.ai.start_location, 5.0), 0.0
+        # O24:fallback 撤退 5→15 格(原 5 格仍在交战区,残血航母撤不出去)
+        return unit.position.towards(self.ai.start_location, 15.0), 0.0
 
     def _anchor(
         self, unit: Unit, ref: Point2, ideal: float, enemies: Units

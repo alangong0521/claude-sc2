@@ -91,8 +91,8 @@ protoss:
       notes: 虚空,对重甲/巨像。
     - id: CARRIER
       proportion: 0.0
-      combat: default
-      notes: "航母,舰载机;E4g N=5对照: carrier_offensive 0-5 vs default 2-3,切回 default。"
+      combat: carrier_offensive   # O24:启用(default 对航母是 bug — StutterUnitBack 恒退不放机);调参后实机验证
+      notes: "航母,舰载机。E4g carrier_offensive 0-5 是参数没调(射程倒挂/放机不撤/无优先级);O24 启用+调参(放机后拉开AA射程外/AA buffer 4/残血撤15格)+O25优先级。"
       #   微操类代码保留(bot/combat/carrier_offensive.py),CARRIER_COMBAT 环境变量可切换备重启。
     - id: MOTHERSHIP
       proportion: 0.0
