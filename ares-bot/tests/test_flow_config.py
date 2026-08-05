@@ -113,11 +113,13 @@ class TestShippedFlowsUnchanged(unittest.TestCase):
     def test_carrier_flow(self):
         _yaml_or_skip(self)
         fc = FlowConfig.load("carrier")
+        # O60(Harder Zerg AA 墙实证):暴风主 C(射程 10 压腐化 6),航母转副 C;
+        # O62(VeryHard Power 实证):再压航母配比(250 气吃暴风产能),先堆暴风临界质量
         self.assertEqual(fc.spawn, {
-            "CARRIER": {"proportion": 0.7, "priority": 0},
-            "TEMPEST": {"proportion": 0.3, "priority": 1},
+            "TEMPEST": {"proportion": 0.85, "priority": 0},
+            "CARRIER": {"proportion": 0.15, "priority": 1},
         })
-        # 与暴风舰同科技链;航母优先(priority 0 → chrono/primary 判断指向它)
+        # 与暴风舰同科技链;暴风优先(priority 0 → chrono/primary 判断指向它)
         self.assertEqual(fc.core_structures,
                          ["GATEWAY", "CYBERNETICSCORE", "STARGATE", "FLEETBEACON"])
 
@@ -197,8 +199,8 @@ class TestPivotRushCannons(unittest.TestCase):
         )
         self.assertEqual(fc.auto_expand.first_expand_at, 150.0)  # O33:首扩 t=150(早 2 矿)
         self.assertEqual(
-            (fc.expansion_cannons.min, fc.expansion_cannons.max), (3, 8)
-        )
+            (fc.expansion_cannons.min, fc.expansion_cannons.max), (4, 10)
+        )  # O52:min 3→4、max 8→10(Harder 波次实证,新经济体养得起)
         # O10:升级链补全到 L3,盾 L2/L3 垫底(防队列截断)
         self.assertEqual(fc.upgrades, [
             "PROTOSSAIRWEAPONSLEVEL1", "PROTOSSAIRARMORSLEVEL1",
@@ -207,12 +209,15 @@ class TestPivotRushCannons(unittest.TestCase):
             "PROTOSSAIRWEAPONSLEVEL3", "PROTOSSAIRARMORSLEVEL3",
             "PROTOSSSHIELDSLEVEL2", "PROTOSSSHIELDSLEVEL3",
         ])
-        # E3e/E3f:舰队成型前地面保底;O33:vs Zerg 叉减量(原 6/0.5/16 太多挤矿)
+        # E3e/E3f:舰队成型前地面保底;O47:vs Harder 波次加厚(O33 的 3/0.3/8 太薄);
+        # O48:exit_ground 8(1 航母+4 叉不退 floor,波前保 8 叉)
+        # O134-①(o133 局2 实证):cap 4→5 + 第二保底追猎×2(吃烂在银行的气)
         self.assertEqual(
             (fc.pre_fleet.id_name, fc.pre_fleet.cap,
-             fc.pre_fleet.per_enemy, fc.pre_fleet.max),
-            ("ZEALOT", 3, 0.3, 8),
+             fc.pre_fleet.per_enemy, fc.pre_fleet.max, fc.pre_fleet.exit_ground),
+            ("ZEALOT", 5, 0.5, 12, 8),
         )
+        self.assertEqual((fc.pre_fleet.id2, fc.pre_fleet.cap2), ("STALKER", 2))
         # stalker 旧式 auto_expand 不受影响(冻结块)
         sk = FlowConfig.load("stalker")
         self.assertEqual((sk.auto_expand.to, sk.auto_expand.max_bases), (2, 0))
@@ -223,10 +228,18 @@ class TestPivotRushCannons(unittest.TestCase):
             "id": "zealot", "cap": 4,
         }})
         self.assertEqual((fc.pre_fleet.id_name, fc.pre_fleet.cap), ("ZEALOT", 4))
+        # O134-①:第二保底缺省关闭,旧配置行为不变;配了才生效
+        self.assertEqual((fc.pre_fleet.id2, fc.pre_fleet.cap2), ("", 0))
+        fc2 = FlowConfig.from_dict("x", {"spawn": {}, "pre_fleet": {
+            "id": "zealot", "cap": 5, "id2": "stalker", "cap2": 2,
+        }})
+        self.assertEqual((fc2.pre_fleet.id2, fc2.pre_fleet.cap2), ("STALKER", 2))
 
     def test_carrier_save_up_shipped(self):
         _yaml_or_skip(self)
-        self.assertEqual(FlowConfig.load("carrier").save_up, 250)
+        # O96(o95 局3/局4 实证):O62 配方(TEMPEST p0)下 save_up 250 把 CARRIER
+        # 永久截断出 spawn(FB 就绪后 160s 零航母)—— carrier 憋气必须关
+        self.assertEqual(FlowConfig.load("carrier").save_up, 0)
         # tempest 单兵种不需要憋气,保持关
         self.assertEqual(FlowConfig.load("tempest").save_up, 0)
 
@@ -260,6 +273,66 @@ class TestPivotRushCannons(unittest.TestCase):
         self.assertTrue(fc.core_structure_ids(), "dt 科技链枚举为空")
         self.assertEqual(len(fc.upgrade_ids()), len(fc.upgrades),
                          "dt 有升级名解析不出")
+
+
+class TestTransitionConfig(unittest.TestCase):
+    """O92 过渡形态配置解析(carrier 专属;tempest/stalker/dt 不加,行为冻结)。"""
+
+    def test_default_none(self):
+        self.assertIsNone(FlowConfig.from_dict("x", {"spawn": {}}).transition)
+
+    def test_parse_and_defaults(self):
+        fc = FlowConfig.from_dict("x", {"spawn": {}, "transition": {
+            "ground_spawn": {"stalker ": {"proportion": 0.4, "priority": 0},
+                             "ZEALOT": {"proportion": 0.6, "priority": 1}},
+        }})
+        tr = fc.transition
+        self.assertIsNotNone(tr)
+        self.assertEqual(tr.ground_spawn, {
+            "STALKER": {"proportion": 0.4, "priority": 0},
+            "ZEALOT": {"proportion": 0.6, "priority": 1},
+        })
+        self.assertEqual(tr.gateway_cap, 3)      # 缺省
+        self.assertEqual(tr.fleet_at, 700.0)     # 缺省
+
+    def test_explicit_values(self):
+        fc = FlowConfig.from_dict("x", {"spawn": {}, "transition": {
+            "ground_spawn": {"ZEALOT": {"proportion": 1.0, "priority": 0}},
+            "gateway_cap": 4, "fleet_at": 650,
+        }})
+        self.assertEqual(fc.transition.gateway_cap, 4)
+        self.assertEqual(fc.transition.fleet_at, 650.0)
+
+    def test_ground_spawn_sum_over_one_raises(self):
+        with self.assertRaises(ValueError):
+            FlowConfig.from_dict("x", {"spawn": {}, "transition": {
+                "ground_spawn": {"A": {"proportion": 0.7},
+                                 "B": {"proportion": 0.5}},
+            }})
+
+    def test_ground_spawn_negative_proportion_raises(self):
+        with self.assertRaises(ValueError):
+            FlowConfig.from_dict("x", {"spawn": {}, "transition": {
+                "ground_spawn": {"A": {"proportion": -0.1}},
+            }})
+
+    def test_carrier_shipped_transition(self):
+        _yaml_or_skip(self)
+        tr = FlowConfig.load("carrier").transition
+        self.assertIsNotNone(tr)
+        # freeflow 下优先序即一切:气耗 STALKER 必须 p0(ZEALOT p0 则追猎永不出场)
+        self.assertEqual(tr.ground_spawn, {
+            "STALKER": {"proportion": 0.4, "priority": 0},
+            "ZEALOT": {"proportion": 0.6, "priority": 1},
+        })
+        self.assertEqual(tr.gateway_cap, 3)
+        self.assertEqual(tr.fleet_at, 400.0)     # O108:420→400(o107局3/5:波次413-421到脸,清净达标窗380-410)
+
+    def test_other_flows_have_no_transition(self):
+        """冻结:tempest/stalker/dt 不配 transition(行为零变化)。"""
+        _yaml_or_skip(self)
+        for name in ("tempest", "stalker", "dt"):
+            self.assertIsNone(FlowConfig.load(name).transition, name)
 
 
 if __name__ == "__main__":

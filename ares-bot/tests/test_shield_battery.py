@@ -1,5 +1,10 @@
 """shield_battery.pick_restore_target 单测 —— Sharky 规则:DPS 降序、盾量升序、跳过已锁定。"""
-from bot.shield_battery import pick_restore_target
+from bot.shield_battery import (
+    overcharge_struct_allowed,
+    pick_overcharge_target,
+    pick_restore_target,
+    should_overcharge,
+)
 
 
 class _U:
@@ -36,3 +41,32 @@ def test_skips_busy_tags():
 
 def test_empty_returns_none():
     assert pick_restore_target([], set()) is None
+
+
+def test_overcharge_gate():
+    # O120-②:敌地面压到电池旁 + 能量 ≥50 → 超载;否则不烧(能量留着奶)
+    assert should_overcharge(2, 45.0)
+    assert should_overcharge(6, 80.0)
+    assert not should_overcharge(2, 44.0)  # O121:能量门 50→45
+    assert not should_overcharge(1, 80.0)
+
+
+def test_overcharge_target_prefers_structures():
+    # O122-③:超载塔优先(DPS 续航最值),无残盾塔才给盾%最低单位
+    tower = _U(1, shield=20)   # shield_max 默认 50 → 40%
+    tower.shield_max = 100
+    tower2 = _U(2, shield=10)
+    tower2.shield_max = 100
+    zealot = _U(3, shield=5)
+    zealot.shield_max = 50
+    assert pick_overcharge_target([tower, tower2], [zealot]) is tower2
+    assert pick_overcharge_target([], [zealot]) is zealot
+    assert pick_overcharge_target([], []) is None
+
+
+def test_overcharge_struct_whitelist():
+    # O123-②:超载只挂塔/主基地 —— PYLON 白烧(o122 局3 实证)不再发生
+    assert overcharge_struct_allowed("PHOTONCANNON")
+    assert overcharge_struct_allowed("NEXUS")
+    assert not overcharge_struct_allowed("PYLON")
+    assert not overcharge_struct_allowed("GATEWAY")

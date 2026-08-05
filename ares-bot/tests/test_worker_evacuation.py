@@ -23,7 +23,11 @@ from ares.consts import UnitRole  # noqa: E402
 from sc2.ids.unit_typeid import UnitTypeId as UnitID  # noqa: E402
 from sc2.position import Point2  # noqa: E402
 
-from bot.main import _EVAC_ROLE, update_worker_evacuation  # noqa: E402
+from bot.main import (  # noqa: E402
+    _EVAC_ROLE,
+    release_contested_miners,
+    update_worker_evacuation,
+)
 from bot.production_plans import (  # noqa: E402
     evacuation_clear,
     pick_evacuation_base,
@@ -288,6 +292,76 @@ class TestWorkerEvacuation(unittest.TestCase):
 
         self.assertEqual(assigned, [])
         self.assertEqual(ai._evac_bases, {})
+
+
+    def test_lost_base_stays_evacuated_while_enemy_camps(self):
+        # O39(司令观察):二矿被推平、敌军仍盘踞 → 撤离不解除,不放农民回死矿送死
+        enemies = [_unit(900 + i, NAT) for i in range(5)]
+        ai, assigned, workers = self._two_base_setup(enemies)
+        update_worker_evacuation(ai)
+        self.assertIn(2, ai._evac_bases)
+        assigned.clear()
+
+        # 二矿 Nexus 被推平(th 消失),敌军还在 → 维持撤离
+        ai.townhalls = [t for t in ai.townhalls if t.tag != 2]
+        update_worker_evacuation(ai)
+        self.assertIn(2, ai._evac_bases)
+        self.assertNotIn((101, UnitRole.GATHERING), assigned)
+        self.assertNotIn((102, UnitRole.GATHERING), assigned)
+
+        # 敌军真撤了 → 回采(死矿矿脉安全后照常采)
+        ai.enemy_units = []
+        update_worker_evacuation(ai)
+        self.assertIn((101, UnitRole.GATHERING), assigned)
+        self.assertNotIn(2, ai._evac_bases)
+
+
+class TestReleaseContestedMiners(unittest.TestCase):
+    """O39:敌主力盘踞的矿/气,摘掉农民资源指派(治基地推平后回流送死)。"""
+
+    def _fake_ai(self, enemies):
+        removed_minerals: list[int] = []
+        removed_gas: list[int] = []
+        mf_nat = SimpleNamespace(tag=501, position=NAT)
+        mf_main = SimpleNamespace(tag=502, position=MAIN)
+        gas_nat = SimpleNamespace(tag=601, position=NAT)
+        mediator = SimpleNamespace(
+            get_worker_to_mineral_patch_dict={101: 501, 102: 502},
+            get_worker_to_vespene_dict={103: 601},
+            remove_mineral_field=lambda mineral_field_tag: removed_minerals.append(
+                mineral_field_tag
+            ),
+            remove_gas_building=lambda gas_building_tag: removed_gas.append(
+                gas_building_tag
+            ),
+        )
+        ai = SimpleNamespace(
+            enemy_units=list(enemies),
+            unit_tag_dict={501: mf_nat, 502: mf_main, 601: gas_nat},
+            mediator=mediator,
+        )
+        return ai, removed_minerals, removed_gas
+
+    def test_contested_patches_released_safe_kept(self):
+        # 3 狗盘踞二矿 → 二矿的矿+气指派被摘,主矿的保留
+        enemies = [_unit(900 + i, NAT) for i in range(3)]
+        ai, rm, rg = self._fake_ai(enemies)
+
+        self.assertEqual(release_contested_miners(ai), 2)
+        self.assertEqual(rm, [501])
+        self.assertEqual(rg, [601])
+
+    def test_no_threats_is_noop(self):
+        ai, rm, rg = self._fake_ai([])
+        self.assertEqual(release_contested_miners(ai), 0)
+        self.assertEqual(rm, [])
+        self.assertEqual(rg, [])
+
+    def test_single_enemy_below_threshold_keeps_assignment(self):
+        # 1 个敌兵 < 滞回线 2 → 不摘(与 E6 回采判据同源)
+        ai, rm, rg = self._fake_ai([_unit(900, NAT)])
+        self.assertEqual(release_contested_miners(ai), 0)
+        self.assertEqual(rm, [])
 
 
 if __name__ == "__main__":

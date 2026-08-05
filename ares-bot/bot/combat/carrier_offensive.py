@@ -6,6 +6,7 @@ from ares import ManagerMediator, UnitTreeQueryType
 from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.individual import AttackTarget, PathUnitToTarget
 from cython_extensions.combat_utils import cy_pick_enemy_target
+from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.position import Point2
 from sc2.unit import Unit
 from sc2.units import Units
@@ -30,6 +31,8 @@ _AA_FALLBACK_RANGE: float = 7.0
 _AA_BUFFER: float = 4.0
 # 放机判定余量(拦截机机动半径之外的缓冲)
 _ENGAGE_BUFFER: float = 1.5
+# O58:飞蛇 Abduct 射程(不能对空攻击,但绑架=点名航母,比对空火力更致命)
+_VIPER_ABDUCT_RANGE: float = 9.0
 
 
 @dataclass
@@ -101,12 +104,21 @@ class CarrierOffensive(BaseUnit):
                 maneuver.add(AttackTarget(unit=unit, target=target))
                 # O24:放机后主体拉开到对空威胁射程外 —— 航母主体退 >敌 air_range 仍持续输出
                 # (拦截机飞出去打,主体不挨打)。否则航母停在 9.5 格被 Thor(9)/Viking(9) 白嫖。
+                # O58:飞蛇(can't attack air,不在 O24 判定内)Abduct 射程 9 一并避让 ——
+                # 被绑=必死,比被白嫖更糟(Harder 连败复盘:航母多次人间蒸发于飞蛇)。
                 aa = next(
-                    (e for e in engage if getattr(e, "can_attack_air", False)), None
+                    (
+                        e for e in engage
+                        if getattr(e, "can_attack_air", False)
+                        or e.type_id == UnitID.VIPER
+                    ),
+                    None,
                 )
                 if aa is not None:
                     aa_range = (
-                        getattr(aa, "air_range", None) or _AA_FALLBACK_RANGE
+                        _VIPER_ABDUCT_RANGE
+                        if aa.type_id == UnitID.VIPER
+                        else (getattr(aa, "air_range", None) or _AA_FALLBACK_RANGE)
                     ) + _AA_BUFFER
                     if unit.distance_to(aa) < aa_range:
                         retreat = unit.position.towards(self.ai.start_location, aa_range)

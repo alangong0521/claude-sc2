@@ -23,7 +23,11 @@ from ares.consts import ID as TRACKER_ID  # noqa: E402
 from ares.consts import UnitRole  # noqa: E402
 from sc2.ids.unit_typeid import UnitTypeId as UnitID  # noqa: E402
 
-from bot.main import recall_scouting_workers, release_from_build_tracker  # noqa: E402
+from bot.main import (  # noqa: E402
+    recall_pivot_scout_after_intel,
+    recall_scouting_workers,
+    release_from_build_tracker,
+)
 
 
 def _fake_mediator(tracker: dict, counter) -> SimpleNamespace:
@@ -107,6 +111,71 @@ class TestRecallScoutingWorkers(unittest.TestCase):
         self.assertEqual(recall_scouting_workers(ai), 1)
         self.assertEqual(assigned, [(33, UnitRole.GATHERING)])
         self.assertEqual(gathered, [])  # 没矿可回也不崩
+
+
+class TestRecallPivotScoutAfterIntel(unittest.TestCase):
+    """O35 修复(司令观察):tempest/stalker 的 pivot 早侦查探机看到敌建筑
+    (情报送达)后立刻撤回,不再留在敌家等小狗孵化白送。carrier 走 O9,不动。"""
+
+    @staticmethod
+    def _fake_ai(flow="tempest", scout_tag=42, intel=True, scout_role=UnitRole.SCOUTING):
+        assigned: list[tuple[int, object]] = []
+        moved: list[object] = []
+        scout = SimpleNamespace(tag=scout_tag) if scout_role is not None else None
+        if scout is not None:
+            scout.move = lambda target: moved.append(target)
+        pm = SimpleNamespace(
+            _flow=SimpleNamespace(name=flow),
+            _pivot_scout_tag=scout_tag,
+        )
+        roles = {scout_tag: scout_role}
+        ai = SimpleNamespace(
+            production_manager=pm,
+            enemy_structures=["SPAWNINGPOOL"] if intel else [],
+            units=SimpleNamespace(find_by_tag=lambda tag: scout),
+            mediator=SimpleNamespace(
+                assign_role=lambda tag, role: assigned.append((tag, role))
+            ),
+            _current_role=lambda tag: roles.get(tag),
+            ready_townhalls=None,  # home_mineral 返回 None → 回退 move(start_location)
+            mineral_field=None,
+            start_location="home",
+        )
+        return ai, pm, assigned, moved
+
+    def test_tempest_scout_recalled_after_intel(self):
+        ai, pm, assigned, moved = self._fake_ai()
+        self.assertTrue(recall_pivot_scout_after_intel(ai))
+        self.assertEqual(assigned, [(42, UnitRole.GATHERING)])
+        self.assertEqual(moved, ["home"])  # 回家,不是留在敌家
+        self.assertIsNone(pm._pivot_scout_tag)
+
+    def test_no_intel_yet_is_noop(self):
+        ai, pm, assigned, moved = self._fake_ai(intel=False)
+        self.assertFalse(recall_pivot_scout_after_intel(ai))
+        self.assertEqual(assigned, [])
+        self.assertEqual(pm._pivot_scout_tag, 42)  # tag 保留,继续探
+
+    def test_carrier_flow_untouched(self):
+        # carrier 走 O9 评估撤回(已验证基线),O35 不插手
+        ai, pm, assigned, moved = self._fake_ai(flow="carrier")
+        self.assertFalse(recall_pivot_scout_after_intel(ai))
+        self.assertEqual(assigned, [])
+        self.assertEqual(pm._pivot_scout_tag, 42)
+
+    def test_dead_scout_clears_tag_without_crash(self):
+        ai, pm, assigned, moved = self._fake_ai(scout_role=None)
+        self.assertFalse(recall_pivot_scout_after_intel(ai))
+        self.assertEqual(assigned, [])
+        self.assertIsNone(pm._pivot_scout_tag)
+
+    def test_already_recalled_by_o4_not_double_ordered(self):
+        # O4 rush 撤回先把 role 归了 GATHERING → 只清 tag,不重复下令
+        ai, pm, assigned, moved = self._fake_ai(scout_role=UnitRole.GATHERING)
+        self.assertFalse(recall_pivot_scout_after_intel(ai))
+        self.assertEqual(assigned, [])
+        self.assertEqual(moved, [])
+        self.assertIsNone(pm._pivot_scout_tag)
 
 
 if __name__ == "__main__":

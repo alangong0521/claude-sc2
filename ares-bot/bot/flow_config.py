@@ -39,6 +39,7 @@ class ExtraProduction:
     id_name: str            # 引擎枚举名(大写),如 STARGATE / GATEWAY
     cap: int = 6            # 封顶
     base: int = 1           # 随基地数放大的基数
+    mineral_gate: float = 400.0  # O53:「矿富余」门槛可调(carrier 提前第二星门用 250)
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,12 @@ class PreFleet:
     cap: int = 6
     per_enemy: float = 0.0
     max: int = 0
+    exit_ground: int = 4  # O48:floor 退出的地面兵门槛(floor_exits ground_min);
+                        # carrier vs Harder 波次要 8(4 叉在 41-supply 波前=没有)
+    # O134-①(o133 局2 实证):第二保底兵种(追猎 —— 气耗但中局气常烂在银行,
+    # 对蟑螂/刺蛇波的关键 DPS);cap2=0 关闭,旧配置行为逐位不变
+    id2: str = ""
+    cap2: int = 0
 
 
 @dataclass(frozen=True)
@@ -105,6 +112,46 @@ class PivotConfig:
     anti_air_trigger: int = 3
     rush_zealots: int = 0
     rush_cannons: bool = True
+
+
+@dataclass(frozen=True)
+class Transition:
+    """O92 过渡形态(carrier 快攻墙修复):rush 确认(verdict=rush 或接触)后
+    转地面配方过渡 —— 冻结星门/舰队航标,追加兵营(≤gateway_cap),save_up/
+    pre_fleet 挂起;到 fleet_at 且家 40 格威胁清除 30s → 转舰队(latch 不回头)。
+    ground_spawn = 过渡期 spawn 配方(走 SpawnController/freeflow,priority 定
+    优先序:freeflow 下 p0 恒可负担时 p1 永不出场,故气耗兵种应放 p0)。None=关。"""
+    ground_spawn: dict          # {引擎兵种名(大写): {"proportion": float, "priority": int}}
+    gateway_cap: int = 3        # 过渡期追加兵营(GATEWAY,含 WARPGATE)总数上限
+    fleet_at: float = 700.0     # 转舰队最早时点(游戏秒;威胁未清则保持过渡直到清)
+
+    def ground_spawn_dict(self):
+        """{UnitID: {proportion, priority}} —— 喂 ares SpawnController(只收 proportion>0)。"""
+        if not _HAS_SC2:
+            raise RuntimeError("sc2 未安装,ground_spawn_dict 需运行时")
+        return {
+            getattr(UnitID, k): v for k, v in self.ground_spawn.items()
+            if v["proportion"] > 0
+        }
+
+
+def _parse_spawn_dict(flow_name: str, raw: dict | None, label: str = "spawn") -> dict:
+    """spawn 配方解析+校验(主配方与 transition.ground_spawn 共用):
+    名字归一大写、proportion 非负、比例和 ≤ 1.0(≈1.0 惯例,超出报错)。"""
+    spawn: dict = {}
+    total = 0.0
+    for uid, cfg in (raw or {}).items():
+        uid_n = str(uid).strip().upper()
+        cfg = cfg or {}
+        prop = float(cfg.get("proportion", 0.0))
+        prio = int(cfg.get("priority", 5))
+        if prop < 0:
+            raise ValueError(f"流派 {flow_name} 的 {uid_n} proportion 不能为负: {prop}")
+        spawn[uid_n] = {"proportion": prop, "priority": prio}
+        total += prop
+    if spawn and total > 1.0 + 1e-6:
+        raise ValueError(f"流派 {flow_name} {label} 比例和 {total} 超过 1.0")
+    return spawn
 
 
 @dataclass
@@ -125,23 +172,12 @@ class FlowConfig:
     expansion_cannons: ExpansionCannons | None = None  # 分矿塔数区间(None=固定 2)
     pre_fleet: PreFleet | None = None  # E3e 舰队成型前地面保底(None=关)
     main_siege: MainSiege | None = None  # 需求3:敌压上主基加强塔(None=关)
+    transition: Transition | None = None  # O92 过渡形态(None=关)
 
     @classmethod
     def from_dict(cls, name: str, data: dict) -> "FlowConfig":
         """从已解析的 dict 构造(可单测,不读文件)。"""
-        spawn: dict = {}
-        total = 0.0
-        for uid, cfg in (data.get("spawn") or {}).items():
-            uid_n = str(uid).strip().upper()
-            cfg = cfg or {}
-            prop = float(cfg.get("proportion", 0.0))
-            prio = int(cfg.get("priority", 5))
-            if prop < 0:
-                raise ValueError(f"流派 {name} 的 {uid_n} proportion 不能为负: {prop}")
-            spawn[uid_n] = {"proportion": prop, "priority": prio}
-            total += prop
-        if spawn and total > 1.0 + 1e-6:
-            raise ValueError(f"流派 {name} spawn 比例和 {total} 超过 1.0")
+        spawn = _parse_spawn_dict(name, data.get("spawn"))
 
         ep_raw = data.get("extra_production")
         extra = None
@@ -150,6 +186,7 @@ class FlowConfig:
                 str(ep_raw["id"]).strip().upper(),
                 int(ep_raw.get("cap", 6)),
                 int(ep_raw.get("base", 1)),
+                float(ep_raw.get("mineral_gate", 400.0)),
             )
 
         ch_raw = data.get("chrono") or {}
@@ -205,6 +242,9 @@ class FlowConfig:
                 int(pf_raw.get("cap", 6)),
                 float(pf_raw.get("per_enemy", 0.0)),
                 int(pf_raw.get("max", 0)),
+                int(pf_raw.get("exit_ground", 4)),
+                str(pf_raw.get("id2", "") or "").strip().upper(),
+                int(pf_raw.get("cap2", 0)),
             )
         pv_raw = data.get("pivot") or {}
         pivot = None
@@ -218,6 +258,16 @@ class FlowConfig:
                 rush_zealots=int(pv_raw.get("rush_zealots", 0)),
                 rush_cannons=bool(pv_raw.get("rush_cannons", True)),
             )
+        tr_raw = data.get("transition")
+        transition = None
+        if tr_raw:
+            transition = Transition(
+                ground_spawn=_parse_spawn_dict(
+                    name, tr_raw.get("ground_spawn"), label="transition.ground_spawn"
+                ),
+                gateway_cap=int(tr_raw.get("gateway_cap", 3)),
+                fleet_at=float(tr_raw.get("fleet_at", 700.0)),
+            )
         return cls(
             name=name, spawn=spawn, core_structures=core, upgrades=upgrades,
             extra_production=extra, chrono=ChronoConfig(targets=targets, when=when),
@@ -230,6 +280,7 @@ class FlowConfig:
             expansion_cannons=expansion_cannons,
             pre_fleet=pre_fleet,
             main_siege=main_siege,
+            transition=transition,
         )
 
     @classmethod

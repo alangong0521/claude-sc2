@@ -8,11 +8,14 @@ from ares.consts import ID as TRACKER_ID
 from ares.consts import TIME_ORDER_COMMENCED, TOWNHALL_TYPES, UnitRole
 from bot.production_plans import (
     builder_is_waiting,
+    builder_release_exempt,
     evacuation_clear,
     idle_builder_alarm,
     is_combat_type,
     nexus_rebuild_viable,
     pick_evacuation_base,
+    resource_contested,
+    scout_next_step,
     should_evacuate_workers,
     should_release_waiting_builder,
 )
@@ -84,6 +87,67 @@ def recall_scouting_workers(ai) -> int:
     return len(scouts)
 
 
+def recall_pivot_scout_after_intel(ai) -> bool:
+    """O35(司令观察,tempest vs Zerg 实证):pivot 早侦查探机(production_manager
+    `_early_scout` t≈100s 派出)一旦看到敌建筑(情报已送达)即撤回采矿。
+
+    tempest/stalker 没有 carrier 的 O9 评估撤回路径,O4 又只在 rush 确认时触发 ——
+    探机留在敌家只会干等小狗孵化白送。carrier 走 O9 自有撤回,这里不动(已验证基线)。
+    探机已死/已被 O4 撤回(role 非 SCOUTING)时只清 tag 不重复下令。
+    返回 True=本帧执行了撤回。纯操作函数,可单测。"""
+    pm = ai.production_manager
+    if pm._flow.name == "carrier":
+        return False
+    tag = pm._pivot_scout_tag
+    if tag is None or not ai.enemy_structures:
+        return False
+    pm._pivot_scout_tag = None
+    scout = ai.units.find_by_tag(tag)
+    if scout is None or ai._current_role(scout.tag) != UnitRole.SCOUTING.name:
+        return False
+    ai.mediator.assign_role(tag=scout.tag, role=UnitRole.GATHERING)
+    target = home_mineral(ai) or ai.start_location
+    if isinstance(target, Unit):
+        scout.gather(target)
+    else:
+        scout.move(target)
+    return True
+
+
+def release_contested_miners(ai) -> int:
+    """O39(司令观察):敌地面主力盘踞的矿线,摘掉农民的矿/气资源指派。
+
+    基地被推平后,持旧指派的 GATHERING 农民会被 ares Mining 一路派回死矿
+    (keep_safe 只在脸上遇敌时躲一下,躲完继续走)——反复重进敌军主力区域送死。
+    摘除指派后 ResourceManager 下帧把他重派到活着基地的资源线。
+    判据纯函数 production_plans.resource_contested(与 E6 回采滞回线同源)。
+    返回摘除数。纯操作函数,可单测。"""
+    worker_types = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+    threats = [
+        u for u in ai.enemy_units
+        if not u.is_structure and not u.is_flying and u.type_id not in worker_types
+    ]
+    if not threats:
+        return 0
+
+    def _near(pos) -> int:
+        return sum(1 for t in threats if t.position.distance_to(pos) < _EVAC_RADIUS)
+
+    released = 0
+    mediator = ai.mediator
+    for patch_tag in list(mediator.get_worker_to_mineral_patch_dict.values()):
+        mf = ai.unit_tag_dict.get(patch_tag)
+        if mf is not None and resource_contested(_near(mf.position)):
+            mediator.remove_mineral_field(mineral_field_tag=patch_tag)
+            released += 1
+    for g_tag in list(mediator.get_worker_to_vespene_dict.values()):
+        g = ai.unit_tag_dict.get(g_tag)
+        if g is not None and resource_contested(_near(g.position)):
+            mediator.remove_gas_building(gas_building_tag=g_tag)
+            released += 1
+    return released
+
+
 def home_mineral(ai):
     """离主基 townhall 最近的矿脉(撤回侦查农民用,Bug1)。
 
@@ -132,8 +196,10 @@ def update_worker_evacuation(ai) -> None:
           (别站着)。单基地无塔无处可撤 → 不动,交 ares Mining keep_safe 个体避险;
        c) 就近有地面防御兵力 → 事件里标记集结点(**不强行微操**,
           rush/stance/集结纪律的优先级都在 combat_manager,不抢)。
-    3. **回采**:敌地面 <2(滞回,防边界抖动往返)或基地已丢(O15 重建接管)
-       → 全员归 GATHERING 回最近矿脉,ares ResourceManager 自动重新分配。
+    3. **回采**:敌地面 <2(滞回,防边界抖动往返) → 全员归 GATHERING 回最近矿脉,
+       ares ResourceManager 自动重新分配;**基地已丢(th None)但敌地面仍盘踞死矿
+       → 维持撤离**(O39 司令观察:不放农民回死矿送死),敌真撤了才回采
+       (死矿矿脉还有资源,安全后照常回去采)。
 
     与现有机制的关系:
     - rush 期**主基**不新增撤离(六连动全权接管主基防守,行为不变);
@@ -173,7 +239,9 @@ def update_worker_evacuation(ai) -> None:
     for th_tag, info in list(evac_bases.items()):
         th = next((t for t in ai.townhalls if t.tag == th_tag), None)
         anchor = th.position if th is not None else info["pos"]
-        if th is not None and not evacuation_clear(_enemy_ground_near(anchor)):
+        # O39:基地已丢(th None)也按同一判据 —— 敌地面仍盘踞死矿就维持撤离,
+        # 不放农民回敌军主力中间采矿(司令观察:推平二矿后农民回流送死)。
+        if not evacuation_clear(_enemy_ground_near(anchor)):
             for tag in list(info["workers"]):
                 w = next((x for x in ai.workers if x.tag == tag), None)
                 if w is None or tag in ai._player_ctrl:
@@ -186,7 +254,7 @@ def update_worker_evacuation(ai) -> None:
                     else:  # 途中被卡/命令被打断 → 补 move
                         w.move(info["target"])
             continue
-        # 敌退(或基地已丢,O15 重建接管) → 全员归 GATHERING 回采
+        # 敌真退了(含基地已丢、死矿已安全) → 全员归 GATHERING 回采
         returned = 0
         for tag in list(info["workers"]):
             w = next((x for x in ai.workers if x.tag == tag), None)
@@ -309,6 +377,8 @@ class MyBot(AresBot):
         # 侦察：一次 scout=on 只派一个农民，看完撤回/死了不补（_scout_done 防止无限续命送死）
         self._scout_tag: int | None = None
         self._scout_done: bool = False
+        # O36: 待排查出生点(近→远)。4人图 1v1 敌人只占其一,逐点排查;显式 enemy=E# 锁槽时=[该点]。
+        self._scout_route: list = []
         # Bug2:上次见到的 scout 命令时间戳(steer_cli set scout 时盖的 _scout_ts)。
         # clear+scout=on 同步执行时 bot 4s 轮询读不到 clear → _scout_done 不重置,
         # 改用时间戳变化判"又下了一次 scout",见 scout_should_redispatch。
@@ -322,6 +392,8 @@ class MyBot(AresBot):
         self._player_ctrl: dict[int, dict] = {}
         # 闲置农民清扫的时间戳(每 1 游戏秒扫一次)
         self._last_idle_sweep: float = -10.0
+        # O39:危险矿线资源指派摘除的节流(与 idle 清扫同 1s 节奏)
+        self._last_contested_scan: float = -10.0
         # 敌方打出 gg(投降意向)检测,一局只记一次
         self._enemy_gg: bool = False
         # B8 自调参(leitwerk ask/tell):只记录+学习,ask 出的参数暂不接消费点
@@ -364,12 +436,28 @@ class MyBot(AresBot):
         # 放在 production 之后:rush_active 是本帧最新;role 改动先于 _after_step
         # 的 Mining 执行生效,不会与 Mining 抢命令。
         update_worker_evacuation(self)
+        # O39:敌主力盘踞的矿线摘掉农民资源指派(基地被推平后持旧指派回流送死),
+        # 1s 节流;摘除后 ResourceManager 把人重派到活着基地
+        if self.time - self._last_contested_scan >= 1.0:
+            self._last_contested_scan = self.time
+            release_contested_miners(self)
         # O19(司令章程「对局后检查」):曝光 >1s 干等建造的农民(纯观测发事件)
         self._detect_idle_builders()
 
         # 调研合并(community-tactics-research §2.3):电池主动充能 —— 纯增量微操,
         # 没电池/没残盾单位时零指令。异常静默,绝不崩主循环。
         restore_with_batteries(self)
+        # O120-②(o119 系列实证):波次接触时给残盾塔/前排挂超载(盾回翻倍,
+        # 神族防多波标配;此前从没用过)。异常静默,同 restore。
+        from bot.shield_battery import overcharge_with_batteries
+        _oc = overcharge_with_batteries(self)
+        if _oc and self.time - getattr(self, "_oc_logged_at", 0.0) > 30.0:
+            # O121-②/O122-③:超载触发簿记(含目标名,验证挂给谁)
+            self._oc_logged_at = self.time
+            self._events.append({
+                "t": round(self.time, 1),
+                "msg": f"O121:电池超载×{_oc}→{getattr(self, '_last_oc_target', '?')}",
+            })
         # 调研合并(ares 调研 A3):水晶被拆导致产兵建筑断电 → 自动补水晶。
         # can_afford 守卫防 O11 钉点(RestorePower 自身无守卫,与 ProtossStaticDefence 同类风险)。
         if self.can_afford(UnitID.PYLON):
@@ -384,6 +472,12 @@ class MyBot(AresBot):
             self._scout_done = True
             self._events.append(
                 {"t": round(self.time, 1), "msg": "确认rush,侦查农民撤回(O4)"}
+            )
+        # O35: 非 rush 场景,pivot 早侦查探机看到敌建筑(情报送达)也撤回 ——
+        # O4 只在 rush 确认时统一撤,carrier 走 O9,这条补 tempest/stalker 的空档。
+        if recall_pivot_scout_after_intel(self):
+            self._events.append(
+                {"t": round(self.time, 1), "msg": "侦查完成,探机撤回(O35)"}
             )
 
         # Q5 早负判负(bench 省垃圾时间):前 10 分钟基地全没 → 投降离场。
@@ -426,7 +520,10 @@ class MyBot(AresBot):
         """⑦侦察·派农民：scout=on 只派**一个** probe 去敌方主基探查。
         它摸到对面就撤回来采矿；死了就死了，**绝不补新的**（否则粘性命令会无限续命送死）。
         想再派一个 → 参谋长先 clear/scout=off 再 scout=on（_scout_done 被重置）。
-        多人混战：默认摸**最近的敌人**（E1）；想摸别家先 enemy=E2 再 scout=on。"""
+        多人混战：默认摸**最近的敌人**（E1）；想摸别家先 enemy=E2 再 scout=on。
+        O36(司令观察,4人图实证):多出生点地图默认**逐点排查**全部候选出生点(近→远),
+        找到敌建筑或全部摸完才回家(纯函数 production_plans.scout_next_step);
+        司令显式 enemy=E# 锁槽时保持老语义,只摸该点。"""
         enemy_main = self.focused_enemy_start()
         if (self.steer_order or {}).get("scout") != "on":
             # O34 循环 scout(vs Zerg 持续盯兵力/转型):司令没下 scout + vs Zerg +
@@ -446,6 +543,7 @@ class MyBot(AresBot):
                     if scout is not None:
                         self.mediator.assign_role(tag=scout.tag, role=UnitRole.GATHERING)
                     self._scout_tag = None
+                self._scout_route = []
                 self._scout_done = False
                 return
 
@@ -478,9 +576,17 @@ class MyBot(AresBot):
                     else:
                         scout.move(target)
                     self._scout_tag = None
+                    self._scout_route = []
                     return
-                if scout.distance_to(enemy_main) < 12:
-                    # 摸到对面了，看够了 → 撤回家采矿。必须显式下回家命令(Bug1):
+                if not self._scout_route:
+                    self._scout_route = [enemy_main]  # 兜底:无 route 记录时退化为单点
+                step = scout_next_step(
+                    self._scout_route,
+                    arrived=scout.distance_to(self._scout_route[0]) < 12,
+                    intel_found=bool(self.enemy_structures),
+                )
+                if step == "home":
+                    # 情报到手/全部摸完 → 撤回家采矿。必须显式下回家命令(Bug1):
                     # 仅 assign_role 不给指令 → 下一帧 _handle_idle_workers 用
                     # mineral_field.closest_to(w) 派去"离探机最近的矿"=敌方矿线,
                     # 深入送死(t=128 实证)。改用离主基最近的矿(home_mineral)。
@@ -491,15 +597,27 @@ class MyBot(AresBot):
                     else:                           # Point2 回退 → move
                         scout.move(target)
                     self._scout_tag = None
+                    self._scout_route = []
+                elif step == "next":
+                    # 当前出生点是空的 → 去下一个候选点(O36)
+                    self._scout_route.pop(0)
+                    scout.move(self._scout_route[0])
                 elif scout.is_idle:
-                    scout.move(enemy_main)
+                    scout.move(self._scout_route[0])
             return
 
         # 还没派过 → 抽一个去侦察，标记已派（之后绝不补）
-        w = self.mediator.select_worker(target_position=enemy_main)
+        # O36: 显式 enemy=E# → 只摸该点;否则近→远逐点排查全部候选出生点
+        _slot = steer.enemy_slot_index((self.steer_order or {}).get("enemy"))
+        self._scout_route = (
+            [enemy_main] if _slot is not None else list(self.enemy_starts_ranked())
+        )
+        if not self._scout_route:
+            return
+        w = self.mediator.select_worker(target_position=self._scout_route[0])
         if w:
             self.mediator.assign_role(tag=w.tag, role=UnitRole.SCOUTING)
-            w.move(enemy_main)
+            w.move(self._scout_route[0])
             self._scout_tag = w.tag
             self._scout_done = True
             self._last_scout_finished = self.time  # O34:循环 scout 计时(距此 >60s 自动重派)
@@ -534,7 +652,13 @@ class MyBot(AresBot):
                 # 是防御链的一部分;此时撤回会陷入「派出→钉点→6s 撤回→重派」
                 # 循环,炮塔永远起不来(e4c game_02 实证:矿 170-390 而首塔
                 # 拖到 206s 才 warp-in,首波被穿)。
-                if self.production_manager.rush_active:
+                # O117-②(o116 取证实证):豁免扩到防御紧急(rush确认/过渡/
+                # presumed)—— presumed 期 rush_active 未置位,塔工被「6s 撤回
+                # +15s 重派冷却」循环折腾(21s/轮),首塔永远慢半拍
+                if builder_release_exempt(
+                    self.production_manager.rush_active,
+                    getattr(self.production_manager, "_defense_urgent", False),
+                ):
                     continue
                 # O11:钉在建造点等钱的工人(ares 无守卫路径:ProtossStaticDefence/
                 # TechUp)——钉点超 6s 且结构仍买不起 → 拆 tracker 撤回采矿,
@@ -550,17 +674,27 @@ class MyBot(AresBot):
                 # grace=30s 保 E3k 开矿预走位语义;原硬豁免致 Nexus 农民干等到死)。
                 # 其余建筑 grace=6s(短暂等钱容忍,真没钱就撤回采矿、钱够再来)。
                 # O21b:开局(time<120)普通建筑 grace=1s(开局贴 0 存款,等>1s 就撤回采矿,
-                # 不滚雪球——开局每等 1s 都拉大经济差距);中段 6s(容忍短暂等钱);TOWNHALL 30s。
+                # 不滚雪球——开局每等 1s 都拉大经济差距);中段 6s;TOWNHALL 30s。
+                # O139-②(o137 两 lane 干等事件实证):提前撤回通道 —— 钉点 >3s
+                # 且矿缺口 >5s 收入 → 不等 grace 立即撤回(干等 3s 即亏);
+                # TOWNHALL 走 early_age=30(预走位语义不动)
                 grace = 30.0 if sid in TOWNHALL_TYPES else (1.0 if self.time < 120 else 6.0)
                 if should_release_waiting_builder(
                     self.can_afford(sid),
                     self.time - info[TIME_ORDER_COMMENCED],
                     grace=grace,
+                    deficit=max(
+                        0.0, self.calculate_cost(sid).minerals - self.minerals
+                    ),
+                    income_5s=self.production_manager._mineral_income_per_sec() * 5.0,
+                    early_age=3.0 if sid not in TOWNHALL_TYPES else 30.0,
                 ):
                     release_from_build_tracker(self.mediator, w.tag)
                     # O19 防重派循环:记录撤回时刻,production_manager 对同类结构
-                    # 冷却 15s 不再派工(o19fix 实证:撤回→下帧守卫又过→再派的
-                    # 循环让同一农民反复钉点)。rush 期 O11 豁免 → 无冷却(E4c)。
+                    # 冷却 10s(O139-②:15→10)不再派工(o19fix 实证:撤回→下帧
+                    # 守卫又过→再派的循环让同一农民反复钉点)。
+                    # rush 期 O11 豁免 → 无冷却(E4c)。O139-②:手动派工链
+                    # (_dispatch_structure)同读此冷却,不再只 F2 管
                     self._o11_released_at[sid] = self.time
                     self.mediator.assign_role(tag=w.tag, role=UnitRole.GATHERING)
                     w.gather(self.mineral_field.closest_to(w))

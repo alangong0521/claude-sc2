@@ -94,8 +94,10 @@ class TestScoutReturnHome(unittest.TestCase):
             steer_order={"scout": "on"},
             _scout_done=True,
             _scout_tag=scout.tag,
+            _scout_route=[],  # O36: 空 → _handle_scout 兜底退化为单点 [enemy_main]
             _last_scout_ts=None,  # Bug2: _handle_scout 现在会读它
             enemy_units=list(enemy_units),
+            enemy_structures=[],
             units=SimpleNamespace(find_by_tag=_find_by_tag),
             mediator=SimpleNamespace(
                 assign_role=lambda tag, role: assigned.append((tag, role))
@@ -139,6 +141,39 @@ class TestScoutReturnHome(unittest.TestCase):
         self.assertEqual(moved, [ENEMY_MAIN])  # idle → 继续往敌家推(侦查中)
         self.assertEqual(bot._scout_tag, 999)  # tag 没清(还在管它)
         self.assertEqual(assigned, [])         # role 没切
+
+    def test_empty_waypoint_advances_to_next_spawn(self):
+        # O36: 摸到空出生点(无建筑)且还有后续点 → 弹出当前点,去下一个,不回家
+        scout = SimpleNamespace(
+            tag=999, position=ENEMY_MAIN, is_idle=False,
+            distance_to=lambda p: 5.0,  # 已到 route[0]
+        )
+        bot, assigned, moved, gathered = self._fake_bot(scout)
+        bot._scout_route = [ENEMY_MAIN, "P2", "P3"]
+
+        MyBot._handle_scout(bot)
+
+        self.assertEqual(moved, ["P2"])          # 推进到下一个候选点
+        self.assertEqual(bot._scout_route, ["P2", "P3"])  # 当前点已弹出
+        self.assertEqual(gathered, [])           # 不回家
+        self.assertEqual(bot._scout_tag, 999)    # tag 保留,继续管
+
+    def test_intel_found_mid_route_goes_home(self):
+        # O36: 还没到点就看见敌建筑(敌人已定位) → 直接回家,不再走剩余点
+        scout = SimpleNamespace(
+            tag=999, position=Point2((100.0, 100.0)), is_idle=True,
+            distance_to=lambda p: 30.0,
+        )
+        bot, assigned, moved, gathered = self._fake_bot(scout)
+        bot._scout_route = [ENEMY_MAIN, "P2"]
+        bot.enemy_structures = ["HATCHERY"]
+
+        MyBot._handle_scout(bot)
+
+        target = gathered[0] if gathered else moved[0]
+        self.assertEqual(target, "main_mf")      # 回家
+        self.assertIsNone(bot._scout_tag)
+        self.assertEqual(bot._scout_route, [])
 
     def test_scout_flees_when_enemy_ground_nearby(self):
         # O22: 途中遇敌地面作战单位(<8 格) → 立即逃跑 gather home,不傻傻走到敌家

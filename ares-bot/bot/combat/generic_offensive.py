@@ -24,6 +24,7 @@ from sc2.units import Units
 
 from bot.combat.base_unit import BaseUnit
 from bot.levers import pick_focus_key
+from bot.production_plans import hurt_retreat_needed
 
 if TYPE_CHECKING:
     from ares import AresBot
@@ -71,6 +72,7 @@ class GenericOffensive(BaseUnit):
         focus = kwargs.get("focus")
         maneuver = kwargs.get("maneuver")
         regroup_center = kwargs.get("regroup_center")
+        retreat_point = kwargs.get("retreat_point")  # O148-②:防守战伤兵回撤点
         ambush = maneuver in ("ambush", "hold_position")
 
         near: dict[int, Units] = self.mediator.get_units_in_range(
@@ -84,6 +86,26 @@ class GenericOffensive(BaseUnit):
             maneuver_plan: CombatManeuver = CombatManeuver()
             enemy_near: Units = near[unit.tag].filter(lambda u: not u.is_memory)
             in_range: list[Unit] = cy_in_attack_range(unit, enemy_near)
+
+            # O148-②(o147 系列守军战损复盘):防守战伤兵后拉 —— 盾+血 <30%
+            # 的地面兵撤到电池/塔覆盖圈(电池奶回再随下波顶上;伤兵白死 =
+            # 每波少 2-3 叉)。只在有回撤点(防守战)时生效,进攻不留后路语义不变
+            if (
+                retreat_point is not None
+                and not unit.is_flying
+                and hurt_retreat_needed(
+                    unit.shield, unit.health, unit.shield_max, unit.health_max
+                )
+                # 已在回撤点附近就别发呆了 —— 回到正常交战(有奶就奶,没奶站撸)
+                and unit.distance_to(retreat_point) > 6.0
+            ):
+                grid = self._maybe_grid(unit)
+                if grid is not None:
+                    maneuver_plan.add(PathUnitToTarget(unit, grid, retreat_point))
+                else:
+                    maneuver_plan.add(AMove(unit, retreat_point))
+                self.ai.register_behavior(maneuver_plan)
+                continue
 
             if len(in_range) > 0:
                 target: Unit = _pick_focus(in_range, focus, origin=unit)

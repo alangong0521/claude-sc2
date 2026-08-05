@@ -1999,3 +1999,108 @@ O22 / O24 / O25 / O27 / O28 已实现,单测全绿 + carrier 编译过。
 - **修复方向**:carrier 早开 2 矿 —— 降 when_workers(如 16)或加时间触发(t≈200 强开,
   先知/风暴护分矿)。爆仓模式适合 4 矿+,2 矿该早。
 - **状态**:未修,局后改 flows.yml carrier auto_expand + 与 O29(E9 停 macro)联动。
+
+
+### O90 carrier vs VeryHard Terran Macro Defeat（2026-08-03 观战局，BelShirVestigeLE）
+
+> 编号说明：本条最初误编 O34/O37，O 系列与 baselines.md 同轨（已用到 O89），本条改 O90。
+
+- **结果**：Defeat。t≈1023（~17 分钟）基地 2→1→0 被推平；终局 0 农民 0 基地，
+  残部 2 TEMPEST。敌方可见兵力 17 MARINE + 21 MARAUDER + 7 MEDIVAC + 4 VIKING（反空）。
+- **现象**：
+  1. 中段农民骤减 11（被抄家），随后丢二矿（2→1），再丢主矿（1→0）。
+  2. **O19 idle_builder 复现 3 起**（t≈990-1004，败局尾段经济崩时）：
+     2 农民干等 4s 等钱造 PHOTONCANNON、1 农民干等 4s 等钱造 PYLON。
+     均超 3s 阈值；发生在存款枯竭期，属"派工→钱被抽干→钉点"尾段症状。
+  3. 升级线正常（盾 L3/空攻 L2 在研），但 17 分钟舰队未成型（终局仅 2 风暴），
+     敌方 4 viking 已就位反制航母。
+- **修复方向**：与 O29/O30 同链（经济/开矿/舰队成型慢）；被抄家农民骤减 11 需查
+  E6 撤离触发是否太晚。idle_builder 尾段 3 起优先级低（败局已定时的症状非病因）。
+- **备注**：局末 `ProtocolError: Not supported if game has already ended` 是
+  python-sc2 已知收尾噪音（Status.ended 后 bot 仍 query abilities），非 bot bug。
+- **状态**：未修，记录待统一优化。
+
+
+### O91 carrier vs VeryHard Zerg Rush 局1 Defeat（2026-08-03 观战局，BelShirVestigeLE，t=1040）
+
+- **结果**：Defeat。击杀价值 units 4900 / structures 0（全程没推出去，4900 几乎全是塔杀的）。
+  idle worker time 1144s（偏高）。
+- **时间线**：t=143 rush 确认+注册防御（链正常）；t=608 丢二矿（0 塔裸奔，物理上限见
+  血泪#3）；t=726 兵力仅 4 叉、舰队 0 艘；t=887 敌 40 supply 压境 vs 我 22；t=890 E6
+  撤离 16 农民（分矿塔 1 座压不住）；t=904-924 农民 12s 内骤减 5/20/5/5/4 全灭；
+  t=920 丢基地 2→1；t=972 基地清零。
+- **对签名（尸检 skill）**：B 类节奏相克 ——「接触时舰队 2-6 艘，胜局需 8-12 艘」，
+  本局 t=726 舰队 0 艘，比 n5m 签名还惨。与 n5m-zerg-rush 0-5（avg 920s 败）同指纹。
+- **改进点（≥3）**：
+  1. **舰队临界质量恒晚于波次**（主因）：rush 确认→六连动暂停科技链/产能→波后 rush
+     反复挂起→星门/FB 永远推迟。唯一方向 = 过渡形态大改（verdict=rush 时叉/追猎地面开、
+     推迟星门、活到 t≈700 再转舰队）——交接文档已定方向，本次落地。
+  2. **E6 撤离无效化**：t=890 撤 16 农民，12s 内全灭——撤离目标基地本身也在被压
+     （敌 40 supply 两线压），撤离方向没避开敌主力。方向：撤离目标选择加「敌兵密度」
+     惩罚项，不只按距离/塔覆盖。
+  3. **分矿塔防裸奔**：t=608 丢二矿时分矿 0 塔（F2 塔全堆主基坡口，O80b 设计如此：
+     rush 期分矿放弃+农民早撤）。本局农民撤了但仍死——配合改进点 2。
+  4. idle_builder 尾段 2 起（3s 等钱造塔，贴阈值，败局症状非病因，不立项）。
+- **归类**：策略相克（build order 级），非机制 bug。
+- **状态**：改进点 1 进入实施（过渡形态）；2/3 记入待验证。
+
+### 战略备忘（2026-08-03，读交接文档后）
+
+- 目标六组合 = 交接文档的「快攻墙」：n5m 当前代码战绩 Zerg Rush 0-5 / Zerg Timing 2-3 /
+  Zerg Power 3-2✅ / Terran Rush 0-5 / Terran Timing 1-4 / Terran Power 2-3。
+- 迭代回路切换：REALTIME 观战局 → bench.py headless（`--flow carrier --diff VeryHard
+  --race X --ai-build Y --map AbyssalReefLE -n 5 --tag o92-*`，可双通道并行）。
+- 尸检走 `.claude/skills/sc2-defeat-autopsy` 五步法；改动记 baselines.md O 系列。
+
+---
+
+## O92-O139 bench 迭代期尸检汇总（2026-08-03/04，50+ 系列）
+
+逐系列尸检（每败局 ≥3 改进点+落地验证）全部在 `docs/baselines.md` O92-O139 行，此处留骨架索引：
+
+- **O92-O96（过渡形态期）**：rush 确认→地面过渡→转舰队 架构落地；修转舰队死锁、首波四环（forge 晚/F2 黑窗/协防/塔位绕过）、save_up 锁航母。
+- **O97-O107（情报链期）**：早侦查 40s 出发+事件驱动评估（探机送达率=胜负手）、presumed 兜底、greedy 误判灭绝、latch 漏洞（rush verdict 不置 confirmed）。
+- **O108-O115（舰队窗期）**：strong-exit 退出门、落位「无电」型实锤、SG 爬坡/科技预留两死锁、分矿并行供电。
+- **O116-O122（取证期）**：派工四分类取证（taken/no_placement/no_worker/no_money）、停气棘轮（38/40 农民被抽干）、O11 21s 循环、虚空填窗、首波后扩张。
+- **O123-O131（叉海+预留期）**：塔链 vs 叉海 A/B、预留自伤、产兵仲裁器、暂停型预留改排队型（死锁变体 6 连发的根）。
+- **O132-O135（回调期）**：退出经济门回调（O119 掐死舰队路）、timing 波防御冲刺、地面兵力真空（39 农 1 叉）、产出永不暂停（预留语义反转）。
+- **O136-O139（结构期）**：硬编码开局（'12 gateway'）、坡口墙实验证伪回滚、双通道并行实证、钉点农民三刀。
+
+**五胜档案**：o107 局2（1002s，25 风暴 4 基地）、o112 局4（2096s，29 风暴）、o117 局5（28 风暴）、o129 局2（26 风暴）、o132-timing 局3（28 风暴）——全部同型：活过 rush→扩张→20+ 风暴→推进。
+
+**当前未破**：单局胜率 ~20%（fast/medium 骰的 150-500s 波次窗），Terran 三组+Zerg Rush/Timing 未过线。
+
+---
+
+## O154 carrier @AbyssalReefLE vs Zerg VeryHard/Power + Zerg VeryHard/Timing（2026-08-04）
+
+- **结果**：zerg-power **1-4**，zerg-timing **1-4**。O154 修 greedy 接触误入过渡后，胜率未回升。
+- **核心新发现：carrier 流整局不出航母**。o154-power 终局编成均值 TEMPEST×28 / ORACLE×1 / STALKER×4 / ZEALOT×2，CARRIER=0；o154-timing 终局 TEMPEST×17 / ZEALOT×6 / STALKER×2，CARRIER=0。
+- **根因**：flows.yml carrier 当前配方为 TEMPEST p0 / CARRIER p1，`save_up: 0`。freeflow 下 SpawnController 只看 priority：TEMPEST 便宜（150/100）且科技就绪后永远可负担，每一帧都 fall-through 到 TEMPEST；CARRIER 作为 p1 被永久截断，整局没有出场窗口。
+- **改进点（≥3）**：
+  1. **强制航母配额机制**：舰队成型（首舰已出）且暴风海达临界数量（如 ≥12）后，若航母数量不足目标（如 <4），把 spawn 主次对调成 CARRIER p0 / TEMPEST p1，并开动态 save_up 憋气出航母；达标后恢复暴风主 C。
+  2. **idle_builder 进一步收敛**：五局全中，o154-timing game_03 高达 ×68。来源多为开局 forge/PYLON 等钱钉点。考虑缩短非关键建筑在开局阶段的 grace，或让关键三件（forge/首塔/GW1）的钉点也被 detect 但不计入 retro 归因。
+  3. **舰队爬坡与 economy 关联**：胜局（o154-power game_02）终局 4 基地/68 农民/200 人口 28 暴风；败局多为 1-2 基地、农民被抄、舰队数量不足。需继续观察配额机制是否能带动终局兵力结构改善。
+- **状态**：O155 已落地①，单测 614 绿；烟测/ bench 待跑。
+
+
+---
+
+## O155/O156 carrier @AbyssalReefLE vs Zerg VeryHard/Power（2026-08-05）
+
+- **O155 落地**：`carrier_quota_active` / `carrier_quota_spawn` + `_apply_save_up(force_gap=250)`，目标在舰队成型后强制补航母。
+- **O155 bench 结果**：后台任务 `bash-1f38qf0m` 在跑完 game_01、game_02 未结束时 lost；进程残留已清。game_01 **Defeat**，game_02 在 1040s 时 1 基地/4 暴风，明显败势。
+- **O155 失效根因（game_01 实锤）**：
+  - 舰队峰值 **TEMPEST×11**，**未达 O155 默认阈值 12**，航母配额**从未触发**，终局 0 航母。
+  - 11 艘暴风后在 Zerg 中盘波次（t≈950）被压崩，基地 3→2→1→0，经济断气。
+- **game_01 / game_02 共同指纹**：
+  1. **舰队 6–11 艘时无航母**：O155 阈值 12 对 VeryHard Power 节奏过高，等不到暴风海成型就被推平。
+  2. **idle_builder 仍刷屏**：开局 PYLON/FORGE/NEXUS 等钱钉点事件反复出现（同一位置每 4s 一次），主因是 AutoSupply 被 O11 撤回后每帧重派新工人，`_o11_released_at` 冷却未覆盖 AutoSupply 路径。
+  3. **中盘经济崩盘**：3 矿后无法保住，vespene 2200+/3986 但 minerals 30–45，Nexus 重建没钱；舰队规模不足导致分矿守不住，分矿守不住又导致舰队补不上。
+- **改进点（≥3）并落地为 O156**：
+  1. **降低航母配额阈值并计入在产**：`carrier_quota_active` 默认 `fleet_min` 从 12 降到 8；新增 `pending_tempest/pending_carrier` 参数并在调用方传入 `cy_unit_pending`，避免“差一艘到阈值”死锁；fallback——舰队 ≥6 且 still 0 航母时强制触发，确保第一艘航母不会永远被憋死。
+  2. **AutoSupply 撤回冷却**：`production_manager` 注册 AutoSupply 前加 `redispatch_cooled_down` 守卫（非人口紧急时），被 O11 撤回的 PYLON 10s 内不再重派，减少开局 idle_builder 刷屏和水晶抢 forge/Nexus 资金窗。
+  3. **预走位 Nexus 也进入扩张持有期**：`_expand_holding` 增加 `not_started_but_in_building_tracker(NEXUS)` 判据，防止“Nexus 已派工但还没付款”时塔/科技/追加产能继续吃银行，导致二矿/三矿等钱等到死。
+  4. **基地清零重建可行性门**：`_rebuild_nexus` 加 `nexus_rebuild_viable` 检查（有工人、矿脉有剩、存款 ≥400），避免无收入死局仍暂停出兵 250s 空转。
+- **验证**：单测 616 passed / 1 skipped；O156 bench（VeryHard Zerg Power ×5）待开。
+- **状态**：O156 已落地，进入 bench 验证。

@@ -45,7 +45,7 @@ class ProtossStaticDefence(MacroBehavior):
     exclude_base_locations: set[Point2] = field(default_factory=set)
     max_on_route: int = 1
     tech_base_location: Point2 | None = None
-    closest_to_override: Point2 | None = None  # O31:塔/pylon/电池跟此点(主基堵口 ramp 集结),None=原 base_loc
+    closest_to_override: Point2 | None = None  # O31/O38:塔/pylon/电池跟此点(主基堵口 ramp/分矿朝敌正面锚点,按基地单实例传入),None=原 base_loc
 
     def execute(self, ai: "AresBot", config: dict, mediator: ManagerMediator) -> bool:
         if ai.race != Race.Protoss:
@@ -105,7 +105,11 @@ class ProtossStaticDefence(MacroBehavior):
                     static_defence=True,
                     to_count_per_base=self.photon_cannons_per_base,
                     closest_to=self.closest_to_override or base_loc,
-                    find_alternative=False,
+                    # O76(n5 系列连败实证):锚点无电/被占时允许找替代位 ——
+                    # 分矿首根 pylon 被 pylons_per_base=1 记满(在矿线),
+                    # O38 朝敌锚点永远无电,find_alternative=False 的塔单静默失败,
+                    # 分矿恒 1 塔被 18 枪兵穿。锚点优先、无电退而求其次(矿线侧)。
+                    find_alternative=True,
                 ).execute(ai, config, mediator):
                     return True
 
@@ -117,7 +121,7 @@ class ProtossStaticDefence(MacroBehavior):
                     static_defence=True,
                     to_count_per_base=self.shield_batteries_per_base,
                     closest_to=self.closest_to_override or base_loc,
-                    find_alternative=False,
+                    find_alternative=True,  # O76:同塔,锚点失败找替代位
                 ).execute(ai, config, mediator):
                     return True
 

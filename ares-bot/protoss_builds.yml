@@ -52,4 +52,9 @@ Builds:
             # Example: ['12 worker', '13 worker', '14 supply', '14 worker', '15 chrono @ nexus',
             #           '15 worker', '16 gateway']
             # See docs: https://aressc2.github.io/ares-sc2/tutorials.html#build-runner-system
-            ['12 chrono @ nexus', '12 worker', '13 worker']
+            # O142(o141-zerg-rush 局3 实证):runner 的 supply 触发与 bot 层
+            # 农民冻结互锁成环 —— runner 等 supply≥14 才建 forge、probes 被
+            # sprint 冻结永远到不了 14、forge 不建 sprint 不结束。开局只留
+            # 农民+水晶，forge/GW/塔全部归 presumed/防御链管（bot 层时序
+            # 不受 supply 触发约束）。
+            ['12 chrono @ nexus', '12 worker', '13 worker', '14 supply']

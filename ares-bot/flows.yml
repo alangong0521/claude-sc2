@@ -23,10 +23,12 @@
 #                     敌可见 + advantage_supply)时逐矿 +1,上限 max_bases,rush 期间不开
 #   expansion_cannons: {min, max}(缺省无=固定 2 塔/矿)。E2 分矿塔数动态:
 #                     photon_cannons_per_base = clamp(min, min + 敌可见作战单位//4, max)
-#   pre_fleet:        {id, cap, per_enemy, max}(缺省无=关)。E3e 舰队成型前地面保底:
+#   pre_fleet:        {id, cap, per_enemy, max, exit_ground, id2, cap2}(缺省无=关)。
+#                     E3e 舰队成型前地面保底:
 #                     舰队主 C 出生前混入 id 兵种(矿耗地面兵,不吃气)到 spawn;
 #                     上限 = clamp(cap, 敌可见作战单位×per_enemy, max)(E3f 伸缩,
-#                     max=0 时固定 cap);主 C 上线自动退出。保底兵种 save_up 不截断
+#                     max=0 时固定 cap);主 C 上线自动退出。保底兵种 save_up 不截断。
+#                     O134-①:id2/cap2 = 第二保底兵种(追猎,气耗);cap2=0 关闭
 #   freeflow:         true|false(缺省 false)。true = SpawnController 不按配比卡产
 #                     (配比只当优先序不当上限)——多兵种流派必开,否则兵力在
 #                     精确配比点永久死锁(单兵种流派靠 over_produce 豁免,不用开)
@@ -40,8 +42,13 @@
 #   save_up:          憋气阈值(整数气,缺省 0=关)。O5:freeflow 下 p0 买不起会被
 #                     p1 fall-through 吃掉气,永远攒不出 p0。>0 时:p0 占比落后且
 #                     (买得起 或 气缺口 ≤ 此值) → 截断低优先生成攒气;p0 占比 ≥ 配比
-#                     → p0 让位,p1 照常补位。阈值建议 ≥ p0 气价 - p1 气价
-#                     (航母 250/风暴 175 → 250 即"占比落后就全力攒")
+#                     → p0 让位,p1 照常补位。只适用于「p0 比 p1 贵」的配方
+#                     (O96 实证:p0 便宜时它会把贵 p1 永久截断,carrier 因此关)
+#   transition:       O92 过渡形态(缺省无=关)。{ground_spawn, gateway_cap, fleet_at}:
+#                     rush 确认(verdict=rush 或接触) → 换 ground_spawn 地面配方、
+#                     冻结 STARGATE/FLEETBEACON、追加兵营 ≤gateway_cap、save_up/
+#                     pre_fleet 挂起;到 fleet_at 且家 40 格威胁清除 30s → 转舰队
+#                     (latch 不回头)。freeflow 下优先序即一切,气耗兵种须放 p0
 #
 # ⚠️ tempest/stalker 两块与已验证行为逐位一致,勿轻改(有 shipped 测试冻结,见
 #    tests/test_flow_config.py)。战斗侧指挥不读本文件 —— CombatManager 按
@@ -91,8 +98,8 @@ flows:
   # 航母黄金舰队(新,待跑局验证):科技链与暴风舰完全相同,航母主 C、暴风舰副 C
   carrier:
     spawn:
-      CARRIER: {proportion: 0.7, priority: 0}
-      TEMPEST: {proportion: 0.3, priority: 1}
+      TEMPEST: {proportion: 0.85, priority: 0}   # O62(VeryHard Zerg Power 0-2 实证):航母 250 气/艘吃掉暴风产能(1 航母≈3.5 暴风的气),中局压强局(Power)必须先把暴风堆到临界质量
+      CARRIER: {proportion: 0.15, priority: 1}   # 航母转纯后期补刀;中局被腐化+飞蛇猎杀,到不了临界质量
     core_structures: [GATEWAY, CYBERNETICSCORE, STARGATE, FLEETBEACON]
     upgrades:                     # O10 补全:L1→L3 全链(空攻/空防前置=舰队航标已在链;
       - PROTOSSAIRWEAPONSLEVEL1   # 盾 L2/L3 前置=暮光议会,L1 完成后由守卫路径补建)。
@@ -104,22 +111,41 @@ flows:
       - PROTOSSAIRARMORSLEVEL3
       - PROTOSSSHIELDSLEVEL2
       - PROTOSSSHIELDSLEVEL3
-    extra_production: {id: STARGATE, cap: 6, base: 1}
+    extra_production: {id: STARGATE, cap: 6, base: 1, mineral_gate: 250}   # O53(Harder 连败实证):舰队总是比波次晚 30-60s —— 第二星门矿门槛 400→250,紧随二矿(t≈210)落地,波前(t≈520)双倍航母产能
     chrono: {targets: [STARGATE], when: primary_pending}
     one_off: [ORACLE]
     freeflow: true
-    save_up: 250                    # O5 憋气:航母占比落后时截断风暴生成,攒气等航母
-    pre_fleet: {id: ZEALOT, cap: 3, per_enemy: 0.3, max: 8}   # O33:vs Zerg 叉减量(原 6/0.5/16 太多挤矿),省矿给 2 矿+航母;防御靠塔
+    save_up: 0                      # O96(o95-vh-zerg-rush 局3/局4 实证):O62 把配方翻成 TEMPEST p0/CARRIER p1 后,save_up 250 把 CARRIER 永久摘出 spawn(p0 缺口恒 ≤175<250 → 恒截断到 {p0}+豁免) —— FB 就绪后 160s 零航母;p0 是便宜兵时 freeflow 的自然 fall-through 就是正确行为(暴风先行,富余才航母),憋气机制在此配方下是纯负资产
+    pre_fleet: {id: ZEALOT, cap: 5, per_enemy: 0.5, max: 12, exit_ground: 8, id2: STALKER, cap2: 2}   # O47(Harder 连败实证):O33 的 3/0.3/8 太薄 —— 舰队成型期恰逢 Harder 波次(27+ 地面),新矿塔链(60-90s)未成时 4 叉顶不住,兜底叉加厚到 12;O48:exit_ground 8 —— 1 航母+4 叉不退 floor,波前保 8 叉。O134-①(o133 局2 实证):cap 4→5 + 追猎×2 —— 非过渡局 525 波(25+ supply)到脸时仅 1 叉;追猎吃烂在银行的气(局2 气 2900),不抢舰队矿
     # E2 动态开矿(司令:有能力开到 4 矿):爆仓(农民 ≥ 22×基地数)或
     # 前线优势(我方 army supply ≥ 敌可见 + 12)时逐矿 +1,rush 期间不开
     auto_expand: {max_bases: 4, when_workers: 16, advantage_supply: 12, first_expand_at: 150}
-    expansion_cannons: {min: 3, max: 8}   # E2 分矿塔数区间:3 + 敌可见作战单位//4,封顶 8;E5-C 臂 4/12 否决(0-5)
+    expansion_cannons: {min: 4, max: 10}   # O52(Harder 连败实证):min 3 塔分散到 4 矿=每矿 1-3 座,40-supply 波 20s 拆掉滚雪球;新经济体(O42/43/51)养得起 min 4+电池×2;max 10 应对 45+ 大波
     pivot:                          # 自适应机制(反rush/反空军,2026-07 迭代)
       anti_air_units: [STALKER]
       anti_air_proportion: 0.3
       anti_air_trigger: 3
       rush_zealots: 4
     main_siege: {cannons: 12, radius: 25, threshold: 2}   # 需求3:敌压上主基时主基果断补大量塔
+    # O92(快攻四墙 N=5 实证:舰队临界质量 t≈700-900 恒晚于敌波次 t≈500-550):
+    # rush 确认(verdict=rush 或接触) → 过渡形态:地面配方主 C、冻结星门/舰队航标
+    # (CYBERNETICSCORE 保留,追猎要它)、追加兵营 ≤gateway_cap、save_up/pre_fleet 挂起;
+    # 到 fleet_at 且家 40 格威胁清除 30s → 转舰队(恢复配比+解冻科技链,latch 不回头)。
+    # 注:freeflow 下 SpawnController 只按优先序(p0 恒可负担时 p1 永不出场),
+    # 故气耗的 STALKER 必须 p0 —— ZEALOT(100 矿恒可负担)放 p0 追猎永远出不来;
+    # 追猎吃气先行,叉子矿耗补位,天然叉多追猎少。
+    transition:
+      ground_spawn:
+        STALKER: {proportion: 0.4, priority: 0}
+        ZEALOT: {proportion: 0.6, priority: 1}
+      gateway_cap: 3
+      # O95(o94-vh-zerg-rush 0-5 实证):700 退出撞 t=700-800 波次（4/5 局舰队重启被打死
+      # 在 SG/FB 建造窗）——提前到首/二波后的安静窗 t≈480 退出，给舰队 ~170s 重建时间
+      # O102(o101 局1 实证):480 仍太晚 —— 清净窗实测 380-445(敌可见 0 持续 65s,
+      # 防御评分 28 达标),而波次 t=446 到脸、480 门开时防御已灭;提前到 420
+      # O108(o107 局3/局5 实证):420 仍撞波 —— 波次提前到 413-421,清净+评分达标
+      # 窗在 ~380-410;再提前到 400(评分 ≥25 的 strong 门兜底,不会太早)
+      fleet_at: 400
 
   # 隐刀 rush(2026-07-21 落地):黑暗圣堂速出白打农民,对面出反隐就转运营
   dt:

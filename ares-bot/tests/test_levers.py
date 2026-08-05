@@ -18,7 +18,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.levers import (  # noqa: E402
-    is_one_shot, pick_focus_key, pick_known_base,
+    is_one_shot, pick_focus_key, pick_known_base, prefer_void_rays,
     resolve_build_name, resolve_enemy_slot, should_hold_for_trigger,
 )
 from bot.steer_vocab import (  # noqa: E402
@@ -79,6 +79,28 @@ class TestPickFocus(unittest.TestCase):
     def test_weakest(self):
         es = [_unit("MARINE", hp=50), _unit("MARINE", hp=10), _unit("MARINE", hp=80)]
         self.assertEqual(pick_focus_key(es, "weakest").health, 10)
+
+
+class TestPreferVoidRays(unittest.TestCase):
+    """O88:无命令焦点时虚空优先(暴风射程 10 > 虚空 6,先点杀)。"""
+
+    def test_picks_void_over_others(self):
+        es = [_unit("TEMPEST", hp=10), _unit("VOIDRAY", hp=200), _unit("CARRIER", hp=5)]
+        self.assertEqual(prefer_void_rays(es).type_id.name, "VOIDRAY")
+
+    def test_closest_void_to_origin(self):
+        origin = _unit("TEMPEST", pos=(0, 0))
+        far = _unit("VOIDRAY", pos=(30, 0))
+        near = _unit("VOIDRAY", pos=(5, 0))
+        self.assertIs(prefer_void_rays([far, near], origin=origin), near)
+
+    def test_no_voids_returns_none(self):
+        self.assertIsNone(prefer_void_rays([_unit("PHOENIX"), _unit("TEMPEST")]))
+
+    def test_no_origin_picks_weakest_void(self):
+        weak = _unit("VOIDRAY", hp=20)
+        strong = _unit("VOIDRAY", hp=200)
+        self.assertIs(prefer_void_rays([strong, weak]), weak)
 
     def test_workers(self):
         es = [_unit("MARINE"), _unit("SCV"), _unit("MARINE")]

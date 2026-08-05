@@ -61,7 +61,9 @@ def publish_state(state: dict) -> None:
     """
     STEER_DIR.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(state, ensure_ascii=False, indent=2)
-    tmp = STATE_FILE.with_suffix(".tmp")
+    # O61:tmp 带 pid —— 两个 bot 进程并发发布时(孤儿 run.py 与新局并存)
+    # 各自写各自的 tmp,replace 不再撞 FileNotFoundError 把整局打崩
+    tmp = STATE_FILE.with_suffix(f".{os.getpid()}.tmp")
     tmp.write_text(payload)
     tmp.replace(STATE_FILE)
     if _RECORD_DIR:

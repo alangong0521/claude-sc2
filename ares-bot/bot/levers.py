@@ -87,6 +87,23 @@ def pick_focus_key(enemies, focus: str | None, origin=None):
     return typed[0] if typed else None
 
 
+def prefer_void_rays(enemies, origin=None):
+    """O88(n5m 四局虚空潮实证):无命令焦点时虚空优先。纯逻辑,可单测。
+
+    背景:protoss-macro game_04/05(5/7 虚空)、protoss-power game_05(13 虚空)、
+    protoss-air game_04(11 虚空)——虚空棱镜对齐烧装甲暴风是舰队最快战损来源
+    (「损失暴风舰 2 艘」连发放血)。暴风射程 10 > 虚空 6:优先点杀虚空 =
+    让它们死在爬进 beam 射程的路上。有虚空返回离 origin 最近的(贴脸即开烧的
+    最危险),无 origin 取最残;无虚空返回 None(调用方走引擎默认选法)。
+    """
+    voids = [u for u in enemies if getattr(u.type_id, "name", "") == "VOIDRAY"]
+    if not voids:
+        return None
+    if origin is not None:
+        return min(voids, key=lambda u: u.distance_to(origin))
+    return min(voids, key=lambda u: u.health + u.shield)
+
+
 # 测试用:避免 import ares.consts.WORKER_TYPES(会拉起 ares)。运行时 manager 仍用 ares 的。
 _WORKER_NAMES = {"PROBE", "SCV", "DRONE", "MULE"}
 
