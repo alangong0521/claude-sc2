@@ -6733,3 +6733,22 @@ headless 双车道并行（REALTIME=False）：
 - 观察指标：三矿时点 ≤750s、`O251:硬饱和钉点开矿` 事件、终局 supply 上升。
 
 ---
+## O252 — Zerg Timing 波间隙舰队骚扰（先手压运营，唯一未试维度）
+
+**日期**：2026-08-06
+
+### 依据
+
+- 近 20 局复盘共同特征：全程蹲守 = Zerg 自由运营到 80-100 supply（2 倍兵力）滚平；胜局（o249-g03）的转折也是舰队压出去后开始的。
+- O218/O239/O245e 验证：追加 SG/航母/不朽者链路全通，舰队 3-6 艘常态存在但只在防守位挂机。
+
+### 改法（O252）
+
+- `combat_manager.attack_target` carrier 蹲守分支：家无热点（`_hot_base_anchor` 空）且 zerg+timing 且舰队 ≥3 → 目标改敌**最远端**已知基地（`_known_enemy_townhalls()[-1]`，新矿防御最薄），狙 Nexus/农民拖慢 Zerg 成型；有热点/推进闸全开时不受影响（原逻辑优先）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/combat_manager.py`：通过；`unittest` **652 例 OK**。
+- 观察指标：敌基地摧毁/农民击杀事件、敌 E9 supply 增速放缓、舰队战损（骚扰被截）是否可控。
+
+---
