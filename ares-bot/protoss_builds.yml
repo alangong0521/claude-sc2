@@ -45,6 +45,67 @@ BuildChoices:
             - TempestRush
 
 Builds:
+    # O161: carrier 经济开局 —— TempestRush 只到 14 supply 且 ConstantWorkerProductionTill=0，
+    # build order 完成后 bot 层不补农民，导致 8 分钟仍 20 农、舰队没钱。CarrierOpener
+    # 把农民线拉到 34，让 build runner 持续产农到 mid-game，bot 层再接管。
+    CarrierOpener:
+        # O163c:ConstantWorkerProductionTill 34 让 runner 在科技步之间无限插农民,
+        # 导致 GATEWAY 后 CYBERNETICCORE/STARGATE 永远排不上矿物。改为 0,
+        # 农民全显式写入 build order,确保科技链按时落地。
+        ConstantWorkerProductionTill: 0
+        # 必须用单条 Python list（ares BuildOrderParser 不认 list-of-lists），
+        # 所以写成 flow-style 单行 list。
+        # O163:把 GATEWAY/CYBERNETICCORE/STARGATE 直接写进经济开局,
+        # 避免 bot 层因扩张持有/presumed 把科技冻到 4 分半后仍零兵零科技。
+        # O165:本机 SC2 环境 Protoss 开局只有 8 农民(非标准 12),原 build order
+        # 从 supply 12 起触发,chrono 拖到 45s、stargate 拖到 6:33。全部阈值 -4,
+        # 让 chrono/农民/建筑节奏对齐原本设计,保证 fleet 能成型。
+        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 supply', '11 worker', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 worker', '17 worker', '18 core', '19 worker', '20 supply', '20 worker', '21 worker', '22 stargate', '23 worker', '24 supply', '24 worker', '25 worker', '26 worker', '27 worker', '28 supply', '28 worker', '29 worker', '30 worker']
+
+    # O189:Zerg Timing/Rush 专用开局。O185 把 Stargate 写在 build order 末尾，
+    # 结果 30 supply 的星门在单矿经济中吸走 150/150，二矿永远攒不出。
+    # 改为只建地面防御（Forge/双门/2 叉/1 炮），星门/舰队航标由 bot 层
+    # _build_flow_structures 在 transition 期间自动补（O186 已解冻舰队科技），
+    # 把 build order 的矿物压力压到最低，给二矿留出资金。
+    CarrierOpenerZergTiming:
+        ConstantWorkerProductionTill: 0
+        # O193-①(o192-vh-zerg-timing/rush game_01 实证):8 农民开局第一个 PYLON
+        # 在 11 supply 触发时农民被派出,但接下来两个 PROBE 会把 100 矿花掉,
+        # 农民钉点空转 20s+。推迟到 12 supply,让 PYLON 农民派出时已有 100+ 矿。
+        # O199(o198-vh-zerg-timing 0-3 实证):PaladinoTerminalLE 400s Roach 波到脸时
+        # 只有 1 座炮塔且 F2 自动补塔全部 not_viable/taken,基地裸奔。build order 直接
+        # 铺 2 座炮塔并提前到 24/28 supply,给地面防御一个硬底线。
+        # O200(o199b-vh-zerg-timing game_04/05 AbyssalReefLE 430-470s 早崩):2 塔仍
+        # 不够稳,把第一座塔再提前到 24 supply,forge 后连下 24/28 双塔。
+        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 worker', '12 supply', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 worker', '17 worker', '18 core', '19 worker', '20 supply', '20 worker', '21 forge', '22 worker', '23 gateway', '24 photoncannon', '25 worker', '26 zealot', '27 worker', '28 supply', '28 photoncannon', '29 zealot', '30 worker', '31 supply']
+
+    # O194:Zerg Rush 专用开局。O193 Rush game_01 实证 Timing 开局在 Rush 下
+    # forge 07:25/首叉 08:14/首炮 08:44 才落地,狗群 03:20 已到家,物理空窗被滚雪球。
+    # 把防御链(FORGE/GATEWAY/ZEALOT/PHOTONCANNON)全部提前 4-5 min,用早塔+早叉
+    # 顶住首波;CYBERNETICCORE/STARGATE 仍后放,由 bot 层在 transition 退出后补。
+    CarrierOpenerZergRush:
+        ConstantWorkerProductionTill: 0
+        # O195-①(o194-vh-zerg-rush game_01/03 实证):开局第一个 PYLON 在 10 supply
+        # 触发,但派工瞬间下一个 PROBE 把 100 矿花掉,农民钉点空转 20s+。
+        # 把 PYLON 推到 11 supply 且让 worker 先触发,避免等钱。
+        # 同时把 CYBERNETICCORE/STARGATE 提前 1-2 supply,让舰队更早成型,
+        # 对治 Rush 中盘 remax 大波(07:00 后 50+ supply 虫群)。
+        # O200(o199b-vh-zerg-rush game_05 PaladinoTerminalLE 278s 被裸奔滚平):
+        # 单塔+双叉在短 rush 距离图仍不足,forge 后连铺 2 塔(17/19 supply),
+        # cyber/stargate 各后挪 1 supply 保早期防御硬底线。
+        # O201(o200-vh-zerg-rush 3-7 实证):首塔 timing 波动 2:33-4:29,forge 后
+        # 插 worker/pylon 过多导致 photoncannon 被延迟;把双塔紧挨 forge,
+        # 中间只插 1 个 worker,确保首塔 ≤2:30、第二塔 ≤3:00。
+        # O202(o201-vh-zerg-rush 0-4 实证):"中间只插 1 个 worker"仍不够,
+        # build order 实际在 forge 与首塔、首塔与二塔之间各插了 1 个 worker,
+        # game_03 首塔 2:54/二塔 5:21。直接移除 forge 后的所有 worker,
+        # 让 forge→首塔→二塔→supply 连续落地,worker 在二塔/supply 后再补。
+        # O211(o210-vh-zerg-rush 全 lane idle_builder 实证):forge 后连拍 2 塔，
+        # 塔工比 forge 早到 15-20s，在塔点干等 forge 完工，每局触发 200-600 次
+        # idle_builder。在 forge 与双塔之间各插 1 个 worker，让 forge 基本就绪再派
+        # 塔工，同时不显著拖慢防御链。
+        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 supply', '11 worker', '12 gate', '12 worker', '13 worker', '14 forge', '15 worker', '16 photoncannon', '17 worker', '18 photoncannon', '19 supply', '19 worker', '20 worker', '21 zealot', '22 worker', '23 zealot', '24 worker', '25 supply', '25 worker', '26 core', '27 worker', '28 stargate', '29 worker', '30 worker', '31 worker', '32 supply']
+
     TempestRush:
         # Build constant workers till x supply
         ConstantWorkerProductionTill: 0

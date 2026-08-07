@@ -59,15 +59,23 @@ def best_anchor(candidates: list[dict]) -> dict | None:
     )
 
 
-def wounded_state(shield_health_perc: float, currently_wounded: bool) -> bool:
+def wounded_state(
+    shield_health_perc: float,
+    currently_wounded: bool,
+    enter_threshold: float = WOUNDED_PERC,
+    exit_threshold: float = WOUNDED_RECOVER_PERC,
+) -> bool:
     """残血状态(带滞回,O14 乒乓抑制)。纯逻辑,可单测。
 
-    进入:< WOUNDED_PERC;退出:≥ WOUNDED_RECOVER_PERC;中间带维持原状态。
+    进入:< enter_threshold;退出:≥ exit_threshold;中间带维持原状态。
     航母护盾回充快,单阈值会在 40% 线上反复进出,滞回消除之。
+
+    O181:增加 enter/exit 参数，允许舰队绝境时（fleet<5 且基地≤1）提高阈值，
+    更早后撤保命，避免慢性磨光舰队。
     """
-    if shield_health_perc < WOUNDED_PERC:
+    if shield_health_perc < enter_threshold:
         return True
-    if shield_health_perc >= WOUNDED_RECOVER_PERC:
+    if shield_health_perc >= exit_threshold:
         return False
     return currently_wounded
 

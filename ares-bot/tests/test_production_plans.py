@@ -33,11 +33,13 @@ from bot.production_plans import (  # noqa: E402
     early_scout_verdict,
     expansion_blocked,
     expansion_cannon_count,
+    expansion_cannon_min_dynamic,
     expansion_reserve_active,
     escort_pull_cap,
     escort_worker_count,
     escort_stance,
     f2_dispatch_guard_bypassed,
+    fleet_recall_target,
     extra_production_mineral_gate,
     floor_exits,
     floor_army_defends_home,
@@ -47,12 +49,15 @@ from bot.production_plans import (  # noqa: E402
     full_gas_bases,
     gas_gated_stargate_target,
     gas_target,
+    mineral_crisis_gas_stop,
     forge_before_first_gateway,
     gateway_chain_after_first_zealot,
     gateway_yields_tech_slots,
     hot_base_index,
     idle_builder_alarm,
+    idle_builder_fuse_exempt,
     is_combat_type,
+    natural_predefense_allowed,
     nexus_rebuild_active,
     nexus_rebuild_viable,
     oracle_before_fleet_allowed,
@@ -74,7 +79,8 @@ from bot.production_plans import (  # noqa: E402
     RESCOUT_DISPATCH_AT,
     RESCOUT_HARD_DEADLINE,
     research_paused_for_rush,
-    reserve_deadlock_break,    rush_hold_batteries,
+    reserve_deadlock_break,    rush_deadzone_active,
+    rush_hold_batteries,
     rush_needs_gateway,
     rush_cannon_bypass,
     rush_defense_past_holding,
@@ -446,6 +452,62 @@ class TestShouldExpandDynamic(unittest.TestCase):
         self.assertFalse(self._run(bases=2, now=999.0, first_expand_at=200.0, supply_workers=0))
         # rush 仍拦首扩
         self.assertFalse(self._run(bases=1, now=999.0, first_expand_at=200.0, rush_active=True))
+
+    def test_fleet_and_mineral_gate_blocks_late_expand(self):
+        # O160:首扩之后,必须同时满足 fleet≥3 且矿物≥500 才允许继续扩张
+        self.assertFalse(
+            self._run(
+                bases=2, supply_workers=44, minerals=300, fleet_total=0
+            )
+        )
+        self.assertFalse(
+            self._run(
+                bases=3, supply_workers=66, minerals=499, fleet_total=2
+            )
+        )
+        # O216g:有 fleet 且矿线饱和 → 矿门旁路,允许开(饱和不开=农民浪费人口)
+        self.assertTrue(
+            self._run(
+                bases=2, supply_workers=44, minerals=300, fleet_total=3
+            )
+        )
+        # 有 fleet 但未饱和且矿物不足 → 仍阻止
+        self.assertFalse(
+            self._run(
+                bases=2, supply_workers=20, minerals=300, fleet_total=3
+            )
+        )
+        # 只有矿物没有 fleet → 仍阻止(舰队门不旁路)
+        self.assertFalse(
+            self._run(
+                bases=2, supply_workers=44, minerals=500, fleet_total=0
+            )
+        )
+        # fleet≥3 且 minerals≥500 才放行
+        self.assertTrue(
+            self._run(
+                bases=2, supply_workers=44, minerals=500, fleet_total=3
+            )
+        )
+        # 首扩(bases=1)不受此门限制
+        self.assertTrue(
+            self._run(
+                bases=1, now=200.0, first_expand_at=200.0, minerals=0, fleet_total=0
+            )
+        )
+
+    def test_hard_saturation_bypasses_all_gates(self):
+        # O222:硬饱和(农民 ≥ 22×bases+8)舰队门/矿门全旁路
+        self.assertTrue(
+            self._run(bases=2, supply_workers=52, minerals=0, fleet_total=0)
+        )
+        self.assertTrue(
+            self._run(bases=2, supply_workers=60, minerals=100, fleet_total=1)
+        )
+        # 未达硬饱和仍走原门(44 = 软饱和,矿门旁路但舰队门保留)
+        self.assertFalse(
+            self._run(bases=2, supply_workers=44, minerals=100, fleet_total=0)
+        )
 
 
 class TestExpansionCannonCount(unittest.TestCase):
@@ -850,6 +912,86 @@ class TestCannonTargetCapped(unittest.TestCase):
         # 动态数本来 ≤ min(理论防御) → 不抬不降
         self.assertEqual(cannon_target_capped(2, 3, 100, 350, False), 2)
 
+    def test_gas_rich_mineral_poor_fleet_small_caps_to_min(self):
+        # O160: 气体富余(≥600)、矿<500、舰队<5 → 即使矿≥350 也压回 min
+        self.assertEqual(
+            cannon_target_capped(16, 4, 450, 350, False, vespene=700, fleet_total=4),
+            4,
+        )
+        self.assertEqual(
+            cannon_target_capped(16, 4, 499, 350, False, vespene=600, fleet_total=4),
+            4,
+        )
+
+    def test_gas_rich_but_fleet_large_no_extra_cap(self):
+        # 舰队已成型且矿够舰队造价 → O160 gas-rich 额外限流不触发，老逻辑也不压
+        self.assertEqual(
+            cannon_target_capped(16, 4, 400, 350, False, vespene=1200, fleet_total=10),
+            16,
+        )
+
+    def test_mineral_floor_caps_regardless_of_fleet(self):
+        # O160: 矿物跌破 250 硬地板 → 舰队再大也限流，防止塔抽干舰队矿
+        self.assertEqual(
+            cannon_target_capped(16, 4, 249, 350, False, vespene=1200, fleet_total=10),
+            4,
+        )
+        self.assertEqual(
+            cannon_target_capped(16, 4, 100, 350, False, vespene=0, fleet_total=10),
+            4,
+        )
+
+    def test_low_base_count_no_cap(self):
+        # O157 / O161: 基地压缩到 ≤2 个时若舰队已成规模(≥3)才不限流
+        self.assertEqual(
+            cannon_target_capped(12, 6, 100, 350, False, bases=2, fleet_total=3),
+            12,
+        )
+        self.assertEqual(
+            cannon_target_capped(12, 6, 300, 350, False, vespene=1200, fleet_total=6, bases=1),
+            12,
+        )
+        # 基地 >2 时原逻辑不变
+        self.assertEqual(
+            cannon_target_capped(12, 6, 100, 350, False, bases=3),
+            6,
+        )
+
+    def test_low_base_count_fleet_small_still_caps(self):
+        # O161: 基地压缩但舰队未成规模(<3)时，继续限流保经济，不盲目堆塔
+        self.assertEqual(
+            cannon_target_capped(12, 6, 100, 350, False, bases=2, fleet_total=0),
+            6,
+        )
+        self.assertEqual(
+            cannon_target_capped(12, 6, 300, 350, False, vespene=1200, fleet_total=2, bases=1),
+            6,
+        )
+
+
+class TestExpansionCannonMinDynamic(unittest.TestCase):
+    """O161/O179: 舰队成型前降低分矿塔 baseline。"""
+
+    def test_zero_fleet_caps_to_one(self):
+        # O216:zero_fleet_cap 1→2,fleet=0 仍需 2 座保命塔配合 gateway 堵口。
+        self.assertEqual(expansion_cannon_min_dynamic(6, 0, fleet_min=3, early_cap=3), 2)
+        self.assertEqual(expansion_cannon_min_dynamic(3, 0, fleet_min=3, early_cap=3), 2)
+        self.assertEqual(expansion_cannon_min_dynamic(1, 0, fleet_min=3, early_cap=3), 1)
+
+    def test_fleet_small_caps_to_early_cap(self):
+        self.assertEqual(expansion_cannon_min_dynamic(6, 1, fleet_min=3, early_cap=3), 3)
+        self.assertEqual(expansion_cannon_min_dynamic(6, 2, fleet_min=3, early_cap=3), 3)
+
+    def test_fleet_large_restores_min(self):
+        self.assertEqual(expansion_cannon_min_dynamic(6, 3, fleet_min=3, early_cap=3), 6)
+        self.assertEqual(expansion_cannon_min_dynamic(6, 5, fleet_min=3, early_cap=3), 6)
+
+    def test_early_cap_does_not_raise_min(self):
+        self.assertEqual(expansion_cannon_min_dynamic(2, 1, fleet_min=3, early_cap=3), 2)
+
+    def test_zero_fleet_cap_respects_low_min(self):
+        self.assertEqual(expansion_cannon_min_dynamic(0, 0, fleet_min=3, early_cap=3), 0)
+
 
 class TestThreatResponse(unittest.TestCase):
     """E9 中局威胁响应:threat_response_active / threat_ground_exemption。
@@ -1088,6 +1230,37 @@ class TestP2StargateLiberation(unittest.TestCase):
         self.assertEqual(
             extra_production_mineral_gate(
                 True, fleet_beacon_ready=False, first_tempest_seen=True
+            ),
+            400.0,
+        )
+
+    def test_gas_rich_mineral_poor_raises_gate(self):
+        # O157: 气体烂银行且矿物紧缺、舰队未成规模时，追加产能矿门抬高到 600
+        self.assertEqual(
+            extra_production_mineral_gate(
+                False,
+                vespene=1500,
+                minerals=300,
+                fleet_total=6,
+            ),
+            600.0,
+        )
+        # 舰队已成型或气体不够时原样
+        self.assertEqual(
+            extra_production_mineral_gate(
+                False,
+                vespene=1500,
+                minerals=300,
+                fleet_total=10,
+            ),
+            400.0,
+        )
+        self.assertEqual(
+            extra_production_mineral_gate(
+                False,
+                vespene=500,
+                minerals=300,
+                fleet_total=6,
             ),
             400.0,
         )
@@ -1383,14 +1556,15 @@ class TestFleetGasStarved(unittest.TestCase):
 
 
 class TestRushSpawnFleetEscape(unittest.TestCase):
-    """O89:rush 纯叉配方逃生门 —— 基建齐+气≥800 时混编,急性早期不开。"""
+    """O89/O99:rush 纯叉配方逃生门 —— 基建齐+气≥400 时混编(O99 从 800 降到 400),急性早期不开。"""
 
     def test_escape_opens(self):
         self.assertTrue(rush_spawn_fleet_escape(2344, 4, True))
         self.assertTrue(rush_spawn_fleet_escape(800, 1, True))
+        self.assertTrue(rush_spawn_fleet_escape(400, 1, True))
 
     def test_low_gas_closed(self):
-        self.assertFalse(rush_spawn_fleet_escape(799, 4, True))
+        self.assertFalse(rush_spawn_fleet_escape(399, 4, True))
 
     def test_no_stargate_closed(self):
         self.assertFalse(rush_spawn_fleet_escape(2344, 0, True))
@@ -1965,8 +2139,11 @@ class TestO107ZergVerdict(unittest.TestCase):
         # o106 局3/4/5 回潮路径:补派只看到主基地 HATCHERY(单基地、无 pool、
         # 无兵)→ 旧回落 scout_verdict 给 greedy;现一律 unknown
         self.assertEqual(early_scout_verdict(True, 0, 0, 1, True), "unknown")
-        # 单基地+pool → rush 照旧;二矿 → unknown(O100-③/O104-③)
-        self.assertEqual(early_scout_verdict(True, 1, 0, 1, True), "rush")
+        # O169:Zerg 单基地+pool 无兵不再直接判 rush(Power/Timing 运营先池后矿),
+        # 回落 unknown;有早期兵(≥6)或 ≥2 军事建筑才判 rush。
+        self.assertEqual(early_scout_verdict(True, 1, 0, 1, True), "unknown")
+        self.assertEqual(early_scout_verdict(True, 1, 6, 1, True), "rush")
+        self.assertEqual(early_scout_verdict(True, 2, 0, 1, True), "rush")
         self.assertEqual(early_scout_verdict(True, 0, 0, 2, True), "unknown")
         self.assertEqual(early_scout_verdict(True, 1, 0, 2, True), "unknown")
         # 非 zerg 回落行为不变(scout_verdict 老三档)
@@ -2099,6 +2276,31 @@ class TestO117GasStopWindow(unittest.TestCase):
         self.assertTrue(builder_release_exempt(True, False))
         self.assertTrue(builder_release_exempt(False, True))
         self.assertFalse(builder_release_exempt(False, False))
+
+
+class TestO157MineralCrisisGasStop(unittest.TestCase):
+    """O157/O160: 气体相对矿物过剩、矿物枯竭时停气转矿。"""
+
+    def test_triggers_when_gas_rich_mineral_poor(self):
+        # O160: 不再硬绑 fleet<5，气体≥600 且矿物≤300 即触发
+        self.assertTrue(mineral_crisis_gas_stop(900, 300, 4))
+        self.assertTrue(mineral_crisis_gas_stop(2000, 100, 10))
+        self.assertTrue(mineral_crisis_gas_stop(600, 300, 10))
+
+    def test_not_triggered_when_minerals_ok(self):
+        self.assertFalse(mineral_crisis_gas_stop(1500, 350, 4))
+        self.assertFalse(mineral_crisis_gas_stop(1500, 500, 4))
+
+    def test_not_triggered_when_gas_low(self):
+        self.assertFalse(mineral_crisis_gas_stop(500, 300, 4))
+
+    def test_low_base_count_uses_higher_mineral_threshold(self):
+        # O160: 基地 ≤2 个时阈值放宽到 400
+        self.assertTrue(mineral_crisis_gas_stop(1500, 400, 10, bases=2))
+        self.assertTrue(mineral_crisis_gas_stop(1500, 350, 10, bases=1))
+        # 基地 >2 时阈值 300
+        self.assertFalse(mineral_crisis_gas_stop(1500, 350, 4, bases=3))
+        self.assertTrue(mineral_crisis_gas_stop(1500, 300, 4, bases=3))
 
 
 class TestO118FirstCannonRace(unittest.TestCase):
@@ -2314,12 +2516,76 @@ class TestO125FirstZealotRace(unittest.TestCase):
 
 
 class TestO126SpawnArbiter(unittest.TestCase):
-    """O126/O135(o134 0-5 尸检):产出永不暂停 + GW 链等首叉。"""
+    """O126/O135/O216c:产出暂停仲裁 + GW 链等首叉。"""
 
-    def test_reserves_never_pause_spawn(self):
-        # O135:暂停型预留体系证伪 —— 任何预留组合都不再暂停产兵
-        # (攒钱语义反转:只闸建筑注册;o134 局1:42 农 2 GW 就绪 t=542 仅 3 叉)
+    def test_reserves_do_not_pause_spawn_except_zerg_timing_expand(self):
+        # O135:暂停型预留体系证伪 —— 除 O216c Zerg Timing 二矿基金保护外,
+        # 任何预留组合都不再暂停产兵。
         self.assertIsNone(spawn_pause_reason(rebuild_nexus=False))
+        # Nexus 已开工或存款够时不暂停
+        self.assertIsNone(
+            spawn_pause_reason(
+                rebuild_nexus=False,
+                expand_holding=True,
+                is_zerg_timing=True,
+                nexus_unstarted=1,
+                minerals=400.0,
+            )
+        )
+        self.assertIsNone(
+            spawn_pause_reason(
+                rebuild_nexus=False,
+                expand_holding=True,
+                is_zerg_timing=True,
+                nexus_unstarted=0,
+                minerals=200.0,
+            )
+        )
+
+    def test_zerg_timing_expand_reserve_pauses_spawn(self):
+        # O216c:Nexus 已派工未开工、存款 <400 时暂停产兵,优先二矿基金
+        self.assertEqual(
+            spawn_pause_reason(
+                rebuild_nexus=False,
+                expand_holding=True,
+                is_zerg_timing=True,
+                nexus_unstarted=1,
+                minerals=350.0,
+            ),
+            "zerg_timing_expand_reserve",
+        )
+
+    def test_zerg_timing_tech_reserve_pauses_spawn(self):
+        # O224:Zerg Timing 防御已立且 SG/FB 缺失买不起时,暂停地面产兵攒钱
+        self.assertEqual(
+            spawn_pause_reason(
+                rebuild_nexus=False,
+                is_zerg_timing=True,
+                tech_saving=True,
+                minerals=100.0,
+                tech_price=150.0,
+            ),
+            "zerg_timing_tech_reserve",
+        )
+        # 买得起即恢复(自校正)
+        self.assertIsNone(
+            spawn_pause_reason(
+                rebuild_nexus=False,
+                is_zerg_timing=True,
+                tech_saving=True,
+                minerals=150.0,
+                tech_price=150.0,
+            )
+        )
+        # 非 zerg timing / 非攒钱期不受影响
+        self.assertIsNone(
+            spawn_pause_reason(
+                rebuild_nexus=False,
+                is_zerg_timing=False,
+                tech_saving=True,
+                minerals=0.0,
+            )
+        )
 
     def test_rebuild_nexus_still_pauses(self):
         # 基地清零应急(没经济一切免谈)仍可暂停 —— 不是预留型,保留
@@ -2393,11 +2659,29 @@ class TestO130EscapeValve(unittest.TestCase):
         self.assertFalse(sprint_blocks_probes(7))
 
     def test_escort_pull_cap(self):
-        # 拉人数 = min(威胁需求, 农民-6) —— 保留采矿底线
-        self.assertEqual(escort_pull_cap(8, 14), 8)   # 需求 10,留 6 → 8
-        self.assertEqual(escort_pull_cap(3, 14), 5)   # 需求 5
-        self.assertEqual(escort_pull_cap(12, 8), 2)   # 需求 10,只留得动 2
-        self.assertEqual(escort_pull_cap(12, 5), 0)   # 农民 ≤6 不拉(守经济)
+        # 拉人数 = min(威胁需求, 农民-6) —— 保留采矿底线(旧默认)
+        self.assertEqual(escort_pull_cap(8, 14, keep_mining=6, cap=10), 8)
+        self.assertEqual(escort_pull_cap(3, 14, keep_mining=6, cap=10), 5)
+        self.assertEqual(escort_pull_cap(12, 8, keep_mining=6, cap=10), 2)
+        self.assertEqual(escort_pull_cap(12, 5, keep_mining=6, cap=10), 0)
+
+    def test_escort_pull_cap_o166_dynamic(self):
+        # O166: 调用方传 keep_mining=max(4, workers//2), cap=6
+        self.assertEqual(
+            escort_pull_cap(20, 20, keep_mining=10, cap=6), 6
+        )  # 需求封顶 6
+        self.assertEqual(
+            escort_pull_cap(8, 12, keep_mining=6, cap=6), 6
+        )  # 需求 10→cap 6
+        self.assertEqual(
+            escort_pull_cap(8, 10, keep_mining=5, cap=6), 5
+        )  # 留 5 采,最多拉 5
+        self.assertEqual(
+            escort_pull_cap(12, 7, keep_mining=4, cap=6), 3
+        )  # 留 4 采,拉 3
+        self.assertEqual(
+            escort_pull_cap(12, 4, keep_mining=4, cap=6), 0
+        )  # 不到保留底线不拉
 
 
 class TestO131QueueNotPause(unittest.TestCase):
@@ -2659,6 +2943,136 @@ class TestScoutNextStep(unittest.TestCase):
 
     def test_empty_route_goes_home(self):
         self.assertEqual(scout_next_step([], arrived=False, intel_found=False), "home")
+
+
+class TestNaturalPredefenseAllowed(unittest.TestCase):
+    """O205:分矿 Nexus 落成前是否允许预铺 2 炮+1 电池。"""
+
+    def test_started_always_allowed(self):
+        self.assertTrue(natural_predefense_allowed(True, 0, 400))
+
+    def test_not_started_requires_minerals(self):
+        # 矿刚好够 Nexus + 350 + 25 → 允许
+        self.assertTrue(natural_predefense_allowed(False, 775, 400))
+        # 差 1 矿 → 不允许
+        self.assertFalse(natural_predefense_allowed(False, 774, 400))
+
+    def test_default_cost_and_buffer(self):
+        self.assertTrue(natural_predefense_allowed(False, 400 + 350 + 25, 400))
+        self.assertFalse(natural_predefense_allowed(False, 400 + 350 + 25 - 1, 400))
+
+    def test_custom_defense_cost_and_buffer(self):
+        self.assertTrue(
+            natural_predefense_allowed(
+                False, 400 + 200 + 50, 400, defense_cost=200, buffer=50
+            )
+        )
+        self.assertFalse(
+            natural_predefense_allowed(
+                False, 400 + 200 + 50 - 1, 400, defense_cost=200, buffer=50
+            )
+        )
+
+
+class TestFleetRecallTarget(unittest.TestCase):
+    """O205:空军回防目标 —— 任一基地 radius 格内敌地面 ≥ min_threat。"""
+
+    def test_no_threat(self):
+        bases = [(10.0, 10.0)]
+        enemies = [(50.0, 50.0)]
+        self.assertIsNone(fleet_recall_target(bases, enemies))
+
+    def test_threat_meets_threshold(self):
+        # 6 个敌人在基地 15 格内 → 返回该基地
+        bases = [(0.0, 0.0)]
+        enemies = [(10.0, 0.0)] * 6
+        self.assertEqual(fleet_recall_target(bases, enemies), (0.0, 0.0))
+
+    def test_threshold_not_met(self):
+        bases = [(0.0, 0.0)]
+        enemies = [(10.0, 0.0)] * 5
+        self.assertIsNone(fleet_recall_target(bases, enemies))
+
+    def test_radius_boundary(self):
+        bases = [(0.0, 0.0)]
+        # 刚好在 radius=15 圆周上 (9,12) → 9^2+12^2=225=15^2
+        enemies = [(9.0, 12.0)] * 6
+        self.assertEqual(fleet_recall_target(bases, enemies), (0.0, 0.0))
+        # 多出一点
+        enemies = [(9.1, 12.0)] * 6
+        self.assertIsNone(fleet_recall_target(bases, enemies))
+
+    def test_returns_primary_base_first(self):
+        # 主基受威胁、分矿也受威胁,返回第一个(主基)
+        bases = [(0.0, 0.0), (100.0, 0.0)]
+        enemies_main = [(10.0, 0.0)] * 6
+        enemies_natural = [(110.0, 0.0)] * 6
+        self.assertEqual(
+            fleet_recall_target(bases, enemies_main + enemies_natural), (0.0, 0.0)
+        )
+
+    def test_natural_only(self):
+        bases = [(0.0, 0.0), (100.0, 0.0)]
+        enemies = [(110.0, 0.0)] * 6
+        self.assertEqual(fleet_recall_target(bases, enemies), (100.0, 0.0))
+
+    def test_custom_min_threat(self):
+        bases = [(0.0, 0.0)]
+        enemies = [(5.0, 0.0)] * 3
+        self.assertEqual(fleet_recall_target(bases, enemies, min_threat=3), (0.0, 0.0))
+        self.assertIsNone(fleet_recall_target(bases, enemies, min_threat=4))
+
+    def test_custom_radius(self):
+        bases = [(0.0, 0.0)]
+        enemies = [(20.0, 0.0)] * 6
+        self.assertIsNone(fleet_recall_target(bases, enemies, radius=15.0))
+        self.assertEqual(
+            fleet_recall_target(bases, enemies, radius=25.0), (0.0, 0.0)
+        )
+
+
+class TestRushDeadzoneActive(unittest.TestCase):
+    """O205:舰队成型后硬解 rush_active 后 60s 死区。"""
+
+    def test_no_hard_clear(self):
+        self.assertFalse(rush_deadzone_active(None, 100.0))
+
+    def test_inside_deadzone(self):
+        self.assertTrue(rush_deadzone_active(100.0, 100.0))
+        self.assertTrue(rush_deadzone_active(100.0, 159.9))
+
+    def test_at_boundary(self):
+        # <60s 死区;>=60s 失效
+        self.assertTrue(rush_deadzone_active(100.0, 159.9999))
+        self.assertFalse(rush_deadzone_active(100.0, 160.0))
+
+    def test_after_deadzone(self):
+        self.assertFalse(rush_deadzone_active(100.0, 160.1))
+        self.assertFalse(rush_deadzone_active(100.0, 200.0))
+
+    def test_custom_deadzone(self):
+        self.assertTrue(rush_deadzone_active(0.0, 30.0, deadzone=60.0))
+        self.assertFalse(rush_deadzone_active(0.0, 60.1, deadzone=60.0))
+
+
+class TestIdleBuilderFuseExempt(unittest.TestCase):
+    """O205:idle_builder 5s 熔断豁免名单。"""
+
+    def test_critical_ids_exempt(self):
+        for sid in ("FORGE", "PHOTONCANNON", "GATEWAY", "NEXUS", "FLEETBEACON"):
+            self.assertTrue(idle_builder_fuse_exempt(sid), sid)
+
+    def test_non_critical_not_exempt(self):
+        for sid in ("PYLON", "STARGATE", "ASSIMILATOR", "CYBERNETICSCORE", "ROBOTICSFACILITY"):
+            self.assertFalse(idle_builder_fuse_exempt(sid), sid)
+
+    def test_custom_critical_ids(self):
+        self.assertTrue(
+            idle_builder_fuse_exempt("PYLON", critical_ids={"PYLON"})
+        )
+        self.assertFalse(
+            idle_builder_fuse_exempt("FORGE", critical_ids={"PYLON"})
+        )
 
 
 if __name__ == "__main__":

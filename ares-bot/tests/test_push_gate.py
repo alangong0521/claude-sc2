@@ -53,6 +53,7 @@ class TestCarrierPushGate(unittest.TestCase):
             supply_used=120.0,
             supply_workers=60.0,
             supply_cap=200,
+            time=480.0,  # 默认 8 分钟 → O164 强制推进不触发(旧断言不受影响)
             minerals=0,  # 默认无存款 → O70 全攻不触发(旧断言不受影响)
             production_manager=SimpleNamespace(
                 _rush_active=False,
@@ -158,6 +159,40 @@ class TestCarrierPushGate(unittest.TestCase):
         mgr = self._fake(20, enemies, 150.0)
         mgr.ai.supply_used = 199.0
         mgr.ai.minerals = 5000
+        target = CombatManager.attack_target.fget(mgr)
+        self.assertEqual(target, MAIN)
+        self.assertFalse(mgr._push_committed)
+
+    def test_force_push_after_ten_minutes(self):
+        # O164(o163c game_01 实证):10 暴风 + 2 航母,14:30 仍蹲家 timeout →
+        # 舰队 ≥10 且时间 >10 分钟应强制推进,跳过 supply 优势检查。
+        mgr = self._fake(12, [], 150.0)  # 敌 150 supply 大幅领先
+        mgr.ai.supply_used = 157.0
+        mgr.ai.supply_workers = 60.0
+        mgr.ai.time = 870.0  # 14:30
+        enemy_base = SimpleNamespace(position=Point2((150.0, 150.0)))
+        mgr.ai.enemy_structures = SimpleNamespace(closest_to=lambda p: enemy_base)
+        target = CombatManager.attack_target.fget(mgr)
+        self.assertEqual(target, enemy_base.position)
+        self.assertTrue(mgr._push_committed)
+
+    def test_force_push_before_ten_minutes_holds(self):
+        # O164:舰队 ≥10 但时间未到 10 分钟 → 仍按原优势判据(无优势则蹲)
+        mgr = self._fake(12, [], 150.0)
+        mgr.ai.supply_used = 157.0
+        mgr.ai.supply_workers = 60.0
+        mgr.ai.time = 540.0  # 9 分钟
+        target = CombatManager.attack_target.fget(mgr)
+        self.assertEqual(target, MAIN)
+        self.assertFalse(mgr._push_committed)
+
+    def test_force_push_respects_hard_aa(self):
+        # O164:强制推进不豁免硬对空安全线 —— 30 腐化 ≥ 12×1.5 → 仍蹲
+        enemies = [_enemy(100 + i, UnitID.CORRUPTOR) for i in range(30)]
+        mgr = self._fake(12, enemies, 150.0)
+        mgr.ai.supply_used = 157.0
+        mgr.ai.supply_workers = 60.0
+        mgr.ai.time = 870.0
         target = CombatManager.attack_target.fget(mgr)
         self.assertEqual(target, MAIN)
         self.assertFalse(mgr._push_committed)

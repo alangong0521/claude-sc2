@@ -377,6 +377,8 @@ class MyBot(AresBot):
         # 侦察：一次 scout=on 只派一个农民，看完撤回/死了不补（_scout_done 防止无限续命送死）
         self._scout_tag: int | None = None
         self._scout_done: bool = False
+        # O162:开局自动派一次探机,解决 bench 未下 scout=on 时完全盲打(11 分钟才见敌科技)的问题
+        self._auto_scout_done: bool = False
         # O36: 待排查出生点(近→远)。4人图 1v1 敌人只占其一,逐点排查;显式 enemy=E# 锁槽时=[该点]。
         self._scout_route: list = []
         # Bug2:上次见到的 scout 命令时间戳(steer_cli set scout 时盖的 _scout_ts)。
@@ -403,6 +405,24 @@ class MyBot(AresBot):
 
     async def on_start(self) -> None:
         await super(MyBot, self).on_start()
+        # O161: carrier 流需要经济型开局;ares DataManager 按 race 循环选 opener，
+        # 默认 TempestRush 只到 14 supply 且停农民。这里按 BUILD 显式切到 CarrierOpener。
+        # O183:Zerg 的 Timing/Rush 风格 5-6 min 一波，原 CarrierOpener 零早期防御被碾平，
+        # 切到更保守的 CarrierOpenerZergTiming（提前 Forge + 多 1 叉）；其余情况保持经济开局。
+        _build = os.environ.get("BUILD", "")
+        _opp_race = os.environ.get("OPPONENT_RACE", "")
+        _ai_build = os.environ.get("AI_BUILD", "")
+        if _build == "carrier" and hasattr(self, "build_order_runner"):
+            _opener = "CarrierOpener"
+            if _opp_race.lower() == "zerg" and _ai_build.lower() == "rush":
+                # O194: Rush 需要比 Timing 更早的塔/叉防御链
+                _opener = "CarrierOpenerZergRush"
+            elif _opp_race.lower() == "zerg" and _ai_build.lower() == "timing":
+                _opener = "CarrierOpenerZergTiming"
+            try:
+                self.build_order_runner.switch_opening(_opener, remove_completed=False)
+            except Exception:
+                pass  # 切换失败不挡开局，回退 TempestRush
         try:
             self._selftune_params = self._selftuner.ask(
                 {"enemy_race": os.environ.get("OPPONENT_RACE", "")}
@@ -411,6 +431,8 @@ class MyBot(AresBot):
             pass  # 调参失败不挡开局
         # E6 农民被抄转移:被抄基地 th_tag -> {"pos","target","workers"}(撤离台账)
         self._evac_bases: dict[int, dict] = {}
+        # O162:每局重置开局自动 scout 标记
+        self._auto_scout_done = False
         # O19 idle_builder 检测:tag -> [干等起点时间, 本 episode 已发过事件]
         self._builder_wait: dict[int, list] = {}
         self._last_builder_scan: float = -10.0
@@ -480,20 +502,25 @@ class MyBot(AresBot):
                 {"t": round(self.time, 1), "msg": "侦查完成,探机撤回(O35)"}
             )
 
-        # Q5 早负判负(bench 省垃圾时间):前 10 分钟基地全没 → 投降离场。
-        # 与 _ensure_townhall 互补:10 分钟后才谈重建;早期被打穿没有翻盘点。
-        # O15:有工人且场上还有矿 → 不判负,交给 O15 重建(攒钱 > save_up > 出兵)。
-        if self.townhalls.amount == 0 and self.time < 600:
+        # Q5/O192-③ 判负离场(bench 省垃圾时间/防 SC2 残局卡死):基地全没且
+        # 无法重建 → 投降离场。早期(前10分钟)交给 O15 重建;10 分钟后放宽条件,
+        # 工人过少(≤2)或存款不足即判负,避免 1 农 100 矿空转 10 分钟+。
+        if self.townhalls.amount == 0:
             minerals_left = (
                 sum(mf.mineral_contents for mf in self.mineral_field)
                 if self.mineral_field
                 else 0
             )
-            if not nexus_rebuild_viable(
+            viable = nexus_rebuild_viable(
                 self.workers.amount, minerals_left, self.minerals
-            ):
+            )
+            # O192-③: 10 分钟后放宽,避免残局拖时间/SC2 卡死不结束。
+            if self.time >= 600.0:
+                viable = viable and self.workers.amount >= 3 and self.minerals >= 250
+            if not viable:
+                phase = "前10分钟" if self.time < 600.0 else "中残局"
                 self._events.append(
-                    {"t": round(self.time, 1), "msg": "前10分钟基地全失,判负离场(Q5)"}
+                    {"t": round(self.time, 1), "msg": f"{phase}基地全失,判负离场(Q5)"}
                 )
                 steer.publish_state(self._steer_snapshot())  # bench 拿最后状态
                 await self._client.leave()
@@ -525,10 +552,18 @@ class MyBot(AresBot):
         找到敌建筑或全部摸完才回家(纯函数 production_plans.scout_next_step);
         司令显式 enemy=E# 锁槽时保持老语义,只摸该点。"""
         enemy_main = self.focused_enemy_start()
-        if (self.steer_order or {}).get("scout") != "on":
+        _scout_on = (self.steer_order or {}).get("scout") == "on"
+        _er = getattr(getattr(self, "enemy_race", None), "name", None)
+        # O162:开局自动派一次探机(约 12 秒),避免 bench/未下 scout 时完全盲打。
+        # 触发后走正常派遣逻辑,并在成功派遣后标记完成。
+        _auto_dispatch = (
+            not _scout_on
+            and not self._auto_scout_done
+            and self.time > 12.0
+        )
+        if not _scout_on and not _auto_dispatch:
             # O34 循环 scout(vs Zerg 持续盯兵力/转型):司令没下 scout + vs Zerg +
             # 距上次派 >_SCOUT_LOOP_INTERVAL → 自动重派(不 return,继续下面派新探机)
-            _er = getattr(getattr(self, "enemy_race", None), "name", None)
             if (
                 _er == "Zerg"
                 and self._scout_done
@@ -620,7 +655,90 @@ class MyBot(AresBot):
             w.move(self._scout_route[0])
             self._scout_tag = w.tag
             self._scout_done = True
+            # O162:开局自动 scout 成功派遣后标记完成,后续走正常循环/手动命令
+            self._auto_scout_done = True
             self._last_scout_finished = self.time  # O34:循环 scout 计时(距此 >60s 自动重派)
+
+    def _building_started_near(self, sid: UnitID, target: Point2, radius: float = 3.0) -> bool:
+        """O205:目标点附近是否已有该类型建筑(含在建)——idle_builder 5s 熔断用。"""
+        return any(
+            s.type_id == sid and s.position.distance_to(target) < radius
+            for s in self.structures
+        )
+
+    def _is_rush_critical_structure(self, sid: UnitID) -> bool:
+        """O212:rush/防御紧急期间应保留钉点的关键建筑;其余结构可释放回矿。"""
+        if sid == UnitID.FORGE:
+            return True
+        if sid == UnitID.PHOTONCANNON:
+            return True
+        if sid == UnitID.GATEWAY:
+            # 首座 GATEWAY 是 rush 产能核心,保留;后续 Gateway 可释放
+            return not any(
+                s.type_id == UnitID.GATEWAY for s in self.structures.ready
+            )
+        if sid in TOWNHALL_TYPES:
+            # 首次扩张(就绪基地 ≤1)保留;后续开矿释放
+            return self.townhalls.ready.amount <= 1
+        # PYLON 紧急态在调用方单独处理;其它科技建筑非关键
+        return False
+
+    def _idle_builder_fuse_release(self, w: Unit, info: dict) -> bool:
+        """O212:派工后建筑未开工 → 释放工人回矿,最大化采矿。
+
+        5s 熔断专治「多建筑同时派工、mineral 被瞬间抽干、农民钉点等钱」的死锁。
+        仅保留真正的关键链豁免:FORGE、首座 PHOTONCANNON、首座 GATEWAY、首次
+        扩张 NEXUS。FLEETBEACON 与后续 Gateway/Nexus 不再 blanket 豁免,
+        防止 O211 中农民被钉数分钟吸血。
+
+        任何情况都有 30s 硬顶:工人等超过 30s 仍未开工,强制释放,避免 pathological
+        长期钉点。
+        """
+        sid: UnitID = info[TRACKER_ID]
+        commenced = info.get(TIME_ORDER_COMMENCED)
+        target = info.get("target")
+        if commenced is None or target is None:
+            return False
+
+        age = self.time - commenced
+        started = self._building_started_near(sid, target)
+
+        # O213:FORGE/TOWNHALL 保留 30s 硬顶(攒钱预走位语义),
+        # 其余结构降到 20s,进一步压缩 idle_builder 吸血窗口。
+        _hard_cap = 30.0 if sid == UnitID.FORGE or sid in TOWNHALL_TYPES else 20.0
+        if age > _hard_cap and not started:
+            return True
+
+        # 已开工 或 5s 内 → 不释放
+        if started or age <= 5.0:
+            return False
+
+        # FORGE:关键防御链,永远豁免
+        if sid == UnitID.FORGE:
+            return False
+
+        # PHOTONCANNON:首塔(无就绪炮塔附近)豁免;已有就绪塔则后续塔走熔断
+        if sid == UnitID.PHOTONCANNON:
+            has_ready_cannon = any(
+                s.type_id == UnitID.PHOTONCANNON
+                and s.position.distance_to(Point2(target)) < 25.0
+                for s in self.structures.ready
+            )
+            return has_ready_cannon
+
+        # GATEWAY:首座 GATEWAY(无就绪兵营)豁免;后续 Gateway 走熔断
+        if sid == UnitID.GATEWAY:
+            has_ready_gateway = any(
+                s.type_id == UnitID.GATEWAY for s in self.structures.ready
+            )
+            return has_ready_gateway
+
+        # NEXUS:首次扩张(当前就绪基地 ≤1)豁免;后续开矿走熔断
+        if sid in TOWNHALL_TYPES:
+            return self.townhalls.ready.amount > 1
+
+        # FLEETBEACON 及其它:不再豁免,走 5s 熔断
+        return True
 
     def _handle_idle_workers(self) -> None:
         """闲置农民清扫(司令观察实证):除被司令接管(PERSISTENT_BUILDER)/侦查(SCOUTING)
@@ -648,6 +766,17 @@ class MyBot(AresBot):
             if role == UnitRole.PERSISTENT_BUILDER.name and w.tag not in tracker:
                 continue
             if w.tag in tracker:
+                info = tracker[w.tag]
+                # O205:idle_builder 5s 熔断 —— 派工后 5s 未开工且非关键建筑,
+                # 立即释放回矿,避免多建筑同时派工抽干 mineral 导致农民长期钉点。
+                # 关键防御链/基地/FB 由下方 O11 路径按各自 grace 处理。
+                if self._idle_builder_fuse_release(w, info):
+                    sid = info[TRACKER_ID]
+                    release_from_build_tracker(self.mediator, w.tag)
+                    self._o11_released_at[sid] = self.time
+                    self.mediator.assign_role(tag=w.tag, role=UnitRole.GATHERING)
+                    w.gather(self.mineral_field.closest_to(w))
+                    continue
                 # E4c:rush 期间一切建造钉点豁免 —— 矿紧时塔/兵营工人到点等钱
                 # 是防御链的一部分;此时撤回会陷入「派出→钉点→6s 撤回→重派」
                 # 循环,炮塔永远起不来(e4c game_02 实证:矿 170-390 而首塔
@@ -655,10 +784,15 @@ class MyBot(AresBot):
                 # O117-②(o116 取证实证):豁免扩到防御紧急(rush确认/过渡/
                 # presumed)—— presumed 期 rush_active 未置位,塔工被「6s 撤回
                 # +15s 重派冷却」循环折腾(21s/轮),首塔永远慢半拍
-                if builder_release_exempt(
+                sid = info[TRACKER_ID]
+                _rush_exempt = builder_release_exempt(
                     self.production_manager.rush_active,
                     getattr(self.production_manager, "_defense_urgent", False),
-                ):
+                )
+                # O212: rush/防御紧急期间仍释放非关键建筑工人,防止 Nexus/FleetBeacon/
+                # 后续 Gateway 被长期钉点吸血;关键防御链(FORGE/首塔/首GW/首次扩张)
+                # 保留豁免,避免首塔/首叉产能链断裂。
+                if _rush_exempt and self._is_rush_critical_structure(sid):
                     continue
                 # O11:钉在建造点等钱的工人(ares 无守卫路径:ProtossStaticDefence/
                 # TechUp)——钉点超 6s 且结构仍买不起 → 拆 tracker 撤回采矿,
@@ -666,19 +800,31 @@ class MyBot(AresBot):
                 # - 人口紧急态的水晶(E3h-B 紧急通道,故意钉点保人口);
                 # - 基地建筑(E3k 实证:工人提前走到扩张点等 400 矿是正常开矿打法,
                 #   6s 撤回会让 Nexus 永远拍不下)。
-                info = tracker[w.tag]
-                sid = info[TRACKER_ID]
                 if sid == UnitID.PYLON and self.supply_left <= 2:
                     continue
                 # O21:TOWNHALL 不再硬豁免,改加长 grace(Nexus 400 矿攒钱需时间,
                 # grace=30s 保 E3k 开矿预走位语义;原硬豁免致 Nexus 农民干等到死)。
                 # 其余建筑 grace=6s(短暂等钱容忍,真没钱就撤回采矿、钱够再来)。
-                # O21b:开局(time<120)普通建筑 grace=1s(开局贴 0 存款,等>1s 就撤回采矿,
-                # 不滚雪球——开局每等 1s 都拉大经济差距);中段 6s;TOWNHALL 30s。
-                # O139-②(o137 两 lane 干等事件实证):提前撤回通道 —— 钉点 >3s
-                # 且矿缺口 >5s 收入 → 不等 grace 立即撤回(干等 3s 即亏);
-                # TOWNHALL 走 early_age=30(预走位语义不动)
-                grace = 30.0 if sid in TOWNHALL_TYPES else (1.0 if self.time < 120 else 6.0)
+                # O17x/O206:司令观察「前期农民仍干等造建筑」——把开局 grace 再收紧:
+                # time<120 普通建筑 grace 从 1s→0.5s,early_age 从 3s→1.5s,
+                # 钉点 1.5s 且 5s 收入补不上缺口就立即撤回采矿,不滚雪球。
+                # 中段 6s;TOWNHALL 预走位语义保留,但 grace 从 30s 降到 15s
+                # (o205 Nexus 工人被钉 3.5min+,采矿损失超过预走位收益)。
+                # O173:FleetBeacon 300 矿攒钱窗口长,工人被反复释放导致 FB 永远
+                # 落不了地;给 FB 同 TOWNHALL 级 grace,让工人等到矿够真正开工。
+                if sid == UnitID.FLEETBEACON or sid in TOWNHALL_TYPES:
+                    # O21: Nexus/FB 预走位允许等钱,但 30s grace 在 o205 败局里
+                    # 让工人被钉 3min+;降到 15s,仍保留预走位语义,但等不起时
+                    # 更快回矿采矿(O206)。
+                    grace = 15.0
+                    _early_age = 15.0
+                elif self.time < 120:
+                    grace = 0.5
+                    # O204:前期资金窗口紧，钉点 1s 且 3s 收入补不上缺口就撤回采矿。
+                    _early_age = 1.0
+                else:
+                    grace = 6.0
+                    _early_age = 1.5
                 if should_release_waiting_builder(
                     self.can_afford(sid),
                     self.time - info[TIME_ORDER_COMMENCED],
@@ -686,8 +832,10 @@ class MyBot(AresBot):
                     deficit=max(
                         0.0, self.calculate_cost(sid).minerals - self.minerals
                     ),
-                    income_5s=self.production_manager._mineral_income_per_sec() * 5.0,
-                    early_age=3.0 if sid not in TOWNHALL_TYPES else 30.0,
+                    # O204:前期用 3s 收入估算替代 5s,与 _early_age=1.0 匹配。
+                    income_5s=self.production_manager._mineral_income_per_sec()
+                    * (3.0 if self.time < 120.0 else 5.0),
+                    early_age=_early_age,
                 ):
                     release_from_build_tracker(self.mediator, w.tag)
                     # O19 防重派循环:记录撤回时刻,production_manager 对同类结构

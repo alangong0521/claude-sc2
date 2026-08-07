@@ -62,6 +62,7 @@ from bot.production_plans import (
     escort_pull_cap,
     escort_stance,
     expansion_cannon_count,
+    expansion_cannon_min_dynamic,
     expansion_max_pending,
     expansion_blocked,
     f2_dispatch_guard_bypassed,
@@ -78,6 +79,7 @@ from bot.production_plans import (
     fleet_transition_ready,
     fleet_transition_strong_exit,
     first_zealot_sprint,
+    forced_expand_during_transition,
     floor_exits,
     forge_first_probe_yield,
     forge_first_pylon_yield,
@@ -91,6 +93,8 @@ from bot.production_plans import (
     ground_floor_active,
     is_combat_type,
     main_siege_active,
+    mineral_crisis_gas_stop,
+    natural_predefense_allowed,
     nexus_rebuild_active,
     nexus_rebuild_viable,
     oracle_before_fleet_allowed,
@@ -102,6 +106,7 @@ from bot.production_plans import (
     pre_fleet_spawn,
     probe_floor_needed,
     redispatch_cooled_down,
+    _pylon_redispatch_ok,
     rebuild_extra_production_id,
     rebuild_window_spawn,
     rescout_verdict,
@@ -115,6 +120,7 @@ from bot.production_plans import (
     rush_defers_second_gateway,
     rush_blocks_reserve,
     rush_contact_arms,
+    rush_deadzone_active,
     rush_defend_base,
     rush_hold_batteries,
     rush_needs_gateway,
@@ -254,6 +260,12 @@ class ProductionManager(Manager):
         # E10 策略 pivot:风暴压制 → 航母终结的一次性转型 latch
         self._pivot_transitioned: bool = False
         self._rush_active: bool = False
+        # O204:舰队成型后硬解 rush_active 只执行一次的 latch,避免中后期
+        # rush 再触发后经济被永久锁死。
+        self._rush_hard_cleared: bool = False
+        # O205:硬解触发时刻,60s 内不因敌兵重新进入 full rush-lock,
+        # 但 threat_response_active 仍可激活塔/兵响应。
+        self._rush_hard_cleared_at: float | None = None
         # E9 中局威胁响应(carrier):敌可见作战 supply 大幅压过我方 → True(滞回)
         self._threat_active: bool = False
         self._rush_clear_since: float | None = None
@@ -271,15 +283,33 @@ class ProductionManager(Manager):
         # ⚠️ 命名勿用 _tech_stall_since —— 那是 O55 的 float 时间戳
         # (o110 局5 实证:撞名崩溃 'float' has no 'setdefault')
         self._fleet_stall_since: dict = {}
+        # O173:FleetBeacon 实体缺失连续计时——pending 抖动导致「无实体」信号
+        # 每帧翻板,o172/o173 守卫被绕过。用时间积分稳定:FB 实体为 0 时累计,
+        # 一旦实体出现立即清零。
+        self._fb_missing_since: float | None = None
+        # O175:稳定信号挂到实例前先给默认值,避免 update 首帧前被 _want_dynamic_expand
+        # /_spend_bank 读取时 AttributeError(尽管当前流程不会,防御性初始化)。
+        self._fb_truly_missing: bool = False
+        # O183:Zerg Timing/Rush 动态调首扩时间，优先保家再开二矿。
+        self._opp_race: str = os.environ.get("OPPONENT_RACE", "").lower()
+        self._ai_build: str = os.environ.get("AI_BUILD", "").lower()
+        # O176:FB 已派工但买不起的让位信号,防御性初始化。
+        self._fb_waiting: bool = False
         # O115-③:watchdog 开火记录(停滞确认的科技)——科技攒钱预留在
         # 落位停滞局必须解除,否则地面回填被连坐(o114 局3:FB 被杀+
         # 落位失败 → 预留永开 → army 清零后 100s 零补员)
         self._fleet_stall_fired: set = set()
         # O117-①:停气窗口计时( None=未在停气窗;transition 流派 45s 窗)
         self._gas_stop_since: float | None = None
+        # O157:矿物危机停气状态(vespene 烂银行、minerals 枯竭且舰队未成规模)
+        self._mineral_crisis_gas_stop: bool = False
         # O117-②:防御紧急旗标(rush确认/过渡/presumed 合成,每帧更新)——
         # main.py 的 O11 钉点撤回豁免读它(presumed 期塔工不再被撤回循环)
         self._defense_urgent: bool = False
+        # O210:Zerg Rush/Timing 单矿太久时 O189 强制开二矿,本帧强制预走位。
+        self._o189_forced_expand: bool = False
+        # O216g:O189 事件只记一次(原每帧 append,日志刷屏)。
+        self._o189_logged: bool = False
         # O129:冲刺总闸旗标(每帧在 update 头部重算;_rush_gateway_boost 读)
         self._sprint_active: bool = False
         # O130-①:冲刺起始时刻(逃逸阀计时;None=不在冲刺)
@@ -345,6 +375,21 @@ class ProductionManager(Manager):
         self._gas_stopped_tags: set[int] = set()
         # 流派配置(flows.yml,神族生产侧单一真相源);Terran/Zerg 路径不走它。
         self._flow: FlowConfig = FlowConfig.load(os.environ.get("BUILD"))
+        # O184/O190/O208:Zerg Rush/Timing 直接强制进 transition，用 ground_spawn
+        # 守窗后再转舰队；O207 让 Timing 走非 transition，结果 FleetBeacon 在
+        # 578-650s 才落成、二矿被锁 2 基地、中期地面海缺失，被 Roach/Ravager/Hydra
+        # 波次滚平。Timing 用比 Rush 晚的 fleet_at(380) 和更大 gateway_cap(2)，
+        # 其余流忽略。
+        # O248(o246b 双 lane 0-10 实证):O207 年代的基建链已被 O224-O229/O218
+        # 全部重写 —— transition 把舰队起点推迟到 exit(330-450)+130s,
+        # 首舰 550-620 恒晚于 500-700 波次窗;Zerg Timing 不再强制 transition
+        # (Rush 保留),直爬 cyber→SG→FB,首舰目标 ≤450s,塔+追猎核守窗。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "rush"
+            and self._flow.transition is not None
+        ):
+            self._transition_active = True
         # 兵种组成注册表(army_composition.yml):Terran/Zerg 路径的 spawn/升级从这里读,
         # 神族路径的造兵已改走 self._flow。
         from bot.army_config import ArmyComposition, bot_race_name
@@ -369,6 +414,10 @@ class ProductionManager(Manager):
             self._update_zerg()
             return
 
+        # O210:O189 强制开矿旗标每帧由 _want_dynamic_expand 重算,
+        # update 头部先清零,避免 _rebuild_nexus 分支跳过导致旧值残留。
+        self._o189_forced_expand = False
+
         # O132-③:炮塔峰值 latch(每帧)——兵营链各闸吃峰值不吃实时值,
         # 塔被 wave 拆掉不再反锁 GW 链(见 __init__ 台账注释)
         self._cannons_peak = max(
@@ -384,8 +433,45 @@ class ProductionManager(Manager):
             ),
         )
 
+        # O166/O167/O168: 8 农民开局 carrier 前期资源极紧，避免水晶/塔/追加产能/
+        # 二气把 CYBERNETICCORE/STARGATE/FLEETBEACON/NEXUS 的钱吃光。
+        # 只在「非 rush 证实、无威胁、单矿早期」生效；unknown verdict 的保守
+        # rush_active 不应关闭本闸，否则 Forge 仍会拖慢科技链。
+        # O182(o181c-vh-zerg-timing game_01 实证):把 FleetBeacon 移出 early_core
+        # 清单。原清单要求 cyber/stargate/FB 全部 pending 才让开矿，导致二矿被
+        # 拖到 FleetBeacon 开始建(≈290s)才能启动，game_01 二矿 361s 才落、经济
+        # 被中局波次碾平。只守 cyber+stargate 可让二矿在 first_expand_at(210s)
+        # 正常启动，FB 资金仍由 _expand_holding + _fb_truly_missing/_fb_waiting 保护。
+        _early_core_missing = (
+            self._flow.name == "carrier"
+            and self.ai.time < 300.0
+            and self.ai.townhalls.amount < 2
+            and not self._rush_confirmed
+            and not self._threat_active
+            and any(
+                _sid in self._flow.core_structure_ids()
+                and not self._structure_present_or_pending(_sid)
+                for _sid in (UnitID.CYBERNETICSCORE, UnitID.STARGATE)
+            )
+        )
+        # O166: 有农民已派去造 Nexus 但钱不够 → 把余钱锁给 Nexus，别让其他建筑插队。
+        _nexus_waiting = False
+        if self.ai.minerals < self.ai.calculate_cost(UnitID.NEXUS).minerals:
+            for _info in self.manager_mediator.get_building_tracker_dict.values():
+                if _info.get(TRACKER_ID) == UnitID.NEXUS:
+                    _nexus_waiting = True
+                    break
+        self._early_core_missing = _early_core_missing
+        self._nexus_waiting = _nexus_waiting
+
         # can_afford 守卫：钱够才派农民去造 pylon，否则农民走过去干等不采矿（idle bug 根因）。
-        if not self._built_extra_production_pylon and self.ai.can_afford(UnitID.PYLON):
+        # O166: 前期核心科技/二矿未落时，这根额外水晶会让 CYBERNETICCORE/NEXUS 资金窗被挤掉，先忍一忍。
+        if (
+            not self._built_extra_production_pylon
+            and self.ai.can_afford(UnitID.PYLON)
+            and not _early_core_missing
+            and not _nexus_waiting
+        ):
             self.ai.register_behavior(
                 BuildStructure(self.ai.start_location, UnitID.PYLON)
             )
@@ -422,6 +508,9 @@ class ProductionManager(Manager):
             or self.manager_mediator.get_building_counter[UnitID.NEXUS] > 0
             or self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
         )
+        # O166: 这些闸在 update 尾部的方法(_spend_bank/_build_extra_production/
+        # _build_forward_pylon)里也要读，挂到实例上避免 NameError。
+        self._expand_holding = _expand_holding
         # 基地被打掉重建：真的丢过基地(峰值>当前)且 < 目标基地数时进入重建模式。
         # E6b 回归实证:只看"当前<目标"会在开局(1<max_bases)就误触发,
         # 造农民/出兵整局被掐死 —— 必须带峰值门(见 production_plans.base_rebuild_active)。
@@ -525,7 +614,14 @@ class ProductionManager(Manager):
                 + self.manager_mediator.get_building_counter[UnitID.GATEWAY]
             ),
             gateway_cap=(
-                self._flow.transition.gateway_cap if self._flow.transition else 0
+                # O208:Zerg Timing 混编地面需要 2 兵营，塔链让位目标同步。
+                2
+                if (
+                    self._flow.transition
+                    and self._opp_race == "zerg"
+                    and self._ai_build == "timing"
+                )
+                else (self._flow.transition.gateway_cap if self._flow.transition else 0)
             ),
             # O132-③:cannons 吃就绪峰值 latch —— 塔损不反锁兵营链
             cannons_ready=self._cannons_ready_peak,
@@ -541,6 +637,8 @@ class ProductionManager(Manager):
             and self._fleet_transitioned
             and self._structure_present_or_pending(UnitID.FLEETBEACON)
             and self._flow.extra_production is not None
+            # O176:FB 已派工但买不起时,追加星门会抽干 FB 资金窗,先让位。
+            and not self._fb_waiting
         ):
             _gas_per_base = [
                 # O152-③:在途气矿也算(21s 后就是产能;SG 建造 43s,无 stale 风险)
@@ -572,8 +670,26 @@ class ProductionManager(Manager):
             self._reserve_since = self.ai.time
         elif not _any_reserve:
             self._reserve_since = None
+        # O214:Zerg Timing 的二矿资金窗常被 O131 保险丝在 60s 内打断,
+        # 导致防御把 Nexus 400 矿抽干、单矿经济崩盘。扩张预留期间延长
+        # 到 120s/400minerals(打断线 200),给 Nexus 更长的攒钱窗口。
+        _expand_reserve = _transition_reserve or self._expand_holding
+        _fuse_timeout = 120.0 if (
+            _expand_reserve
+            and self._opp_race == "zerg"
+            and self._ai_build == "timing"
+        ) else 60.0
+        _fuse_min_price = 400.0 if (
+            _expand_reserve
+            and self._opp_race == "zerg"
+            and self._ai_build == "timing"
+        ) else 300.0
         if reserve_deadlock_break(
-            self._reserve_since, self.ai.time, self.ai.minerals
+            self._reserve_since,
+            self.ai.time,
+            self.ai.minerals,
+            timeout=_fuse_timeout,
+            min_price=_fuse_min_price,
         ):
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
@@ -609,6 +725,8 @@ class ProductionManager(Manager):
         )
         # O133-③(o132 timing 局1/2/5 实证):vs Zerg 二判仍 unknown 且 t≥200
         # → 按 presumed 同等级拉防御(F2 target 2 塔)——unknown ≠ 等到接触
+        # O207:Zerg Timing 局若首判/二判仍是 unknown，t≥200 起按 presumed
+        # 同等级拉 2 塔防御，不能等到接触再拍 forge。
         _unknown_defense = unknown_verdict_defense(
             getattr(getattr(self.ai, "enemy_race", None), "name", None) == "Zerg",
             self._flow.transition is not None,
@@ -616,6 +734,7 @@ class ProductionManager(Manager):
             self._rush_confirmed,
             self._transition_active,
             self.ai.time,
+            enabled=(self._ai_build == "timing"),
         )
         # O117-②:防御紧急旗标每帧更新(main.py O11 撤回豁免读)
         self._defense_urgent = (
@@ -652,26 +771,42 @@ class ProductionManager(Manager):
         )
         # O129:冲刺总闸 —— presumed/rush 确认起,到「forge 就绪+首塔落地+
         # 首叉在产」全链路完成前,一切非链开销(农民/水晶/GW2+/气矿/研究)
-        # 统一掐死;接触(敌进家 ≥2)即退出交还 F2;链完成自解除
-        _sprint = defense_sprint_active(
-            has_transition=self._flow.transition is not None,
-            defense_urgent=self._defense_urgent,
-            forge_ready=any(
-                s.is_ready
-                for s in self.manager_mediator.get_own_structures_dict[UnitID.FORGE]
-            ),
-            first_cannon_ready=_cannons_ready_home > 0,
-            first_zealot_seen=(
-                self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.ZEALOT)
-                > 0
-                or cy_unit_pending(self.ai, UnitID.ZEALOT)
-            ),
-            enemy_home=_enemy_home_now,
-            sprint_age=(
-                self.ai.time - self._sprint_since
-                if self._sprint_since is not None
-                else 0.0
-            ),
+        # 统一掐死;接触(敌进家 ≥2)即退出交还 F2;链完成自解除。
+        # O168:8 农民 carrier 核心科技缺失期不 sprint，避免 120s 冻结把
+        # Cybercore/Stargate/气矿全部拖后；真实 rush 局 _early_core_missing=False
+        # → sprint 正常触发，Forge/首塔/首叉链不受影响。
+        # O216f:Zerg Timing 不是 Rush,不需要 120s 全链冲刺;把 max_age 压到
+        # 60s,让 F2 防御和科技链更快并行,避免 sprint 把经济锁死在 forge/首塔。
+        _sprint_max_age = (
+            60.0
+            if (self._opp_race == "zerg" and self._ai_build == "timing")
+            else 120.0
+        )
+        _sprint = (
+            defense_sprint_active(
+                has_transition=self._flow.transition is not None,
+                defense_urgent=self._defense_urgent,
+                forge_ready=any(
+                    s.is_ready
+                    for s in self.manager_mediator.get_own_structures_dict[UnitID.FORGE]
+                ),
+                first_cannon_ready=_cannons_ready_home > 0,
+                first_zealot_seen=(
+                    self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.ZEALOT)
+                    > 0
+                    or cy_unit_pending(self.ai, UnitID.ZEALOT)
+                ),
+                enemy_home=_enemy_home_now,
+                sprint_age=(
+                    self.ai.time - self._sprint_since
+                    if self._sprint_since is not None
+                    else 0.0
+                ),
+                max_age=_sprint_max_age,
+            )
+            # O207:Zerg Rush/Timing 的早期防御链优先于核心科技排队;
+            # 核心科技缺失期仍允许冲刺，避免首塔被 cybercore 资金窗卡死。
+            and (not _early_core_missing or self._is_zerg_rush_timing())
         )
         # O130-①:逃逸阀计时(冲刺 >120s 强制退出,链断不拖死全局)
         if _sprint and self._sprint_since is None:
@@ -682,8 +817,13 @@ class ProductionManager(Manager):
         # O133-②:过渡期 250-300 防御冲刺旗标(t≥240+过渡 active+verdict≠greedy)
         # —— 塔补到 3/GW 让位闸旁路,不管清净/威胁(timing 波必来);
         # 供 F2 注册闸/塔目标/_rush_gateway_boost/_build_extra_production 读
+        # O207:Zerg Timing 局波次 273-289 到脸，启用 t≥240 的防御冲刺，
+        # 临时把塔补到 3 并旁路 GW 让位闸，避免波到脸时只有 1-2 塔。
         self._timing_sprint = transition_timing_sprint(
-            self._transition_active, self._verdict, self.ai.time
+            self._transition_active,
+            self._verdict,
+            self.ai.time,
+            enabled=(self._ai_build == "timing"),
         )
         # O144-③:地面 floor 激活闸(rush 确认 / 敌可见地面 ≥4;纯运营局
         # 不产地面,矿全进舰队科技链 —— O134 无差别 floor 挤科技钱实证)
@@ -773,8 +913,11 @@ class ProductionManager(Manager):
             ),
             minerals=self.ai.minerals,
         )
+        # O168:8 农民 carrier 前期矿极紧，核心科技缺失期间 AutoSupply 不因
+        # can_afford 就注册水晶，只在 supply_left<=2 紧急通道放行。
         if should_register_autosupply(
-            self.ai.can_afford(UnitID.PYLON), self.ai.supply_left
+            self.ai.can_afford(UnitID.PYLON) and not _early_core_missing,
+            self.ai.supply_left,
         ) and not forge_first_pylon_yield(
             defense_urgent=(
                 self._rush_confirmed or self._transition_active or _presumed_rush
@@ -793,11 +936,15 @@ class ProductionManager(Manager):
             # O156-②:AutoSupply 被 O11 撤回后 10s 内不重复注册(非紧急人口)。
             # 原行为：水晶工被撤后 AutoSupply 每帧重派新工，造成 idle_builder
             # 刷屏且水晶抢 forge/Nexus 资金窗(o155 game_01/02 实证)。
-            self.ai.supply_left <= 2
-            or redispatch_cooled_down(
-                getattr(self.ai, "_o11_released_at", {}).get(UnitID.PYLON),
+            # O192-①(o191-vh-zerg-timing game_01 实证):开局前 60s 即使 supply_left<=2,
+            # 也强制 2s 冷却,让被撤 PYLON 农民先采矿,避免同一农民反复钉点 30s+
+            # 空转;60s 后恢复紧急通道立即补人口。
+            _pylon_redispatch_ok(
                 self.ai.time,
-                _DEFENCE_REDISPATCH_CD,
+                self.ai.supply_left,
+                getattr(self.ai, "_o11_released_at", {}).get(UnitID.PYLON),
+                cooldown=_DEFENCE_REDISPATCH_CD,
+                can_afford=self.ai.can_afford(UnitID.PYLON),
             )
         ):
             macro_plan.add(
@@ -809,6 +956,7 @@ class ProductionManager(Manager):
         # O109-①(o108 局3 实证):舰队期人口 buffer —— 暴风 6 人口/艘,
         # AutoSupply 默认阈值太紧(supply_block×3:89/90、86/82 反超停产);
         # supply_left ≤8 且买得起就直接补,BuildStructure 自带 max_on_route 去重
+        # O166: 单矿早期先保科技和 Nexus，buffer 水晶不急。
         if (
             fleet_supply_buffer_needed(
                 self._flow.transition is not None
@@ -816,6 +964,16 @@ class ProductionManager(Manager):
                 self.ai.supply_left,
             )
             and self.ai.can_afford(UnitID.PYLON)
+            and not _early_core_missing
+            and not _nexus_waiting
+            # O198:buffer 水晶直接走 BuildStructure,钱在派工后被抽干会触发 idle_builder;
+            # 加收入守卫:到位时矿+走位收入能覆盖 100 矿才派,农民不钉点等钱。
+            and dispatch_viable(
+                self.ai.minerals, self._mineral_income_per_sec(), 3.0, 100.0, buffer=15.0
+            )
+            # O198:FleetBeacon 已可建却买不起时,100 矿 buffer 水晶也让位,
+            # 优先把 300/200 FB 资金窗攒出来,否则舰队转型永远完不成。
+            and not self._fb_ready_to_build()
         ):
             # O119-②b(o118b 局1/局5 实证):入侵期 buffer 水晶落矿线深处 ——
             # 落前线/生产区会被狗顺路点杀(水晶一死,带电槽归零,塔/科技
@@ -858,12 +1016,20 @@ class ProductionManager(Manager):
                 self._mineral_income_per_sec(),
                 self._expansion_walk_time(),
                 self.ai.calculate_cost(UnitID.NEXUS).minerals,
+                # O181:留 25 矿 buffer，避免 Nexus 工位刚出发就被塔/兵抽干；
+                # 50 矿在部分图会把二矿拖慢 30s+，导致前期防御/舰队整体后移。
+                # O206(o205-vh-zerg-power 败局):Nexus 工人被钉 3.5min+ 不采矿,
+                # 采矿损失远超二矿晚 10-20s。buffer 提到 75 矿,让工人接近
+                # 凑够 400 矿再出发,减少工地空转。
+                buffer=75.0,
             )
+            # O210:O189 强制开二矿时立即预走位,不等 dispatch_viable 凑够
+            # 475 矿(原 buffer=75 导致 150 矿触发后仍不派工,二矿永远落不了地)。
             macro_plan.add(
                 ExpansionController(
                     to_count=self.ai.townhalls.amount + _pending,
                     max_pending=_pending,
-                    prioritize=_preposition,
+                    prioritize=_preposition or self._o189_forced_expand,
                 )
             )
         # 升级(O1/O8/O10):研究交 UpgradeController 并进 MacroPlan 且 prioritize=True ——
@@ -932,14 +1098,76 @@ class ProductionManager(Manager):
             self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.ZEALOT)
             + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.STALKER)
         )
-        _spawn_pause = spawn_pause_reason(rebuild_nexus=_rebuild_nexus)
+        _spawn_pause = spawn_pause_reason(
+            rebuild_nexus=_rebuild_nexus,
+            expand_holding=self._expand_holding,
+            is_zerg_timing=(
+                self._opp_race == "zerg" and self._ai_build == "timing"
+            ),
+            nexus_unstarted=self.ai.not_started_but_in_building_tracker(
+                UnitID.NEXUS
+            ),
+            minerals=self.ai.minerals,
+            nexus_price=self.ai.calculate_cost(UnitID.NEXUS).minerals,
+            # O224:transition 期 zealot 吃光 SG/FB 资金窗(SG ~500s/首舰 620+)。
+            # 防御已立(t≥240+塔≥2)且 SG/FB 缺失 → 停产攒钱,买得起即恢复。
+            # O226(o222-lane2 game_04 实证):塔≥2 门太严(本局塔 1 拖到 281s,
+            # O110 SG 自救 no_money),降到 塔≥1 提前开攒,等 O216i 门开就有钱。
+            tech_saving=(
+                self._opp_race == "zerg"
+                and self._ai_build == "timing"
+                and self._transition_active
+                and self.ai.time >= 240.0
+                and self._cannons_ready_peak >= 1
+                and (
+                    not self._structure_present_or_pending(UnitID.STARGATE)
+                    or not self._structure_present_or_pending(UnitID.FLEETBEACON)
+                )
+            ),
+            tech_price=(
+                150.0
+                if not self._structure_present_or_pending(UnitID.STARGATE)
+                else 300.0
+            ),
+            # O240:气烂 ≥800 且航母配比落后(航母 < 暴风/6)时攒 350 矿点航母;
+            # 航母在产/配比达标即恢复产线(自校正)。
+            carrier_saving=(
+                self._opp_race == "zerg"
+                and self._ai_build == "timing"
+                and not self._transition_active
+                and self.ai.vespene >= 800.0
+                and self._fb_entities_now > 0
+                and (
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER
+                    )
+                    + cy_unit_pending(self.ai, UnitID.CARRIER)
+                )
+                < max(
+                    1,
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST
+                    )
+                    // 6,
+                )
+            ),
+            # O245e 的 immortal_reserve 已废弃(O245e-lane1 game_02 实证:
+            # 停产期间塔/探机照抽,275 永远攒不出、地面 0 败亡);
+            # 不朽者改用 spawn dict 首位优先序(_effective_spawn O245 块)。
+            immortal_saving=False,
+        )
         if _spawn_pause is None:
             macro_plan.add(
                 SpawnController(
                     army_composition_dict=self._effective_spawn(),
                     spawn_target=(
-                        self._rush_spawn_target() if self._rush_active
-                        else self._front_point()  # F1: 折跃向前线(非主基地),配合前线水晶塔远程投送
+                        # O210:transition/timing 冲刺期地面兵也走防守集结点,
+                        # 避免小股折跃到前线被虫群分批吃掉(trickle)。
+                        self._rush_spawn_target() if (
+                            self._rush_active
+                            or self._transition_active
+                            or self._timing_sprint
+                        ) else self._front_point()  # F1: 折跃向前线(非主基地),配合前线水晶塔远程投送
                     ),
                     freeflow_mode=self._flow.freeflow,
                 )
@@ -961,20 +1189,67 @@ class ProductionManager(Manager):
         # 容量口径(已有+在建星门)拦花钱 —— 星门群会在首座就绪前一起排队
         # (n5m-terran-power game_04),只数就绪的拦不住;就绪口径救 FB(FB 需
         # 就绪星门)。
+        # O167:就绪口径阈值 600→400,8 农民开局气收入低但星门就绪后仍要尽快
+        # 把气转成 FleetBeacon,避免气烂银行、星门空转。
         _sg_all = self.manager_mediator.get_own_structures_dict[UnitID.STARGATE]
         _fb_pending = self._structure_present_or_pending(UnitID.FLEETBEACON)
         _fb_in_core = UnitID.FLEETBEACON in self._flow.core_structure_ids()
-        _fleet_starved_capacity = fleet_gas_starved(
-            vespene=self.ai.vespene,
-            fb_present_or_pending=_fb_pending,
-            stargates=len(_sg_all),
-            fb_in_core=_fb_in_core,
+        # O172/O173:用「无 FB 实体」(不含 pending)判断舰队饥饿——o172 game_01
+        # 实证 FB 工人被 O11 反复释放,pending 为真但实体永远落不了地,导致原
+        # present_or_pending 门被绕过,三矿/过量电池照样建。
+        # O175:building_counter 含 pending,不能直接当「实体」;pending-but-stuck
+        # 时 still 无实体,必须用真正落成/在建中的建筑计数。
+        _fb_entities_now = len(
+            self.manager_mediator.get_own_structures_dict[UnitID.FLEETBEACON]
+        )
+        _fb_structures_now = (
+            _fb_entities_now
+            + self.manager_mediator.get_building_counter[UnitID.FLEETBEACON]
+        )
+        # O216d:把实体计数挂到实例,供追加产能/塔帽读取,避免 FB pending 期间被星门抽干。
+        self._fb_entities_now = _fb_entities_now
+        self._fb_structures_now = _fb_structures_now
+        if _fb_entities_now == 0:
+            if self._fb_missing_since is None:
+                self._fb_missing_since = self.ai.time
+        else:
+            self._fb_missing_since = None
+        # O173/O175:pending 抖动让「当前无实体」每秒翻板;要求连续 5s 无真正
+        # 实体才视为缺失,避免一帧 pending 就打开三矿/电池开关。
+        _fb_truly_missing = (
+            _fb_in_core
+            and _fb_entities_now == 0
+            and self._fb_missing_since is not None
+            and self.ai.time - self._fb_missing_since >= 5.0
+        )
+        # O175:稳定信号挂到实例,供 _want_dynamic_expand / _spend_bank 读取,
+        # 避免三矿门/滚雪球门再用含 pending 的本地计算。
+        self._fb_truly_missing = _fb_truly_missing
+        # O176(o175-vh-zerg-power game_01 实证):FB 已派工但钱被 F2/追加星门
+        # 抽干,工人干等 160s+。无真正实体且买不起时强制让位,比 truly_missing
+        # 更早生效,也不影响正常 43s 建造(有钱即不触发);FB 被摧毁后同样生效。
+        self._fb_waiting = (
+            _fb_in_core
+            and _fb_entities_now == 0
+            and not self.ai.can_afford(UnitID.FLEETBEACON)
+        )
+        _fleet_starved_capacity = (
+            fleet_gas_starved(
+                vespene=self.ai.vespene,
+                fb_present_or_pending=_fb_pending,
+                stargates=len(_sg_all),
+                fb_in_core=_fb_in_core,
+            )
+            # O168e:FB 是 fleet 产出的硬性前置，FB 未建时一律视为舰队饥饿，
+            # 阻止追加星门/塔把 300/300 的资金窗吃掉。
+            or (_fb_in_core and not _fb_pending)
         )
         _fleet_starved = fleet_gas_starved(
             vespene=self.ai.vespene,
             fb_present_or_pending=_fb_pending,
             stargates=len([s for s in _sg_all if s.is_ready]),
             fb_in_core=_fb_in_core,
+            min_vespene=400.0,
         )
 
         # F2: 按局势铺防御塔(B+F+Cannon)——框架自动建 forge + 光子炮 + 护盾电池并补前置科技。
@@ -1025,9 +1300,31 @@ class ProductionManager(Manager):
             )
             and _sprint
             and not self._threat_active
+            # O202:CarrierOpenerZergRush 早期由 build order 自己铺 forge+双塔,
+            # 手动链不抢资源,避免把二塔拖到 5 分钟后。
+            and not self._carrier_rush_opener_early()
         )
         if _presumed_manual:
             await self._presumed_defense_chain()
+        # O179/O181:舰队总规模(就绪+在建)在 F2 注册判断与塔目标分支都要读,
+        # 提到 if 链之前,避免 UnboundLocalError 并减少重复计算。
+        _fleet_total_now = (
+            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+            + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
+            + cy_unit_pending(self.ai, UnitID.TEMPEST)
+            + cy_unit_pending(self.ai, UnitID.CARRIER)
+        )
+        # O220(o217-lane2 game_02 实证):任一就绪基地 0 就绪塔 = 无防基地,
+        # dispatch_viable 资金守卫在矿 20-70 振荡期永远不过 → 新矿落成 100s
+        # 零塔被 4 地面抄家。无防基地 F2 必须注册(钉点几秒 > 裸奔 100s)。
+        _defenseless_base = any(
+            sum(
+                1 for s in self.ai.structures.ready
+                if s.type_id == UnitID.PHOTONCANNON
+                and s.position.distance_to(th.position) < 12
+            ) == 0
+            for th in self.ai.ready_townhalls
+        )
         if (
             (
                 self._should_build_defense(_order)
@@ -1036,6 +1333,8 @@ class ProductionManager(Manager):
                 or _unknown_defense
                 # O133-②:timing 冲刺期 F2 强制注册(不管清净/威胁,波必来)
                 or self._timing_sprint
+                # O220:无防基地强制注册(豁免下方 dispatch_viable 守卫)
+                or _defenseless_base
             )
             # O119-①(o118b 局3/4/5 实证):科技攒钱预留激活 → F2 塔重建/电池
             # 整段让位 —— 局3/4/5 SG 停滞 100-300s,watchdog 报 no_money:
@@ -1043,6 +1342,15 @@ class ProductionManager(Manager):
             # 地面防御是存量,塔钱 = SG/FB 的钱
             # O133-②:timing 冲刺期不让位(timing 波 273-289 到脸,塔>SG)
             and (not _tech_reserve or self._timing_sprint)
+            # O216h(o216g-lane2 game_01 实证):强开二矿的 Nexus 工人已钉点未开工时,
+            # 威胁期炮塔持续注册把银行抽干 → 工人钉 15s+ 进「派→等→撤→再派」循环,
+            # 二矿永远落不了地。≥2 塔保底后塔链整段让位,银行 ~12s 攒到 400;
+            # rush_active 期保命塔除外(六连动不变)。
+            and not (
+                self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
+                and self._cannons_ready_peak >= 2
+                and not self._rush_active
+            )
             # O94-A:rush 确认(latch)过的局,F2 不再被持有期拦 —— rush_active
             # 60s 自动解除(t≈190)到首波再接触(t≈195-200)的黑窗恰是锻造炉
             # 就绪窗口,炮塔派工容错被砍光(o93 局1/局2、o92 局1 实证速败)。
@@ -1061,6 +1369,12 @@ class ProductionManager(Manager):
                 and not _unknown_defense
                 and not self._timing_sprint
             )
+            # O168:8 农民 carrier 核心科技(CYBERNETICCORE/STARGATE/FLEETBEACON)缺失期，
+            # F2 整段让位，避免 PSD 自动拍 Forge/水晶把科技链资金吃掉。
+            # 真实 rush/威胁局 _early_core_missing 为假 → F2 正常注册。
+            # O207:vs Zerg Rush/Timing 时 forge/首塔必须先于 cybercore 启动,
+            # 核心科技缺失期仍注册 F2(节制版/presumed 链并行)，防止 timing 波裸接。
+            and (not _early_core_missing or self._is_zerg_rush_timing())
             and redispatch_cooled_down(
                 getattr(self.ai, "_o11_released_at", {}).get(UnitID.PHOTONCANNON),
                 self.ai.time,
@@ -1072,25 +1386,65 @@ class ProductionManager(Manager):
                     self._mineral_income_per_sec(),
                     _DEFENCE_WALK_TIME,
                     self.ai.calculate_cost(UnitID.PHOTONCANNON).minerals,
+                    # O181:仅 Nexus 在途且舰队未成规模时留 30 矿 buffer，避免炮塔
+                    # 把 Nexus/首舰资金抽干；常规威胁窗口不挡 F2 注册。
+                    # O204:前期(time<120)建筑资金窗口极紧，把 buffer 提到 75，
+                    # 避免 forge/塔/水晶并行派工时农民等钱 idle_builder。
+                    buffer=(
+                        75.0 if self.ai.time < 120.0
+                        # O215:Zerg Timing 二矿/FB 资金窗期间,把 buffer 提到 250,
+                        # 确保 Nexus(400矿)/FB(300矿) 优先落袋,避免炮塔重建把
+                        # 关键资金窗吃光。常规局保持 75(Rush 等仍走 rush/threat
+                        # 分支,buffer 不影响保命塔)。
+                        else (
+                            250.0 if (
+                                _expand_holding and _fleet_total_now < 4
+                                and self._opp_race == "zerg"
+                                and self._ai_build == "timing"
+                            )
+                            else (75.0 if _expand_holding and _fleet_total_now < 4 else 0.0)
+                        )
+                    ),
                 )
                 # O114-③(o113 局3/局4 实证):防御紧急且 0 塔时跳过资金预估
                 # 守卫 —— presumed 65 启动却被守卫拦到 t=110 才注册,forge
                 # 133、首塔 185 vs 波次 160,45s 全丢在这
+                # O206(o205-vh-zerg-power 败局):plain _presumed_rush 不再 bypass,
+                # 避免 Power/Macro 局里 PSD 提前注册把农民钉在工地。
                 or f2_dispatch_guard_bypassed(
-                    self._rush_confirmed or self._transition_active or _presumed_rush,
+                    self._rush_confirmed or self._transition_active,
                     sum(
                         1 for s in self.ai.structures.ready
                         if s.type_id == UnitID.PHOTONCANNON
                         and s.position.distance_to(self.ai.start_location) < 25
                     ),
                 )
+                # O220:无防基地(任一就绪基地 0 就绪塔)同样豁免资金守卫 ——
+                # 新矿落成后矿振荡期守卫永假 = 基地裸奔被抄(o217-lane2 game_02)
+                or _defenseless_base
             )
             and not _gw_priority  # O131-②:排队型让位(2 塔后 GW 链优先)
             # O131-①/O135:扩张/舰队预留激活 → F2 同步暂停 —— O135 语义反转后
             # 预留只闸建筑侧(产兵永动,钱先喂产线,塔/水晶用余钱);
             # O133-②:timing 冲刺期不让位(波必来,塔优先于扩张/舰队攒钱)
-            and (not _transition_reserve or self._timing_sprint)
-            and (not _fleet_reserve or self._timing_sprint)
+            # O221:无防基地同样不让位(新矿裸奔时被预留拦 52s,敌到脸才注册)
+            and (not _transition_reserve or self._timing_sprint or _defenseless_base)
+            and (not _fleet_reserve or self._timing_sprint or _defenseless_base)
+            # O170/O172:o169/o172 game_01 实证,FleetBeacon 工人被反复释放,
+            # pending 为真但实体不落,F2 持续派工造 PhotonCannon/Pylon/电池把
+            # 300 矿 FB 资金窗抽干。用「无 FB 实体」判断,非 rush/威胁/timing 时
+            # F2 整段让位,优先把 FB 拍出来,否则塔再多也没有舰队输出。
+            # O176:再补「FB 已派工但买不起」闸,避免 truly_missing 偶尔未翻板时
+            # 塔/追加星门继续抽干资金。
+            # O221(o220-lane1 game_01 实证):无防基地豁免 —— 新二矿落成后
+            # FB 等待闸把 F2 拦了 52s(385→442),敌 4 地面到脸时水晶/塔刚开工。
+            and (
+                (not _fb_truly_missing and not self._fb_waiting)
+                or self._threat_active
+                or self._rush_active
+                or self._timing_sprint
+                or _defenseless_base
+            )
             and not _sprint  # O129:冲刺期 F2 整块让位(手动链管 forge+首塔)
         ):
             ec = self._flow.expansion_cannons
@@ -1098,22 +1452,43 @@ class ProductionManager(Manager):
                 self._rush_hold_until is not None
                 and self.ai.time < self._rush_hold_until
             )
+            # O181:威胁分支与 else 分支都要用 _ec_min,提前计算避免重复。
+            # O198:ec 为 None 时给 1 的兜底,供下方 FB 资金帽使用。
+            _ec_min = expansion_cannon_min_dynamic(
+                ec.min if ec is not None else 1, _fleet_total_now, fleet_min=3, early_cap=3
+            )
+            # O209:Zerg Timing 炮塔目标封顶 3/基地。O208 出现 20+ 炮塔局，
+            # 把舰队成型资金吃光；3 基地 9 塔足够配合地面/舰队守家。
+            # O231 曾降 3→2,但 O231b/O233 把追猎核后置到舰队≥3 后,中期
+            # (500-700s)基地只剩 2 塔+零追猎,二矿连丢(o232 双 lane 0-8)——
+            # 回滚到 3/基地,追猎核是增量不是替代。
+            _ec_max = ec.max if ec is not None else 2
+            if (
+                self._opp_race == "zerg"
+                and self._ai_build == "timing"
+            ):
+                _ec_max = min(_ec_max, 3)
             if ec is None:
                 cannons = 2
             elif _rush_hold:
                 # O73(n5b 两连崩实证):O71 情报确认的 rush 持有期塔目标拉满 ——
                 # 敌 18 枪兵在对面家里(可见=0),按可见数目标停 min=4,摊到
                 # 2-3 基地每处 2-3 塔接触即穿;兵力已被侦查证实,不需「看见」。
-                cannons = ec.max
+                cannons = _ec_max
             elif (
                 self._threat_active and not self._rush_active
                 and not _fleet_starved_capacity  # O87:见下行注释
+                # O179(o178-vh-zerg-timing game_01-03 实证):0 舰队时拉满 max 会把
+                # Nexus/首舰资金吃光,退回到动态式(min+敌兵//4),先保出一艘舰队。
+                # O191(o190-vh-zerg-timing game_01 实证):1-2 艘舰队拉满 max 同样把
+                # 矿吃光(23 炮 vs 7 艘 fleet),fleet 无法成型;改≥3 艘才拉满。
+                and _fleet_total_now >= 3
                 and (
                     not _expand_holding
                     or self._visible_enemy_army_supply() >= 25  # O49
                 )
             ):
-                # E9:敌压境 → 塔目标拉满 ec.max(覆盖 cannon_target_capped 限流,
+                # E9:敌压境 → 塔目标拉满 _ec.max(覆盖 cannon_target_capped 限流,
                 # 修正限流在中局一波时防御变弱的副作用);rush 期按 rush 走不叠加
                 # O46(Harder game_02 实证):开矿预留期威胁不拉满 —— Harder 的 E9
                 # 高频触发(14-21 supply 挠痒波),每次威胁 ec.max=8 塔把 Nexus 基金
@@ -1125,7 +1500,15 @@ class ProductionManager(Manager):
                 # O87(n5m-protoss-rush game_02 / n5m-zerg-timing game_02 实证):
                 # 舰队饥饿期威胁不拉满 —— 慢性威胁下 12-13 座塔把 FB(300矿)的
                 # 钱吃光,塔照样守不住(基地连丢),舰队才是翻盘点;饥饿期走动态式。
-                cannons = ec.max
+                cannons = _ec_max
+                # O181:即使真波，Nexus 在途且舰队<3 时仍按动态式，避免 Nexus/首舰
+                # 资金被大量塔吃光（game_02 二矿 361s 才落，威胁期 8+ 塔把 Nexus
+                # 基金反复抽干，idle_builder 等钱造 Nexus 3 次）。
+                # O191:前置条件已要求 fleet≥3,本特例基本不会触发,保留兜底。
+                if _expand_holding and _fleet_total_now < 3:
+                    cannons = expansion_cannon_count(
+                        _ec_min, _ec_max, self._visible_enemy_army_count()
+                    )
             elif _unknown_defense:
                 # O133-③:unknown 判决保守防御 —— presumed 同级但 target 2 塔
                 # (200s 的 unknown ≠ 65s 的 unknown,timing 波 273 必来)
@@ -1135,18 +1518,43 @@ class ProductionManager(Manager):
                 # 不多铺(贪心局只亏 1 塔钱);rush/threat 分支优先于本分支。
                 cannons = 1
             else:
+                # O161/O179: 舰队成型前压低 expansion_cannons baseline，避免二矿刚落
+                # 就铺 6 塔把舰队科技/产能憋死。fleet=0 时进一步压到 1(见函数内 zero_fleet_cap)。
                 cannons = cannon_target_capped(
                     # Macro 局塔重建限流(诊断 #2,o19b-macro 实证):憋舰队期
                     # (矿 < 舰队矿价 且非 rush)塔目标压回 min —— 16 座塔≈7 艘
                     # 航母的矿不该在气 2200 烂掉时继续出血;rush 期不限(保命)。
+                    # O157: 气体富余但矿物紧缺、舰队未成规模时同样限流;
+                    # O161: 基地被压缩且舰队未成规模时仍限流,优先让舰队成型。
                     expansion_cannon_count(
-                        ec.min, ec.max, self._visible_enemy_army_count()
+                        _ec_min, _ec_max, self._visible_enemy_army_count()
                     ),
-                    ec.min,
+                    _ec_min,
                     self.ai.minerals,
                     self.ai.calculate_cost(self._primary_unit_id()).minerals,
                     self._rush_active,
+                    vespene=self.ai.vespene,
+                    fleet_total=_fleet_total_now,
+                    bases=self.ai.townhalls.amount,
                 )
+            # O198(o197-vh-zerg-rush game_01 实证):FB 已可建但买不起时,
+            # rush/threat/timing 例外会把 300 矿 FB 资金窗抽干,舰队转型永远完不成。
+            # 此处硬帽:FB 资金缺口期间塔目标最多 _ec_min,保命底线塔外全部让位给 FB。
+            if self._fb_waiting:
+                cannons = min(cannons, _ec_min)
+            # O201(o200-vh-zerg-rush 3-7 实证):开矿持有期 Nexus 资金常被 F2 塔链
+            # 持续抽干,二矿永远开不出;把塔目标压到 ec.min(1-2 座保命塔)。
+            if self._expand_holding:
+                cannons = min(cannons, _ec_min)
+            # O216d(O216c 败局):FB 实体落成前,动态塔目标扩到 3-4 座/基地会反复
+            # 抽干 300 矿 FB 资金窗,舰队继续空转。压回 ec.min(1-2 座保命塔),
+            # 让 FB 优先落地。过渡期地面防御不动。
+            if (
+                self._fb_entities_now == 0
+                and _fleet_total_now < 3
+                and not self._transition_active
+            ):
+                cannons = min(cannons, _ec_min)
             # E3d:rush 期电池让位(要 CYBERNETICSCORE,_tech_required 阻塞塔链,
             # game_01 零炮塔败北);E3f:max_on_route=2 允许 2 座同建(塔目标随敌兵
             # 爬升,单线 ~29s 追不上两段式 rush)。两实例共用。
@@ -1170,6 +1578,43 @@ class ProductionManager(Manager):
             # 改 _dispatch_structure 手动派工(自带 dispatch_viable+撤回冷却,
             # 钱到位才派);PSD 侧电池数置 0 防双建。非 transition 流不变。
             _batt_psd = 0 if self._flow.transition is not None else batt
+            # O172:o171/o172 game_01 实证,FB 工人被反复释放导致 pending 为真但
+            # 实体不落,PSD 仍按 threat 分支铺出 7 电池/主基,把 FB 的 300 矿吸干。
+            # 用 update 头部已计算的「无 FB 实体」判断,非 rush/timing 时电池目标压到 1/基地。
+            if (
+                _fb_truly_missing
+                and not self._rush_active
+                and not self._timing_sprint
+            ):
+                batt = min(batt, 1)
+                _batt_psd = 0 if self._flow.transition is not None else batt
+                # O175:FB 饥饿期电池帽临时诊断——只在状态变化时输出,
+                # 避免每 10s 刷屏挤掉关键事件。
+                _prev = getattr(self, "_fb_diag_prev", False)
+                if _fb_truly_missing != _prev:
+                    self._fb_diag_prev = _fb_truly_missing
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            f"FB_DIAG:truly_missing={_fb_truly_missing},"
+                            f"entities_now={_fb_entities_now},"
+                            f"structures_now={_fb_structures_now},"
+                            f"missing_since={self._fb_missing_since:.1f},"
+                            f"batt={batt},rush={self._rush_active},"
+                            f"timing={self._timing_sprint},fb_in_core={_fb_in_core},"
+                            f"fb_pending={_fb_pending}"
+                        ),
+                    })
+            # O179(o178-vh-zerg-timing game_01-03 实证):FB 已就绪但一艘舰队都没下
+            # 时,2 电池/基地仍把 Nexus/首舰资金抽干,压到 1。rush/timing 冲刺期保命
+            # 优先,不受此帽限制。
+            if (
+                _fleet_total_now == 0
+                and not self._rush_active
+                and not self._timing_sprint
+            ):
+                batt = min(batt, 1)
+                _batt_psd = 0 if self._flow.transition is not None else batt
             # O102-②/O132-②:过渡期塔封顶(cap=3)—— 第 4+ 座塔的钱
             # 换叉;cap=2 时 timing 波稳定穿防(o131 实证)
             cannons = transition_cannon_cap(cannons, self._transition_active)
@@ -1186,9 +1631,42 @@ class ProductionManager(Manager):
                     self._fleet_transitioned, self._first_fleet_seen()
                 ),
             )
+            # O210:非紧急状态下钱不够光子炮就不请求新塔,杜绝 dispatch_viable
+            # 预测可用、途中被兵/升级抽干导致的 idle_builder 驻点等钱。
+            # rush/威胁/timing 冲刺/rush 持有期保命优先,保持原逻辑。
+            _cannon_emergency = (
+                self._rush_active
+                or self._threat_active
+                or self._timing_sprint
+                or _rush_hold
+                or _presumed_rush
+            )
+            if (
+                not _cannon_emergency
+                and cannons > 0
+                and not self.ai.can_afford(UnitID.PHOTONCANNON)
+            ):
+                cannons = 0
+            # O216j(o216h-lane2 game_04 实证):O210 的「买不起即归零」让新分矿
+            # 落成后 88s 塔目标恒 0,敌 4 地面抄家时无塔丢矿(12 农民+基地)。
+            # 分矿保底塔不走归零 —— 外层 dispatch_viable 守卫已管钉点,
+            # 工人到位等几秒 > 分矿整段裸奔;主基 PSD 路径保持 O210 不变。
+            _cannons_expansion = cannons if cannons > 0 else min(_ec_min, 2)
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
-            mor = 4 if _rush_hold else 2
+            # O207:非紧急状态下把 mor 压到 1，避免 PSD 一次派多个工人等钱
+            # (dispatch_viable 只按单塔估算，多工人同时派 = idle_builder)。
+            # rush/威胁/timing 冲刺期才允许多槽并行。
+            if _rush_hold:
+                mor = 4
+            elif self._rush_active or self._threat_active or self._timing_sprint:
+                mor = 2
+            else:
+                mor = 1
+            # O207:Nexus/FB 资金窗期间，塔串行建造，避免多工人同时抽干
+            # 让位资金。rush/威胁/timing 冲刺期已走多槽，不覆盖。
+            if (_expand_holding or self._fb_waiting) and mor <= 2:
+                mor = 1
             # O31:主基堵口塔跟 ramp 口(集中火力,不散基地周边)。ramp.top 朝基地 -4 格
             # (= defensive_rally_point 同款 sharpy PlanHeatDefender)。没 ramp → None 不 override。
             rally = None
@@ -1200,6 +1678,16 @@ class ProductionManager(Manager):
                     rally = None
             ms = self._flow.main_siege
             siege = self._main_under_siege() if ms else False
+            # O223(o220-lane1 game_03 实证):FB 未落成且舰队未成规模时,主基 siege
+            # 6 塔(900 矿)把 FB/首舰资金吃光 —— 塔 9 座、舰队 0 败亡。siege 加强
+            # 只在「FB 已出 或 舰队 ≥3 或 rush 保命」时开火;其余走原 cannons 目标。
+            if (
+                siege
+                and self._fb_entities_now == 0
+                and _fleet_total_now < 3
+                and not self._rush_active
+            ):
+                siege = False
             if siege and ms is not None:
                 # 需求3:敌大军压上分矿(前线)→ 双实例(exclude 互补:只前线加强,
                 # 不叠加超造 —— to_count_per_base 是 per-base_loc)。造塔~29s,radius
@@ -1291,7 +1779,11 @@ class ProductionManager(Manager):
                         self._f2_reg_logged.add(_reg_key)
                         self.ai._events.append({
                             "t": round(self.ai.time, 1),
-                            "msg": f"F2:注册防御 base={_reg_key},target={cannons},batt={batt}",
+                            "msg": (
+                                f"F2:注册防御 base={_reg_key},target={cannons},"
+                                f"batt={batt},fb_missing={_fb_truly_missing},"
+                                f"fb_pending={_fb_pending}"
+                            ),
                         })
                     if not is_main:
                         # O78c(o78b 实证):分矿防御绕过 ProtossStaticDefence —— 其
@@ -1314,7 +1806,7 @@ class ProductionManager(Manager):
                                 bloc, UnitID.PHOTONCANNON,
                                 max_on_route=mor,
                                 static_defence=False,
-                                to_count_per_base=cannons,
+                                to_count_per_base=_cannons_expansion,  # O216j:分矿保底塔不走 O210 归零
                                 # O79c:塔贴着分矿 pylon 建(必有电) ——
                                 # 裸 base_loc 落位会落到无电/矿区死角(o78 系实证)。
                                 closest_to=(
@@ -1558,10 +2050,13 @@ class ProductionManager(Manager):
             # O101-Y(o100 局4 实证):舰队重建窗内农民 ≥14 也停训 —— 局4 转舰队
             # 后农民 13→20(350 矿)+电池(100)把 SG 挤到 t=605 才落地;
             # 重建窗内一切非舰队开销都是凶手,首舰出场即解除
+            # O194-②(o193-vh-zerg-rush game_01 实证):阈值 14 过低,2 基地局 27 农仍被掐,
+            # 108s 重建窗内零农民增长→经济断气。改为按当前基地饱和数:1 基地 22 农,
+            # 2 基地 44 农,未饱和时继续造农民回血。
             fleet_rebuild_window(
                 self._fleet_transitioned, self._first_fleet_seen()
             )
-            and self.ai.supply_workers >= 14
+            and self.ai.supply_workers >= 22 * max(1, self.ai.townhalls.amount)
         ) or forge_first_probe_yield(
             # O111-③(o110 局1/局2 实证):forge 未落地前 2-3 个农民(各 50)
             # 排在 forge(150)前面 —— 防御紧急时农民 ≥12 即让位,首塔目标 ≤150
@@ -1579,7 +2074,12 @@ class ProductionManager(Manager):
         _probe_floor = probe_floor_needed(
             self.ai.time, self.ai.supply_workers, _acute
         )
-        if _probe_floor or (
+        # O203:经济崩溃底线——农民掉到临界值以下时,无论 rush/transition/
+        # 重建窗,优先补农民。没有农民就没有矿物,没有矿物舰队/塔都造不出。
+        _econ_floor = self.ai.supply_workers < min(
+            16, 22 * max(1, self.ai.townhalls.amount)
+        )
+        if _probe_floor or _econ_floor or (
             (not self._rush_active or _rush_hold)
             and not _probe_yield
             # O130-①:农民 <8 豁免冲刺闸(经济活命优先于链纯洁)
@@ -1635,15 +2135,29 @@ class ProductionManager(Manager):
         # O83/O85/O86/O87 舰队饥饿信号已在上方(macro_plan 注册后)算好:
         # _fleet_starved(就绪口径,救 FB)/ _fleet_starved_capacity(容量口径,
         # 拦塔/拦追加产能)。
+        # O216f(o216e-vh-zerg-timing game_01 双车道实证):Zerg Timing 的 sprint
+        # 把科技链(CYBERNETICCORE→STARGATE→FLEETBEACON)冻结 200s+,星门 450s
+        # 才出现、首舰 731s 才出,transition 退出后无舰队可转。Timing 不是 Rush,
+        # 波次晚,允许 sprint 期间并行建核心科技,把舰队科技窗口提前。
+        _sprint_freeze_tech = _sprint and not (
+            self._opp_race == "zerg" and self._ai_build == "timing"
+        )
         if (
             (not self._rush_active or _rush_hold_tech)
             and not _rebuild_nexus
-            and not _sprint  # O129:冲刺期科技/气矿/追加产能全停(链外一律掐)
+            and not _sprint_freeze_tech
         ):
             # O43(o42 bench 实证):开矿攒钱预留期间科技链(星门/舰队航标 ~450 矿)
             # 也让位 Nexus —— 预留只剩农民/气矿/pylon 花费,Nexus 从 t=490 提前到
             # ~430,分矿塔链才能在 10 分钟波(t≈560)前落地(塔链=水晶25s+塔29s,
             # 晚一秒都是"无塔"丢矿)。气矿照采(航母的气不能断)。
+            # O216f:Zerg Timing sprint 期间强开 core_allowed,确保 cybercore/stargate/FB
+            # 都能排队,不被持有期/预留卡住。
+            _zerg_timing_sprint_core = (
+                _sprint
+                and self._opp_race == "zerg"
+                and self._ai_build == "timing"
+            )
             await self._build_flow_structures(
                 building_counter, structures_dict,
                 # O51:含 pending 等待期;O93-B1:转舰队后科技链不再让位持有期
@@ -1651,8 +2165,12 @@ class ProductionManager(Manager):
                 # O145-②:但扩张攒钱预留(_fleet_reserve,评分≥25 豁免首舰
                 # 前提后)期间让位 —— 否则 SG/FB 把 Nexus 的 400 吃光,
                 # bases=1 到死(o144 局3 实证:SG 570/FB 616,二矿从未开)
-                core_allowed=core_tech_allowed(
-                    _expand_holding, self._fleet_transitioned
+                # O166: 单矿早期核心科技(CYBERNETICCORE/STARGATE)缺失时，即便想开二矿
+                # 也不冻结科技链 —— 否则 Nexus 工人在目标点干等钱、科技又建不了，两头空。
+                core_allowed=(
+                    core_tech_allowed(_expand_holding, self._fleet_transitioned)
+                    or _early_core_missing
+                    or _zerg_timing_sprint_core
                 ) and not _fleet_reserve,
             )
             # O13:每个就绪基地双气满采,优先级高于一切矿物开销(气矿买上再谈产能/滚雪球)
@@ -1668,6 +2186,7 @@ class ProductionManager(Manager):
                 self.ai.supply_left,
             ):
                 self._ensure_expansion_pylon()
+                self._ensure_expansion_wall_gateway()
             # 按流派配置扩产能(矿富余追加产兵建筑,治"矿堆花不出去")
             # O43:预留期间不追加(第二星门 150 矿同样抢 Nexus 基金)
             # O67(Terran Rush game_01 实证):E9 威胁期也不追加 —— 敌压境时
@@ -1676,6 +2195,28 @@ class ProductionManager(Manager):
             # 期更不追加 —— 3-4 座星门(450-600 矿气)先于 FB 落地 = 无科技可用的
             # 死钱,FB(300矿)被挤得 200s 落不了地,中局波(t≈500-540)到脸时
             # 舰队零产出。产能 > 科技是本末倒置,先 FB 后星门。
+            # O182:星门被拆光且有余钱时紧急重建产能，避免 late-game 气体烂银行
+            # 却造不出舰队。前置：FB 还在科技链上、非 rush/timing 冲刺保命期、
+            # 至少还有一个基地能落建筑。
+            _sg_ready_and_pending = (
+                len(self.manager_mediator.get_own_structures_dict[UnitID.STARGATE])
+                + self.manager_mediator.get_building_counter[UnitID.STARGATE]
+            )
+            if (
+                _sg_ready_and_pending == 0
+                and self.ai.townhalls.amount >= 1
+                and self._structure_present_or_pending(UnitID.FLEETBEACON)
+                and not self._rush_active
+                and not self._timing_sprint
+                and self.ai.can_afford(UnitID.STARGATE)
+            ):
+                self.ai.register_behavior(
+                    BuildStructure(self.ai.start_location, UnitID.STARGATE)
+                )
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O182:紧急重建星门(0 SG,有余钱)",
+                })
             if (
                 not _expand_holding
                 and not _fleet_starved_capacity
@@ -1730,7 +2271,20 @@ class ProductionManager(Manager):
                 not self._structure_present_or_pending(UnitID.FLEETBEACON)
                 and [s for s in structures_dict[UnitID.STARGATE] if s.is_ready]
             ):
-                await self._build_core_structure(UnitID.FLEETBEACON, base=_tech_base)
+                # O228(o224-lane1 game_02 实证):FB 走 can_afford 派工,矿到 300 同帧
+                # 被 zealot/探机/塔抢走,O110 自救 95 次全 no_money,FB 到死未落。
+                # Zerg Timing 改关键件钉点派工(同 O147 forge:驻点等钱=钱到立刻
+                # 开工),让 FB 排进资金第一顺位;其余流派维持 can_afford 守卫。
+                if self._opp_race == "zerg" and self._ai_build == "timing":
+                    self._dispatch_structure(
+                        UnitID.FLEETBEACON,
+                        _tech_base or self.ai.start_location,
+                        critical=True,
+                    )
+                else:
+                    await self._build_core_structure(
+                        UnitID.FLEETBEACON, base=_tech_base
+                    )
         # O109-③(o108 局3 实证):分矿供电豁免 rush 全停(仅 transition 流派)——
         # 局3 分矿晶落后 Nexus ~80-100s(波次接触期上面整块被跳),分矿塔
         # 恒 0-1、两掉两分矿。与块内调用幂等(在建计数 + max_on_route 去重)。
@@ -1743,17 +2297,69 @@ class ProductionManager(Manager):
                 self.ai.supply_left,
             ):
                 self._ensure_expansion_pylon()
+                self._ensure_expansion_wall_gateway()
         # O105-③a(o104 局2/局5 实证):重建窗星门双开 —— 串行 SG1→SG2 亏一整个
         # 建造周期(~45s),首舰 ~640→~680 撞 650-720 大波;钱够两座就同时拍
-        if stargate_double_opener(
-            self._fleet_transitioned,
-            self._first_fleet_seen(),
-            len(structures_dict[UnitID.STARGATE])
-            + self.manager_mediator.get_building_counter[UnitID.STARGATE],
-            self.ai.minerals,
-            self.ai.vespene,
+        # O216d:FB 实体落成前不双开,否则第二座星门直接吃掉 FB 的 300 矿。
+        if (
+            stargate_double_opener(
+                self._fleet_transitioned,
+                self._first_fleet_seen(),
+                len(structures_dict[UnitID.STARGATE])
+                + self.manager_mediator.get_building_counter[UnitID.STARGATE],
+                self.ai.minerals,
+                self.ai.vespene,
+            )
+            and self._fb_entities_now > 0
         ):
             await self._build_core_structure(UnitID.STARGATE)
+        # O218(o217 lane1/lane2 game_01 双实证):转舰队后星门恒 1 ——
+        # extra_production 被 threat/_fleet_starved_capacity/_expand_holding
+        # 常年闸住,气烂 400-736 而舰队 300s 只涨 1-4 艘,被 60+ supply 波滚平。
+        # FB 实体在 + 首舰已出 + 气 ≥400(留 250 产舰) + SG 数 < min(8, 1+就绪基地)
+        # → 直接补一座星门(can_afford 守卫,不抢塔/Nexus 保命钱)。
+        _sg_total_o218 = (
+            len(structures_dict[UnitID.STARGATE])
+            + self.manager_mediator.get_building_counter[UnitID.STARGATE]
+        )
+        if (
+            # O249(o248-lane1 game_01 实证):O248 不再强制 transition 后
+            # _fleet_transitioned 永假,O218 追加 SG 整局不触发(星门恒 1);
+            # 改为转舰队 或 首舰已出 皆可(Timing 直爬路线同样生效)。
+            (self._fleet_transitioned or self._first_fleet_seen())
+            and self._fb_entities_now > 0
+            and self._first_fleet_seen()
+            and _sg_total_o218 < min(8, 1 + self.ai.townhalls.ready.amount)
+            and self.ai.vespene >= 400.0
+            and self.ai.can_afford(UnitID.STARGATE)
+            # O233(o232-lane1 game_01 实证):rush latch 长期化把追加 SG 闸死,
+            # 舰队 280s 卡 1 艘;放宽为「急性 rush(家 40 格敌 ≥4)」才闸,
+            # 波间隙 latch 不挡产能。
+            and not (
+                self._rush_active
+                and sum(
+                    1 for u in self.ai.enemy_units
+                    if not u.is_structure and is_combat_type(u.type_id)
+                    and u.position.distance_to(self.ai.start_location) < 40
+                ) >= 4
+            )
+        ):
+            # O229(o227-lane2 game_01 实证):O218 事件连发 58+ 次但 SG2 至死
+            # 未落成 —— can_afford 帧判后矿被 zealot/探机/塔同帧抢走,与 FB
+            # 同型。Zerg Timing 追加星门同样改关键件钉点派工(驻点等钱)。
+            if self._opp_race == "zerg" and self._ai_build == "timing":
+                self._dispatch_structure(
+                    UnitID.STARGATE, self.ai.start_location, critical=True
+                )
+            else:
+                await self._build_core_structure(UnitID.STARGATE)
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O218:气烂银行追加星门(SG={_sg_total_o218},"
+                    f"气={self.ai.vespene:.0f})"
+                ),
+            })
         # O83(n5m-zerg-rush game_03 实证):舰队饥饿豁免 —— 慢性威胁/持续抄家时
         # rush 分支(上)与 E9 让位(tech_yields_to_threat)把舰队航标永久冻结:
         # 3 就绪星门 250s 零产出、气烂 2500+ 败亡(流派出兵全是耗气的暴风/航母)。
@@ -1767,11 +2373,139 @@ class ProductionManager(Manager):
         # O92:过渡形态期冻结 FB 豁免 —— 豁免的本意是救舰队管线,过渡期舰队
         # 是故意推迟的(气攒着无害,追猎也在吃),转舰队后豁免自然恢复。
         if _fleet_starved and not self._transition_active:
-            await self._build_core_structure(UnitID.FLEETBEACON)
+            # O235(o234-lane1 game_01 实证):中后局 FB 被拆后重建走 can_afford
+            # 同帧抢单老路,气烂 2400/5 星门/舰队停产 300s+ 僵死。Zerg Timing
+            # FB 重建同走 O228 关键件钉点派工。
+            if self._opp_race == "zerg" and self._ai_build == "timing":
+                self._dispatch_structure(
+                    UnitID.FLEETBEACON, self.ai.start_location, critical=True
+                )
+            else:
+                await self._build_core_structure(UnitID.FLEETBEACON)
         # O93-B3:FB 建造停滞自救(买得起+有就绪星门却始终无 FB 实体 →
         # 落位静默失败/tracker 泄漏,见方法注释)。_fleet_starved 豁免只管注册,
         # 不管"注册了但永远建不出来"。
         self._fleet_stall_watchdog(structures_dict)
+        # O239(o237 多局尸检):气烂 ≥700 而矿恒 <100 的局,暴风(250 矿)产不动,
+        # 舰队 6-9 艘打不赢 60-90 supply 地面波。航母拦截机吸火+本体远程,
+        # vs 无对空地面是质变(胜局均有 3-4 航母混编)。气烂且 FB 在时,
+        # 空闲就绪星门直接点航母(每帧最多 1 座,can_afford 含 350 矿判)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.vespene >= 700.0
+            and self._fb_entities_now > 0
+            and self.ai.can_afford(UnitID.CARRIER)
+        ):
+            for _sg in self.manager_mediator.get_own_structures_dict[
+                UnitID.STARGATE
+            ]:
+                if _sg.is_ready and _sg.is_idle:
+                    _sg.train(UnitID.CARRIER)
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": f"O239:气烂银行点航母(气={self.ai.vespene:.0f})",
+                    })
+                    break
+        # O251(o250-lane1 game_02 实证):硬饱和(农民 ≥16×基地+8)触发开矿但
+        # Nexus 因矿恒 <475(dispatch_viable buffer)永远排不出,2 基地 44 农封顶
+        # 被慢性磨死。硬饱和时对最近空闲扩张点钉点派 Nexus(驻点等钱,与
+        # SG/FB/robo 同款),三矿真正把饱和农民变成收入。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and 2 <= self.ai.townhalls.amount < 5
+            and self.ai.supply_workers >= 16 * self.ai.townhalls.amount + 8
+            and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) == 0
+            and not self._rush_active
+        ):
+            _free_exp = [
+                el
+                for el in self.ai.expansion_locations_list
+                if not self.ai.townhalls.closer_than(5.0, el)
+            ]
+            if _free_exp:
+                _exp_target = min(
+                    _free_exp,
+                    key=lambda el: min(el.distance_to(th) for th in self.ai.townhalls),
+                )
+                self._dispatch_structure(
+                    UnitID.NEXUS, _exp_target, critical=True, needs_power=False
+                )
+                if not getattr(self, "_o251_logged", False):
+                    self._o251_logged = True
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": "O251:硬饱和钉点开矿(Nexus 驻点等钱)",
+                    })
+        # O245(Zerg Timing 攻坚,vs roach/hydra 地面海的正确答案):转舰队后
+        # 敌可见地面 ≥6 且无机械台 → 钉点派工建 ROBOTICSFACILITY(与 SG/FB
+        # 同优先级,驻点等钱),不朽者混编见 _effective_spawn O245 块。
+        # O245b(o245 双 lane game_01 实证):first_fleet_seen 前置太晚(robo
+        # 600s+ 才排,基地 500-700s 已丢),去掉;落位优先分矿(主基被围/
+        # 槽位满/工人被杀是 game_01 robo 派工 8 次零落成的直接原因)。
+        # O245d(o245-lane2 game_03 实证):波次连续时 transition 常驻不退出,
+        # _fleet_transitioned 永假 → robo 整局不排(本局 1354s robo=0)。
+        # 加时间旁路:转舰队 或 t≥360 且敌地面 ≥6 即排。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and (self._fleet_transitioned or self.ai.time >= 360.0)
+            and self._visible_enemy_army_count() >= 6
+            and not self._structure_present_or_pending(UnitID.ROBOTICSFACILITY)
+        ):
+            _robo_others = [
+                th
+                for th in self.ai.townhalls.ready
+                if th.position.distance_to(self.ai.start_location) > 5.0
+            ]
+            _robo_base = (
+                _robo_others[0].position if _robo_others else self.ai.start_location
+            )
+            _robo_result = self._dispatch_structure(
+                UnitID.ROBOTICSFACILITY, _robo_base, critical=True
+            )
+            # O245f(o245e 双 lane game_01 实证):建台派工反复尝试零落成,
+            # 失败环节(no_worker/no_placement/taken/tech_not_ready)取证,
+            # 30s 节流;dispatched 时记落成跟踪。
+            if _robo_result != "dispatched" and (
+                self.ai.time - getattr(self, "_o245_fail_logged_at", 0.0) > 30.0
+            ):
+                self._o245_fail_logged_at = self.ai.time
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O245:建台派工失败={_robo_result}",
+                })
+            if not getattr(self, "_o245_logged", False):
+                self._o245_logged = True
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O245:敌地面重型,钉点建机械台(不朽者混编)",
+                })
+        # O245e(o245-lane1 game_04 实证):SpawnController 优先级竞争中不朽者
+        # 每帧让位暴风,零产出。机械台就绪且敌地面 ≥6 且不朽 <4 且买得起
+        # → 空闲机械台直接点不朽(与 O239 航母同机制,绕过配比竞争);
+        # 买不起时由 spawn_pause_reason 的 immortal_reserve 攒钱。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self._visible_enemy_army_count() >= 6
+            and self.ai.can_afford(UnitID.IMMORTAL)
+            and (
+                self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.IMMORTAL)
+                + cy_unit_pending(self.ai, UnitID.IMMORTAL)
+            ) < 4
+        ):
+            for _robo in self.manager_mediator.get_own_structures_dict[
+                UnitID.ROBOTICSFACILITY
+            ]:
+                if _robo.is_ready and _robo.is_idle:
+                    _robo.train(UnitID.IMMORTAL)
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": "O245e:机械台直产不朽",
+                    })
+                    break
         self._rush_gateway_boost()  # E3d: rush 敌兵>叉子时追加 gateway(单兵营是瓶颈)
         self._morph_gateways()
         if not _rebuild_nexus:
@@ -1789,6 +2523,13 @@ class ProductionManager(Manager):
                 if _tech_building not in _covered:
                     # E3d: rush 期间只保炮塔前置 FORGE,其余科技建筑(暮光等)让位
                     if self._rush_active and _tech_building != UnitID.FORGE:
+                        continue
+                    # O168:8 农民 carrier 核心科技缺失期间，升级的 Forge 前置也让位，
+                    # 避免空军攻 L1 把 Cybercore/Stargate 的 150 矿吃掉。
+                    if (
+                        _early_core_missing
+                        and _tech_building == UnitID.FORGE
+                    ):
                         continue
                     await self._build_core_structure(_tech_building)
 
@@ -2172,16 +2913,29 @@ class ProductionManager(Manager):
                     self._dispatch_structure(UnitID.FORGE, home, wall=True),
                 )
                 return
+        # O168:8 农民开局 carrier 核心科技(CYBERNETICCORE/STARGATE/FLEETBEACON)
+        # 缺失期间，presumed 链连 forge 一起跳过，把 150 矿留给科技链。
+        # 真实 rush 局 _rush_active 为真 → _early_core_missing 为假 → 链正常走。
+        # O207:vs Zerg Rush/Timing 不能等 cybercore 排队再铺 forge——timing 波
+        # 273-289s 到脸，cybercore 90s 才排，等 cybercore 再 forge 首塔赶不上。
+        if self._early_core_missing and not self._is_zerg_rush_timing():
+            return
         # ① forge(未拍才补;present_or_pending 守卫在上)
         # O147-①:forge 走关键件豁免派工(钉点驻点等钱 = 钱到立刻开工,
         # O118 时代 forge 95-110 靠它;_build_core_structure 的 can_afford
         # 守卫 + O139 禁钉把 forge 治回 125-155,o146b 局1 实证 153)
+        # O206(o205-vh-zerg-power 败局实证):Power/Macro 局里 _presumed_rush
+        # 长期触发,关键件豁免把农民钉在 FORGE 3.5min+ 不采矿。仅在地
+        # rush_confirmed(情报/接触证实)时才豁免;plain presumed 走资金守卫。
         if not self._structure_present_or_pending(UnitID.FORGE):
             self._dispatch_structure(
                 UnitID.FORGE, home,
-                critical=critical_dispatch_exempt(
-                    "FORGE",
-                    len(self.manager_mediator.get_own_structures_dict[UnitID.FORGE]),
+                critical=(
+                    self._rush_confirmed
+                    and critical_dispatch_exempt(
+                        "FORGE",
+                        len(self.manager_mediator.get_own_structures_dict[UnitID.FORGE]),
+                    )
                 ),
             )
             return
@@ -2197,6 +2951,10 @@ class ProductionManager(Manager):
             )
             + self.manager_mediator.get_building_counter[UnitID.PHOTONCANNON]
         )
+        # O168:核心科技缺失期间 presumed 链已在上游跳过 forge；这里再拦一次
+        # 首塔/首叉，确保非 rush 运营局不把矿投进防御链。
+        if self._early_core_missing:
+            return
         # ② 首塔(forge 就绪才可拍;塔位供电水晶先行 —— 矿线无电是四局累犯)
         if not _cannons_pp:
             if not _forge_ready:
@@ -2218,15 +2976,20 @@ class ProductionManager(Manager):
             )
             if _anchor is not None and tower_zone_pylon_needed(0, 0, _pyl_near):
                 # O147-①:首塔的供电水晶同豁免(它是首塔链路的一段)
+                # O206:同 FORGE,仅 rush_confirmed 真触发时豁免。
                 self._dispatch_structure(
                     UnitID.PYLON, home, closest_to=_anchor, needs_power=False,
-                    critical=True,
+                    critical=self._rush_confirmed,
                 )
             # O147-①②:首塔豁免 —— forge 就绪同帧即派(驻点等钱),
             # 消灭 forge→首塔 43s 空档(o146b 局1:153→196)
+            # O206:同 FORGE,仅 rush_confirmed 真触发时豁免。
             self._dispatch_structure(
                 UnitID.PHOTONCANNON, home, closest_to=_anchor,
-                critical=critical_dispatch_exempt("PHOTONCANNON", _cannons_pp),
+                critical=(
+                    self._rush_confirmed
+                    and critical_dispatch_exempt("PHOTONCANNON", _cannons_pp)
+                ),
             )
             return
         # ③ GW1(首塔已拍才放行)
@@ -2235,9 +2998,13 @@ class ProductionManager(Manager):
             and self.manager_mediator.get_building_counter[UnitID.GATEWAY] == 0
         ):
             # O147-①:GW1 豁免(首叉竞速链路的最后一段)
+            # O206:同 FORGE,仅 rush_confirmed 真触发时豁免。
             self._dispatch_structure(
                 UnitID.GATEWAY, home,
-                critical=critical_dispatch_exempt("GATEWAY", 0),
+                critical=(
+                    self._rush_confirmed
+                    and critical_dispatch_exempt("GATEWAY", 0)
+                ),
             )
 
     def _scout_lost(self) -> bool:
@@ -2647,12 +3414,17 @@ class ProductionManager(Manager):
             pos = Point2(info[TARGET])
             if pos.distance_to(self.ai.start_location) < 5.0:
                 continue  # 主基重建不是扩张
-            # O151-②:Nexus 未开工(在途/等钱)不预派 —— 此时 400 还是
-            # Nexus 基金,塔先动 = 永远开不了工;开工(71s 建造)后再派,
-            # 塔 29s 照样先完工
-            if not any(
+            # O205:Nexus 落成前即预铺 2 炮+1 电池,但 Nexus 基金优先:
+            # 仅当 Nexus 已开工,或矿足够同时付 Nexus+防御(含 buffer)才预派。
+            # 避免塔先动导致 Nexus 永远开不了工。
+            _nexus_started = any(
                 s.type_id == UnitID.NEXUS and s.position.distance_to(pos) < 3.0
                 for s in self.ai.structures
+            )
+            if not natural_predefense_allowed(
+                _nexus_started,
+                self.ai.minerals,
+                self.ai.calculate_cost(UnitID.NEXUS).minerals,
             ):
                 continue
             _pyl = (
@@ -2756,8 +3528,13 @@ class ProductionManager(Manager):
                 self._escort_active = False
             return
         # 需要在岗:补足 escort_worker_count(只拉 GATHERING;建造链/司令接管的不动)
-        # O130-③:拉人保留 6 个采矿底线(o129 局3/4:全拉=赢接触战输经济)
-        want = escort_pull_cap(enemy_near, len(self.ai.workers))
+        # O130-③/O166: 保留采矿底线动态 = max(4, 农民//2)，cap 压到 6。
+        # 避免 Power 中后期反复扰家时把经济拉崩(局1 从 21 农崩到 8 农)。
+        _keep_mining = max(4, len(self.ai.workers) // 2)
+        want = escort_pull_cap(
+            enemy_near, len(self.ai.workers),
+            keep_mining=_keep_mining, cap=6,
+        )
         alive = {w.tag for w in self.ai.workers}
         self._escort_tags &= alive
         gathering = self.manager_mediator.get_unit_role_dict.get(
@@ -2907,11 +3684,19 @@ class ProductionManager(Manager):
         # O126-①(o125 局1 实证):GW2+ 必须等首叉在产/出场 —— 局1 GW2 在
         # GW1 完工前 10s 抢走 150,首叉 163→178
         tr = self._flow.transition
+        # O208:Zerg Timing 混编地面需要 2 兵营产能；Rush 保持 flows.yml 的 1。
+        _timing_gateway_cap = tr.gateway_cap
+        if (
+            self._transition_active
+            and self._opp_race == "zerg"
+            and self._ai_build == "timing"
+        ):
+            _timing_gateway_cap = 2
         if (
             tr is not None
             and not self._sprint_active  # O129:冲刺期兵营链由手动防链独管
             and transition_needs_gateways(
-                self._transition_active, have, tr.gateway_cap
+                self._transition_active, have, _timing_gateway_cap
             )
             and not gateway_chain_after_first_zealot(
                 have,
@@ -2938,20 +3723,29 @@ class ProductionManager(Manager):
                 self._cannons_peak,
             )
             and self.ai.can_afford(UnitID.GATEWAY)
+            # O197:星门已就绪但 FleetBeacon 还没影时,不再追加兵营,
+            # 把 150 矿留给 FB(300/200),避免 transition 期兵营链把舰队转型资金永远吃光。
+            and not self._fb_ready_to_build()
         ):
             self.ai.register_behavior(
                 BuildStructure(self.ai.start_location, UnitID.GATEWAY)
             )
             return
-        if rush_needs_gateway(
-            rush_active=self._rush_active,
-            rush_zealots=pv.rush_zealots if pv else 0,
-            enemy_army=enemy_army,
-            zealots=self.manager_mediator.get_own_unit_count(
-                unit_type_id=UnitID.ZEALOT
-            ),
-            gateways_have=have,
-        ) and self.ai.can_afford(UnitID.GATEWAY):
+        # O197:同 transition 块,FB 已可建时优先保 FB 资金,不再应急追加 gateway。
+        _rush_gw_needed = (
+            rush_needs_gateway(
+                rush_active=self._rush_active,
+                rush_zealots=pv.rush_zealots if pv else 0,
+                enemy_army=enemy_army,
+                zealots=self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.ZEALOT
+                ),
+                gateways_have=have,
+            )
+            and self.ai.can_afford(UnitID.GATEWAY)
+            and not self._fb_ready_to_build()
+        )
+        if _rush_gw_needed:
             # O107(o106 局1 实证):E3d 老路在过渡期也走塔先闸 —— 局1 GW1
             # 就绪瞬间此路不过闸抢建 GW2(150),首叉 156→182;③b 直补块
             # 有闸、此路没有,补同一只(transition_gateway_allowed 对
@@ -2978,6 +3772,13 @@ class ProductionManager(Manager):
         # P1:作战单位口径(is_combat_type)——排除 OVERLORD/OVERSEER 侦查/运输;
         # 旧口径「非工人即算兵」让 Zerg Macro 的 overlord 铺开每局误触发
         # early_swarm(E10-macro 五局 169s 全误中,O4 误撤侦查农民)。
+        # O207:Zerg Timing 是中局波次而非 all-in，降低 rush latch 敏感度并
+        # 缩短自动解除时间，避免波间隙被 60s 锁死导致开不出二矿。
+        _near_threshold = 2
+        _clear_timeout = 60.0
+        if self._opp_race == "zerg" and self._ai_build == "timing":
+            _near_threshold = 3
+            _clear_timeout = 25.0
         near = sum(
             1 for u in self.ai.enemy_units
             if not u.is_structure and is_combat_type(u.type_id)
@@ -2991,7 +3792,13 @@ class ProductionManager(Manager):
         # O154-②:greedy 判决(侦查确认运营)后接触不置 rush latch ——
         # 小股骚扰/中期推进波由 E9 威胁包处理(塔+守家,不动科技链);
         # greedy 局置 latch = 过渡误入 + 农民/科技被接触语义反复掐(o153 局1)
-        if (near >= 2 or early_swarm) and rush_contact_arms(self._verdict):
+        if (near >= _near_threshold or early_swarm) and rush_contact_arms(self._verdict):
+            # O205:硬解 rush 后 60s 死区 —— 期间不因敌兵重新进入 full rush-lock,
+            # 让经济/扩张/FB 不再被反复掐死;E9 threat 仍正常响应塔/兵。
+            if rush_deadzone_active(
+                self._rush_hard_cleared_at, self.ai.time, deadzone=60.0
+            ):
+                return
             self._rush_active = True
             self._rush_clear_since = None
             self._rush_hold_until = None  # O72:接触了,预警持有使命完成,走正常解除
@@ -3000,6 +3807,39 @@ class ProductionManager(Manager):
                 self._rush_confirmed_at = self.ai.time  # O150-②:首次证实时刻
             return
         if self._rush_active:
+            # O203:舰队已转型成功且防御达标 → 强制解除 rush 经济锁,
+            # 恢复 probe 生产、扩张、fleet spawn。若敌后续压家,_update_rush_state
+            # 下帧会重新置位,不影响守家响应。
+            if self._fleet_transitioned and self._defense_score() >= 15.0:
+                self._rush_active = False
+                self._rush_clear_since = None
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        "O203:舰队成型且防御评分达标,解除rush恢复经济"
+                        f"(评分{self._defense_score():.0f})"
+                    ),
+                })
+                return
+            # O204:舰队成型后再触发 rush 往往解不开,经济二次锁死。
+            # 硬解冻:time>480s、已转舰队、SG+FB 就绪 → 强制解除,只执行一次。
+            # 若敌真压家,上面接触检测会下帧重新置位,不影响守家。
+            if (
+                not self._rush_hard_cleared
+                and self._fleet_transitioned
+                and self.ai.time > 480.0
+                and self._structure_present_or_pending(UnitID.STARGATE)
+                and self._structure_present_or_pending(UnitID.FLEETBEACON)
+            ):
+                self._rush_active = False
+                self._rush_clear_since = None
+                self._rush_hard_cleared = True
+                self._rush_hard_cleared_at = self.ai.time
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O204:舰队成型后硬解rush锁,恢复运营",
+                })
+                return
             # O72(n5 三连败实证):O71 情报确认的 rush 预警,敌未出门前
             # (持有上限内)不做 60s 自动解除 —— 否则 t=330 判 rush、t≈390
             # 旗标过期,防御包只建一半(接触时 2-3 塔被 15-18 枪兵淹没)。
@@ -3010,7 +3850,7 @@ class ProductionManager(Manager):
                 return
             if self._rush_clear_since is None:
                 self._rush_clear_since = self.ai.time
-            elif self.ai.time - self._rush_clear_since > 60:
+            elif self.ai.time - self._rush_clear_since > _clear_timeout:
                 self._rush_active = False
                 self._rush_clear_since = None
 
@@ -3060,6 +3900,11 @@ class ProductionManager(Manager):
         if not self._transition_active:
             # O150-①②:单程化(fleet_transitioned 判据层硬关断)+ 接触时限
             # (>360s 的接触是推进波不是 rush,verdict=rush 情报确认不受限)
+            # O249b(o249-lane game_01 实证):O248 只去掉开局强制,接触/verdict
+            # 仍会在 ~300s 触发 transition → 直爬舰队路线被 ground_spawn 截胡;
+            # Zerg Timing 禁止进入 transition(Rush 保留)。
+            if self._opp_race == "zerg" and self._ai_build == "timing":
+                return
             if transition_should_enter(
                 self._verdict,
                 self._rush_confirmed,
@@ -3088,13 +3933,40 @@ class ProductionManager(Manager):
                 self._saw_wave = True  # O122-②:首波见闻(扩张相位判据用)
         elif self._transition_clear_since is None:
             self._transition_clear_since = self.ai.time
+        # O185:Zerg Rush 把舰队退出点从 320 提到 500,让地面多守/多推。
+        # O192-②(o191-vh-zerg-timing game_01 实证):Timing 局拖到 500 才转舰队,
+        # 舰队成型过晚被滚雪球;仅 Rush 保持 500,Timing 走 flow.fleet_at(320)。
+        # O193-③(o192-vh-zerg-rush game_01 实证):500 仍太晚,单矿地面被滚雪球,
+        # 提前到 450 给舰队更多成型窗口,strong_exit 评分门兜底防早退。
+        # O201(o200-vh-zerg-rush 3-7 实证):450 仍太晚,Lane1 失败局 transition 期
+        # 纯地面硬顶 7-8 分钟,单矿经济被滚雪球;再降到 360,让 fleet 更早成型。
+        # O204(o203-vh-zerg-rush 1-9 实证):360 仍导致 Carrier 首次出现 972-1146s,
+        # 再降到 280,并同步放宽 strong_exit/exit_allowed 门,让 fleet 在 6-7 分钟成型。
+        # O208/O209:Zerg Timing 强制进 transition。O208 用 380s 偏保守，
+        # Paladino 多局 FleetBeacon 拖到 550s+ 甚至不建，舰队成型过晚被滚雪球。
+        # O209 把 timing fleet_at 降到 340s（更接近 flows.yml 的 320），并同步
+        # 放宽退出阈值，让 transition 在 6 分钟左右退出、FleetBeacon 尽早落成。
+        # O216:flows.yml fleet_at 已降到 280,Timing 同步降到 280,避免 ground_spawn
+        # 把资源永远锁在地面部队里,加速舰队转型。
+        _is_zerg_rush = self._opp_race == "zerg" and self._ai_build == "rush"
+        _is_zerg_timing = self._opp_race == "zerg" and self._ai_build == "timing"
+        _fleet_at = tr.fleet_at
+        if _is_zerg_rush or _is_zerg_timing:
+            _fleet_at = max(_fleet_at, 280.0)
         # O100-②(o99 局1/局5 实证):完全清净 30s 对持续骚扰局永假 —— 加
         # 放宽通道:t≥fleet_at 且防御达标(地面×2+就绪塔×3+就绪电池×2 ≥25)
         # 且领先敌可见 supply 10+ → 也退;敌波到脸(28-45 supply)不放行,
         # 防「带波转舰队瞬间被打死」。时间闸保留(不到 fleet_at 两路都不退)。
+        # O209:Timing 阈值进一步放宽，匹配 340s fleet_at。
+        if _is_zerg_rush:
+            _min_defense, _clear_needed = 20.0, 20.0
+        elif _is_zerg_timing:
+            _min_defense, _clear_needed = 18.0, 20.0
+        else:
+            _min_defense, _clear_needed = 25.0, 30.0
         _defense_score = self._defense_score()
         _strong_exit = (
-            self.ai.time >= tr.fleet_at
+            self.ai.time >= _fleet_at
             and fleet_transition_strong_exit(
                 _defense_score,
                 # O102-③:敌情口径从全图可见 supply 改家 40 格(is_combat_type
@@ -3108,11 +3980,14 @@ class ProductionManager(Manager):
                 ),
                 # O110-②:清净深度 ≥30s —— strong 通道只落在波间隙深位
                 # (o108 局2/局4:score 一够就放 = 波前 40s 退出,撞上 440 波)
+                # O204:Zerg Rush 骚扰密度高,30s 太奢侈,降到 20s。
                 clear_for=(
                     self.ai.time - self._transition_clear_since
                     if self._transition_clear_since is not None
                     else 0.0
                 ),
+                min_defense=_min_defense,
+                clear_needed=_clear_needed,
             )
         )
         # O119-①③(o118 局5 实证):退出加经济+地面前提 —— 单矿 12-14 农
@@ -3122,6 +3997,18 @@ class ProductionManager(Manager):
         # 等不到二矿);地面 ≥14 supply(≈7 叉)与 SG 前提不变
         # O143(o142 双系列 0-10):评分 ≥25 直接放行 —— 叠加门在评分门上
         # 是死锁放大器(o129 局5 评分 41 清净 60s+ 不退被一波清零)
+        # O201(o200-vh-zerg-rush 3-7 实证):Rush 局地面门槛 14 supply 太高,
+        # 单矿经济养不起,舰队永远解不了冻;降到 10 supply,deadline 延到 480s。
+        # O204(o203 实证):Rush 局地面门槛 10 仍太高,评分门 25 偏严;
+        # 降到 6 supply,评分门降到 20,让 transition 更早退出转舰队。
+        # O209:Timing 阈值进一步放宽，匹配 340s fleet_at，避免 ground_spawn
+        # 把资源永远锁在地面部队里。
+        if _is_zerg_rush:
+            _exit_min_ground, _exit_deadline, _exit_strong_score = 6.0, 480.0, 20.0
+        elif _is_zerg_timing:
+            _exit_min_ground, _exit_deadline, _exit_strong_score = 8.0, 480.0, 18.0
+        else:
+            _exit_min_ground, _exit_deadline, _exit_strong_score = 14.0, 540.0, 25.0
         _exit_allowed = fleet_exit_allowed(
             bases=self.ai.townhalls.amount,
             ground_supply=2.0
@@ -3133,15 +4020,18 @@ class ProductionManager(Manager):
             defense_score=_defense_score,
             # O121-③:SG 未拍就退出 = 空窗 +60s(配套过渡期达标解冻)
             # O140-①:评分 ≥35 豁免 SG 前提 —— o139 局2 死锁:SG 解冻
-            # (评分≥25)已亮但单矿矿恒 25-75,SG 150 永攒不出;「SG 已拍
+            # (评分≥25)虽已亮但单矿矿恒 25-75,SG 150 永攒不出;「SG 已拍
             # 才准退、SG 要退了才有钱拍」循环,543 波穿防死 575
             sg_present_or_pending=self._structure_present_or_pending(
                 UnitID.STARGATE
             ),
+            min_ground=_exit_min_ground,
+            deadline=_exit_deadline,
+            strong_exit_score=_exit_strong_score,
         )
         if _exit_allowed and (
             fleet_transition_ready(
-                self.ai.time, tr.fleet_at, enemy_near, self._transition_clear_since
+                self.ai.time, _fleet_at, enemy_near, self._transition_clear_since
             )
             or _strong_exit
         ):
@@ -3225,11 +4115,32 @@ class ProductionManager(Manager):
             if self._gas_stop_since is not None
             else 0.0
         )
+        # O157:气体烂银行、矿物枯竭、舰队未成规模 → 停气转矿。
+        _fleet_total = (
+            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+            + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
+            + cy_unit_pending(self.ai, UnitID.TEMPEST)
+            + cy_unit_pending(self.ai, UnitID.CARRIER)
+        )
+        _crisis_now = mineral_crisis_gas_stop(
+            self.ai.vespene,
+            self.ai.minerals,
+            _fleet_total,
+            bases=self.ai.townhalls.amount,
+        )
+        if _crisis_now:
+            self._mineral_crisis_gas_stop = True
+        # O160: 恢复阈值下调并与触发阈值拉开滞回(触发 vespene≥600/minerals≤300,
+        # 恢复 vespene<300 或 minerals>500),避免每帧抖动。
+        elif self._mineral_crisis_gas_stop and (
+            self.ai.vespene < 300 or self.ai.minerals > 500
+        ):
+            self._mineral_crisis_gas_stop = False
         if rush_gas_stop_window(
             self._rush_active,
             _stop_age,
             window=45.0 if self._flow.transition is not None else float("inf"),
-        ):
+        ) or self._mineral_crisis_gas_stop:
             gas_workers = self.manager_mediator.get_worker_to_vespene_dict
             gathering = self.manager_mediator.get_unit_role_dict.get(
                 UnitRole.GATHERING, set()
@@ -3268,10 +4179,19 @@ class ProductionManager(Manager):
         # rush 纯叉覆盖/O89 逃生门/E10 pivot/反空军混编/pre_fleet/save_up 全部
         # 让位 —— 星门已冻(舰队分支无意义),追猎自带对空(反空军多余),
         # 地面配方不吃气(憋气无意义),叉/追猎本身就是主 C(不需要保底)。
+        # O208:Zerg Timing 的 timing 压力比 Rush 晚，Roach/Ravager 混合波次
+        # 对纯 Zealot 不利，改用 Stalker/Zealot 混编(追猎吃气先行、叉子矿耗补位)。
         if self._transition_active and self._flow.transition is not None:
+            if self._opp_race == "zerg" and self._ai_build == "timing":
+                return {
+                    UnitID.STALKER: {"proportion": 0.4, "priority": 0},
+                    UnitID.ZEALOT: {"proportion": 0.6, "priority": 1},
+                }
             return self._flow.transition.ground_spawn_dict()
         # rush 响应:叉子还没顶够数,全力补叉
-        if self._rush_active and pv.rush_zealots:
+        # O203:舰队已转型成功 → 不再走 rush_zealots 分支,避免 zealot 持续吞矿、
+        # gas 烂银行。fleet 成型后的赢法是舰队规模,不是填叉子。
+        if self._rush_active and pv.rush_zealots and not self._fleet_transitioned:
             zealots = self.manager_mediator.get_own_unit_count(
                 unit_type_id=UnitID.ZEALOT
             )
@@ -3296,10 +4216,13 @@ class ProductionManager(Manager):
                         UnitID.FLEETBEACON
                     ),
                 ):
-                    mixed = {UnitID.ZEALOT: {"proportion": 0.5, "priority": 0}}
+                    # O200(o199b-vh-zerg-rush game_04 910s 仅 2 虚空):mixed 模式 Zealot
+                    # 比例过高,持续吞 mineral 窗,舰队成型不足。降到 0.3,舰队占 0.7,
+                    # 让 FB/星门就绪后舰队更快上量。
+                    mixed = {UnitID.ZEALOT: {"proportion": 0.3, "priority": 0}}
                     for uid, conf in self._flow.spawn_dict().items():
                         mixed[uid] = {
-                            "proportion": conf["proportion"] * 0.5,
+                            "proportion": conf["proportion"] * 0.7,
                             "priority": conf["priority"] + 1,
                         }
                     return mixed
@@ -3324,6 +4247,29 @@ class ProductionManager(Manager):
                     spawn[uid] = {
                         "proportion": pv.anti_air_proportion, "priority": 0,
                     }
+        # O245(Zerg Timing 攻坚):敌地面重型(roach/hydra 波)时 pivot 不触发、
+        # 追猎/叉子被滚平——混编不朽者(蟑螂重甲被不朽加成攻击克制,刚毅护盾
+        # 站线)。机械台就绪 + 敌可见地面 ≥6 + 不朽 <4 → **dict 首位**混入
+        # (p0/proportion 1.0):275 矿可付时优先于暴风,250-274 时暴风照产
+        # (O245e 的 reserve 停产实证:其他开销照抽,275 永远攒不出,地面 0
+        # 败亡——用优先序而不是停产解决)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and any(
+                s.is_ready
+                for s in self.manager_mediator.get_own_structures_dict[
+                    UnitID.ROBOTICSFACILITY
+                ]
+            )
+            and self._visible_enemy_army_count() >= 6
+            and self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.IMMORTAL)
+            < 4
+        ):
+            spawn = {
+                **{UnitID.IMMORTAL: {"proportion": 1.0, "priority": 0}},
+                **spawn,
+            }
         # O121-①(o120 局2/3/4 实证):重建窗(FB 未就绪)星门填 VOIDRAY ——
         # 退出即产,exit+60s 有 1-2 虚空顶空窗;TEMPEST 随 FB 就绪入队后
         # 同档 p0、dict 序在前自然挤占,窗关配方复原
@@ -3429,13 +4375,51 @@ class ProductionManager(Manager):
         if pf.id2 and pf.cap2 > 0:
             uid2 = getattr(UnitID, pf.id2, None)
             if uid2 is not None:
+                # O230(o224 胜局 vs o229-lane1 game_01 败局对照):胜局靠 pivot
+                # 反空军混出 25 追猎(吃烂气、对空对地双用)才守住;败局敌纯地面
+                # 时追猎 cap2=2,基地被 27 地面滚平。Zerg Timing cap2 2→8,
+                # 用烂在银行的气(常态 1000+)养追猎防守核,不抢舰队矿。
+                # O231b(o230-lane2 game_01 实证):8 追猎(125 矿/只)在 FB 资金窗
+                # 同样抢矿,FB 钉点派工 21 次 no_money;cap2=8 推迟到首舰出场后
+                # (胜局的追猎海本来就是舰队成型后经 pivot 混出来的)。
+                # O233(o232-lane1 game_01 实证):首舰刚出(舰队 1-2)时 8 追猎
+                # 与暴风抢矿,舰队 280s 卡 1 艘;cap2=8 再后置到舰队 ≥3。
+                _cap2 = pf.cap2
+                # O236:Nexus 钉点期间追猎 floor 归零(125 矿/只),与探机暂停
+                # 一起把 400 矿资金窗让给二矿;pinning 解除自动恢复。
+                # O238:只限首扩钉点(bases<2);三矿以上钉点追猎核照产(防守优先)。
+                if (
+                    self._opp_race == "zerg"
+                    and self._ai_build == "timing"
+                    and self.ai.townhalls.amount < 2
+                    and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS)
+                    > 0
+                ):
+                    _cap2 = 0
+                elif self._opp_race == "zerg" and self._ai_build == "timing":
+                    # O241(0-30 回归排查):O230 原版(无条件 cap2=8)是两场胜局的
+                    # 代码状态;O231b/O233 的舰队≥3/敌≥8 前置让中期追猎零产,
+                    # 恰是 0-30 的起点。回滚为无条件 cap2=8(吃烂气防守核)。
+                    # O246(o245e 系列 0-10 实证):500-700s 窗口 8 追猎仍被
+                    # 10-27 地面波滚平(不朽者 650s+ 才到,补不上窗);胜局的
+                    # 21-25 追猎海才是守窗答案。舰队 <8(未成型)时 cap2 8→12,
+                    # 吃烂气(常态 1000+),舰队成型后回 8 让气给航母/暴风。
+                    _fleet_now_o246 = (
+                        self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.TEMPEST
+                        )
+                        + self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.CARRIER
+                        )
+                    )
+                    _cap2 = max(_cap2, 12 if _fleet_now_o246 < 8 else 8)
                 spawn = pre_fleet_spawn(
                     spawn,
                     floor_id=uid2,
                     floor_count=self.manager_mediator.get_own_unit_count(
                         unit_type_id=uid2
                     ),
-                    floor_cap=pf.cap2,
+                    floor_cap=_cap2,
                     fleet_online=fleet_online,
                     priority=5,
                 )
@@ -3536,9 +4520,56 @@ class ProductionManager(Manager):
     def _want_dynamic_expand(self) -> bool:
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
+        # O168:8 农民 carrier 核心科技缺失期间禁扩张，避免 Nexus 把
+        # CYBERNETICCORE/STARGATE/FLEETBEACON 的资金窗吸干。
+        # O216:Zerg Timing 下二矿是生存前提,150s 触发不能被 early_core_missing
+        # 阻塞到 300s;Rush/Power/Macro 仍保持原保护。
+        if (
+            getattr(self, "_early_core_missing", False)
+            and not (
+                self._opp_race == "zerg" and self._ai_build == "timing"
+            )
+        ):
+            return False
+        # O216i(o216h-lane2 game_01 实证):Zerg Timing 首塔未就绪不开矿 ——
+        # 196s 派 Nexus 时 0 塔,银行被塔链/科技抽干,Nexus 工人钉点后撤,
+        # 306s 波到脸 0 塔被推平(O216a 150s 无防强开教训复现)。防御先行。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self._cannons_ready_peak < 1
+        ):
+            return False
+        # O247(o246 系列 0-15 实证):二矿 400-500s 落成即被 10-27 地面波轮抄,
+        # 经济永远起不来;改舰队先行 —— 首舰(Tempest)出场前不开二矿,
+        # 舰队掩护下再扩(600s 前后),单矿期矿全给塔/地面/舰队科技。
+        # 本门在 O189 强开上游,首舰前 O189 同步不触发(语义一致)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and not self._first_fleet_seen()
+            and self.ai.time < 620.0
+        ):
+            return False
         ae = self._flow.auto_expand
         if ae is None or not ae.max_bases:
             return False
+        # O183:Zerg Timing/Rush 不能按 210s 抢二矿，先把 400 矿投入防御；
+        # Power/Macro 等已验证组合保持原 first_expand_at。
+        # O207:Timing 压力比 Rush 晚/轻，允许 240s 启动二矿(仍晚于首波 160-200)，
+        # 避免 Paladino 系列 one_base×4 被滚雪球；Rush 保持 300s 先站稳。
+        # O215:Timing 二矿仍太晚(430-470s)，降到 180s——首波 160-200s 前 forge+
+        # 1-2 塔已就位，180s 开始攒 Nexus 能在 240-280s 落成，比当前 430s+ 早一
+        # 个波次周期；Rush 维持 300s 先站稳。
+        _first_expand_at = ae.first_expand_at
+        if self._opp_race == "zerg" and self._ai_build == "rush":
+            _first_expand_at = max(_first_expand_at, 300.0)
+        elif self._opp_race == "zerg" and self._ai_build == "timing":
+            # O216(o215-vh-zerg-timing 0-9 实证):Timing 二矿仍太晚(373-630s),
+            # 降到 180s 让 Nexus 资金窗在首波间隙出现;二矿存活率=胜率。
+            # 150s 实证(O216a game_01):forge/首塔尚未就绪,无防御强开被滚雪球,
+            # 回调到 180s 等基础防御落位。
+            _first_expand_at = max(_first_expand_at, 180.0)
         # O96(o95 局1 实证):过渡期兵营未到 cap 不开矿 —— 局1 二矿 t≈290
         # 抢走 400 矿,兵营#2 拖到 t≈280,单兵营 7 叉迎 30-supply 波。
         # 「已有+在建」口径与 _build_extra_production 同源。
@@ -3549,8 +4580,28 @@ class ProductionManager(Manager):
                 + len(self.manager_mediator.get_own_structures_dict[UnitID.WARPGATE])
                 + self.manager_mediator.get_building_counter[UnitID.GATEWAY]
             )
-            if transition_expand_blocked(
-                self._transition_active, _gw, tr.gateway_cap
+            # O191(o190-vh-zerg-rush game_01 实证):Rush transition 中 gateway_cap=3
+            # 卡住二矿——单矿要同时造 3 个兵营+塔+气矿+科技,400 矿永远攒不出来;
+            # 降到 2 让二矿在站稳后能启动,双矿经济支撑地面阶段/舰队转型。
+            _expand_gateway_cap = tr.gateway_cap
+            # O208:Zerg Timing 混编地面需要更多兵营产能，cap 提到 2；
+            # Rush 保持上限 2 避免兵营吞二矿资金。
+            if (
+                self._transition_active
+                and self._opp_race == "zerg"
+                and self._ai_build in ("rush", "timing")
+            ):
+                _expand_gateway_cap = max(min(_expand_gateway_cap, 2), 2)
+            # O216:Zerg Timing 下二矿优先于兵营 cap 凑齐——等 2 兵营+2 塔再开矿,
+            # 在 timing 局永远凑不齐(首波 160-200s 后到脸,地面/塔钱持续被抽)。
+            # Rush 仍保持阻塞,先站稳。
+            if (
+                transition_expand_blocked(
+                    self._transition_active, _gw, _expand_gateway_cap
+                )
+                and not (
+                    self._opp_race == "zerg" and self._ai_build == "timing"
+                )
             ):
                 return False
             # O100-①(o99 局1/局5 实证):过渡期防御站稳(塔≥2+地面≥8+家 40 格
@@ -3581,11 +4632,20 @@ class ProductionManager(Manager):
                     if not u.is_structure and is_combat_type(u.type_id)
                     and u.position.distance_to(self.ai.start_location) < 40
                 )
+                # O204:Zerg Rush 二矿门槛进一步降低:地面 4→2,清净 8s→5s。
+                _tr_min_ground = 2 if (
+                    self._opp_race == "zerg" and self._ai_build == "rush"
+                ) else 4
+                _tr_clear_needed = 5.0 if (
+                    self._opp_race == "zerg" and self._ai_build == "rush"
+                ) else 8.0
                 self._tr_expand_ready = transition_expand_ready(
                     True,
                     cannons_ready=_cannons_ready,
                     ground_army=_ground,
                     clear_for=_clear,
+                    min_ground=_tr_min_ground,
+                    clear_needed=_tr_clear_needed,
                 ) or transition_expand_after_first_wave(
                     # O122-②(o121b 实证):清净秒数窗被波次切碎(全系列 0 触发)
                     # —— 见过一波且当前已清 + 塔/地面达标即开,不等秒数
@@ -3597,17 +4657,96 @@ class ProductionManager(Manager):
                 # O149-①(o133-o148 元诊断:二矿存活率=胜率):定时强开 ——
                 # t≥210 且首波已清 → 直接开,不等站稳三重门/兵力优势
                 # (timing 局清净窗永远不够,触发率≈0 的判据等于没有)
+                # O216:Zerg Timing 强开线降到 150s,且放宽到「首波已清 或 时间到
+                # 180s」,避免 timing 波连续到脸导致 saw_wave 后 enemy_home 不空、
+                # 二矿永远开不出。
+                _tr_expand_at = 180.0 if (
+                    self._opp_race == "zerg" and self._ai_build == "timing"
+                ) else 210.0
                 if transition_expand_at_210(
-                    self._transition_active, self._saw_wave, _enemy_home,
+                    self._transition_active,
+                    self._saw_wave or (
+                        self._opp_race == "zerg"
+                        and self._ai_build == "timing"
+                        and self.ai.time >= 200.0
+                    ),
+                    _enemy_home,
                     self.ai.time,
+                    at=_tr_expand_at,
                 ):
                     self._tr_expand_ready = True
                     return True
                 if not self._tr_expand_ready:
+                    # O189:Zerg Timing/Rush 在 transition 中常因波次不断、 mineral
+                    # 被防御吸干而永远开不出二矿，单矿经济撑不到 fleet 成型。
+                    # 兜底：t≥210、仅 1 基地、无 Nexus 在造、矿≥150 时强制开二矿。
+                    # O201(o200-vh-zerg-rush 3-7 实证):Lane1 5/5 one_base,240/200
+                    # 仍太高;降到 210/150,让二矿资金窗更早出现。
+                    # O214:Timing 压力比 Rush 更早更重,再降到 180/100,让二矿
+                    # 在首波 160-200s 到来前开始攒/拍,避免单矿被滚雪球。
+                    # O216:Timing 降到 180/100,二矿资金窗必须让出来;
+                    # 150s 实证 forge/首塔未就绪,回调到 180 等基础防御。
+                    # O216g(o216f 尸检:idle_builder NEXUS 42-166 次/局):
+                    # 事件只记一次,不再每帧刷屏。
+                    # O216h(o216g-lane2 game_01 实证):矿门 300 回调到 150 ——
+                    # 威胁期塔链持续抽干银行,300 矿门整局不触发=二矿永远不开;
+                    # 配合 F2「Nexus 钉点期间塔链让位」闸,银行 ~12s 攒到 400,
+                    # 钉点有界且二矿真正落地。
+                    _o189_at = 210.0
+                    _o189_minerals = 150.0
+                    if self._opp_race == "zerg" and self._ai_build == "timing":
+                        _o189_at = 180.0
+                        _o189_minerals = 150.0
+                    if (
+                        self._opp_race == "zerg"
+                        and self._ai_build in ("rush", "timing")
+                        and self.ai.time >= _o189_at
+                        and self.ai.townhalls.amount == 1
+                        and self.manager_mediator.get_building_counter[UnitID.NEXUS] == 0
+                        and self.ai.minerals >= _o189_minerals
+                    ):
+                        self._o189_forced_expand = True
+                        if not self._o189_logged:
+                            self._o189_logged = True
+                            self.ai._events.append({
+                                "t": round(self.ai.time, 1),
+                                "msg": "O189:Zerg rush/timing 单矿太久,强制开二矿",
+                            })
+                        return True
+                    # O204:transition 期强制二矿触发器(与 rush_active 解耦):
+                    # 180s 后只要 2 塔就绪、家附近无敌、矿够 450 就强开。
+                    if forced_expand_during_transition(
+                        True,
+                        self.ai.time,
+                        _cannons_ready,
+                        _enemy_home,
+                        self.ai.minerals,
+                        self.manager_mediator.get_building_counter[UnitID.NEXUS],
+                        self.ai.calculate_cost(UnitID.NEXUS).minerals,
+                    ):
+                        self.ai._events.append({
+                            "t": round(self.ai.time, 1),
+                            "msg": "O204:transition 防御站稳,强制开二矿",
+                        })
+                        return True
                     return False
+                _fleet_total = (
+                    self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+                    + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
+                    + cy_unit_pending(self.ai, UnitID.TEMPEST)
+                    + cy_unit_pending(self.ai, UnitID.CARRIER)
+                )
+                # O186:Zerg Rush 的 transition 延长到 500s,若 max_bases 仍
+                # 用 3,bot 会铺 3-4 基地把舰队资金吃光;封顶 2 基地,让资源优先变
+                # 成地面防御/兵营/舰队科技。
+                # O208:Zerg Timing 需要 3 基地经济支撑 carrier 后期舰队规模，
+                # 仅 Rush 锁 2 基地，Timing 保持 flows.yml 的 max_bases(3)。
+                _max_bases = ae.max_bases
+                if self._opp_race == "zerg" and self._ai_build == "rush":
+                    _max_bases = min(_max_bases, 2)
                 return should_expand_dynamic(
                     bases=self.ai.townhalls.amount,
-                    max_bases=ae.max_bases,
+                    max_bases=_max_bases,
                     nexus_pending=self.manager_mediator.get_building_counter[
                         UnitID.NEXUS
                     ],
@@ -3617,8 +4756,10 @@ class ProductionManager(Manager):
                     enemy_army_supply=self._visible_enemy_army_supply(),
                     advantage_supply=ae.advantage_supply,
                     now=self.ai.time,
-                    first_expand_at=ae.first_expand_at,
+                    first_expand_at=_first_expand_at,
                     rush_active=False,  # O100-①:站稳窗内 rush 不否决
+                    minerals=self.ai.minerals,
+                    fleet_total=_fleet_total,
                 )
             self._tr_expand_ready = False
         # O93-B2/O96/O105-①:转舰队后首舰(已出/在产)前不开矿;O105 起防御
@@ -3631,13 +4772,21 @@ class ProductionManager(Manager):
             self._defense_score(),
         ):
             return False
-        # O57(o55b/o56 实证):舰队航标没落地前不扩第三矿 —— 扩张持有期(O43/O54)
-        # 冻结科技链,三矿抢在舰队前 = 波前(t≈520)无舰队;先舰队后三矿。
+        # O57/o172/o175:o172 game_01 实证,FleetBeacon 工人被反复释放导致 pending
+        # 为真但实体永远落不了地,原「present_or_pending」门被绕过,三矿照样开。
+        # O175 改用 update 头部稳定信号:连续 5s 无真正实体才视为缺失,避免
+        # pending 抖动一帧破防。
         if (
             self.ai.townhalls.amount >= 2
-            and not self._structure_present_or_pending(UnitID.FLEETBEACON)
+            and getattr(self, "_fb_truly_missing", False)
         ):
             return False
+        _fleet_total = (
+            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+            + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
+            + cy_unit_pending(self.ai, UnitID.TEMPEST)
+            + cy_unit_pending(self.ai, UnitID.CARRIER)
+        )
         return should_expand_dynamic(
             bases=self.ai.townhalls.amount,
             max_bases=ae.max_bases,
@@ -3648,7 +4797,7 @@ class ProductionManager(Manager):
             enemy_army_supply=self._visible_enemy_army_supply(),
             advantage_supply=ae.advantage_supply,
             now=self.ai.time,
-            first_expand_at=ae.first_expand_at,
+            first_expand_at=_first_expand_at,
             # B1(E9 停开矿的 Macro 适配):rush 恒停开;非 pivot 按 E9 threat 停;
             # pivot 模式 threat 不再停开,改「敌作战单位压到家 40 格 ≥2」才停
             # (rush 同款语义)——threat 在 Macro 局常驻,两轮 bench 二矿 700s+
@@ -3667,6 +4816,8 @@ class ProductionManager(Manager):
                 >= 2,
                 bases=self.ai.townhalls.amount,  # O29:首扩(bases<=1)放行
             ),
+            minerals=self.ai.minerals,
+            fleet_total=_fleet_total,
         )
 
     def _auto_expand(self, macro_plan: MacroPlan) -> None:
@@ -3767,6 +4918,19 @@ class ProductionManager(Manager):
             len(self.manager_mediator.get_own_structures_dict[structure_type]) > 0
             or self.manager_mediator.get_building_counter[structure_type] > 0
         )
+
+    def _fb_ready_to_build(self) -> bool:
+        """O197:判断 FleetBeacon 是否已到「该建却还没建」的节点。
+
+        条件：FB 在 core 链上、至少一座星门已就绪、当前没有任何 FB 实体/pending。
+        此时再追加 Gateway/塔会抢走 FB 的 300/200 资金窗,导致舰队转型失败。
+        """
+        if UnitID.FLEETBEACON not in self._flow.core_structure_ids():
+            return False
+        if self._structure_present_or_pending(UnitID.FLEETBEACON):
+            return False
+        stargates = self.manager_mediator.get_own_structures_dict[UnitID.STARGATE]
+        return any(s.is_ready for s in stargates)
 
     def _dispatch_structure(
         self,
@@ -3940,6 +5104,18 @@ class ProductionManager(Manager):
         structure_id : UnitTypeId
             What we want to build
         """
+        # O216i(o216h-lane2 game_01 实证):Zerg Timing 前期(300s 前)主基 2 塔
+        # 未就绪时 STARGATE/FLEETBEACON 让位塔链 —— SG 在 0 塔窗口抢走 150 矿,
+        # 306s 波到脸时 0 塔被推平;舰队科技晚 ~60s 不影响成型窗。
+        if (
+            structure_id in (UnitID.STARGATE, UnitID.FLEETBEACON)
+            and self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.time < 300.0
+            and self._cannons_ready_peak < 2
+            and not self._fleet_transitioned
+        ):
+            return
         if (
             not self._structure_present_or_pending(structure_id)
             and self.ai.tech_requirement_progress(structure_id) >= 1.0
@@ -3957,6 +5133,56 @@ class ProductionManager(Manager):
         ready_townhalls : Units
             Current ready nexuses we can train from.
         """
+        # O236(o229 胜局 vs o234 败局对照):二矿时点 ≤400s=胜、≥500s=负。
+        # Nexus 钉点期间探机(50 矿/个)是最大抽血源之一,暂停探机把 400 矿
+        # 资金窗让给 Nexus;18+ 农民已够当前矿线, pinning 解除自动恢复。
+        # O238(o237-lane1 game_01 实证):钉点反复发生(二矿/三矿/四矿),每次都
+        # 停探机 = 累计农民缺口(峰值 44 vs 胜局 63-71)。只限首扩钉点(bases<2),
+        # 三矿以上钉点照产探机,经济不再被掐尖。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.townhalls.amount < 2
+            and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
+            and self.ai.workers.amount >= 18
+        ):
+            return
+        # O240:航母攒钱期探机(50 矿/个)同样让位,与产线暂停同口径。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and not self._transition_active
+            and self.ai.vespene >= 800.0
+            and getattr(self, "_fb_entities_now", 0) > 0
+            and (
+                self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
+                + cy_unit_pending(self.ai, UnitID.CARRIER)
+            )
+            < max(
+                1,
+                self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+                // 6,
+            )
+        ):
+            return
+        # O225(o222-lane2 game_03 实证):FB 停滞自救 60 次全 no_money ——
+        # 探机 35→42 连续训练(50 矿/个)把 FB 的 300 矿资金窗吃光,
+        # fleet 0 到 800s 败亡。SG 就绪 + FB 无实体 + 舰队 0 + 农民 ≥28
+        # → 暂停探机,矿全部让给 FB(农民 28+ 已超双矿饱和线的 87%)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and getattr(self, "_fb_entities_now", 1) == 0
+            and not self._first_fleet_seen()
+            and self.ai.workers.amount >= 28
+            and any(
+                s.is_ready
+                for s in self.manager_mediator.get_own_structures_dict[
+                    UnitID.STARGATE
+                ]
+            )
+        ):
+            return
         # 农民上限随基地数放大：每矿 ~22（16 矿 + 6 气），封顶 70 给军队留供给。
         # 单矿时 22*1=22 与旧行为一致；开二矿后目标自动抬到 44，接着补农民采矿采气。
         if (
@@ -3984,16 +5210,36 @@ class ProductionManager(Manager):
         """
         # 气随基地数放大：每个已建好的基地采满 2 个气矿（吃气大户流派的命脉）。
         # 前期没兵营时先只开 1 个气（保持原起手节奏）。
-        max_gas_buildings = (
-            2 * self.ai.townhalls.ready.amount
-            if UnitID.GATEWAY in structures_dict
-            else 1
-        )
+        # O165:本机 SC2 环境 Protoss 开局只有 8 农民,过早下气矿(24s)会拖慢
+        # pylon/gate/cyber 节奏;农民<12 且兵营未好前不开气,把矿留给建筑和农民。
+        # ⚠️ structures_dict 是 defaultdict,只要被访问过 key 就会存在,
+        # 所以不能用 `UnitID.GATEWAY in structures_dict`,要用 len>0 判断。
+        _have_gateway = len(structures_dict.get(UnitID.GATEWAY, [])) > 0
+        if _have_gateway:
+            max_gas_buildings = 2 * self.ai.townhalls.ready.amount
+        else:
+            # O167b:8 农民开局矿极紧，兵营落地前连 1 气都别开，
+            # 把 75 矿留给 Pylon/Gateway/Cybercore 科技链。
+            max_gas_buildings = 0
+        # O17x:核心科技缺失期 further 收紧气矿——Cybercore 未排队前完全不下气矿，
+        # 把 75 矿和农民彻底留给 Pylon/Gateway/Cybercore;Cybercore 排队/就绪后
+        # 才允许 1 气，为 Stargate 蓄气但不抢科技链资金。
+        if self._early_core_missing:
+            if self._structure_present_or_pending(UnitID.CYBERNETICSCORE):
+                max_gas_buildings = min(max_gas_buildings, 1)
+            else:
+                max_gas_buildings = 0
         # O124-②(o123 局1 实证):过渡期不建新气矿 —— 叉海不吃气,
         # 每个气矿 75-150 矿是 forge/GW/叉的钱;退出后自动恢复
+        # O187:Zerg Timing/Rush 例外 —— 舰队科技(Stargate/FleetBeacon)需要气,
+        # 若 transition 全程锁气,星门永远落不了地,transition 退出后 100-200s
+        # 无舰队。允许下气矿但保留 max_gas_buildings 上限,不抢前期防御资金。
+        _gas_paused = transition_pauses_gas(self._transition_active) and not (
+            self._opp_race == "zerg" and self._ai_build in ("rush", "timing")
+        )
         if (
             self.ai.gas_buildings.amount < max_gas_buildings
-            and not transition_pauses_gas(self._transition_active)
+            and not _gas_paused
         ):
             self._build_gas()
 
@@ -4038,12 +5284,42 @@ class ProductionManager(Manager):
             self._tech_stall_since = self.ai.time
 
         if not core_allowed:
+            # O163(o162-vh-zerg-power game_01 实证):经济开局(CarrierOpener)把
+            # first_expand_at 压到 150s,想开矿期间 core_allowed=False 导致 GATEWAY
+            # 也被冻结;到 4 分半仍零科技、零兵,被 Power 中局波次直接碾穿。
+            # 解冻首 GATEWAY:即使持有期也要拍下兵营,保证起码的地面产能和防御。
+            if not self._structure_present_or_pending(UnitID.GATEWAY):
+                await self._build_core_structure(UnitID.GATEWAY)
+            # O215:Zerg Timing 开矿持有期仍允许 FleetBeacon——Nexus 在建时 FB
+            # 被冻是舰队成型过晚的主因。此处只放行 FB,其它核心科技继续让位。
+            if self._is_zerg_timing_fb_exempt():
+                if (
+                    not self._structure_present_or_pending(UnitID.FLEETBEACON)
+                    and [s for s in structures_dict[UnitID.STARGATE] if s.is_ready]
+                ):
+                    await self._build_core_structure(UnitID.FLEETBEACON)
             return
 
+        # O186:Zerg Timing/Rush 的 ground_spawn 延长到 500s,若仍冻结星门/航标,
+        # 则 transition 退出后要花 100-200s 补舰队科技,被中局波次直接碾穿。
+        # 这里改为不冻结舰队科技,仅由 ground_spawn 把舰队单位产出压到 500s,
+        # 确保星门/航标提前就绪,transition 一退就能立刻转舰队。
+        _zerg_rush_timing_fleet_tech = (
+            self._opp_race == "zerg"
+            and self._ai_build in ("rush", "timing")
+            and self._transition_active
+        )
         for structure_id in self._flow.core_structure_ids():
             # O92:过渡形态冻结星门/舰队航标(地面产能优先;CYBERNETICSCORE 保留,
             # 追猎要它)。已 pending 的不取消(冻结只拦新建),转舰队后自动解冻补建。
-            if transition_tech_frozen(self._transition_active, structure_id.name):
+            # O186:Zerg Timing/Rush 例外——让舰队科技提前落成。
+            if (
+                transition_tech_frozen(self._transition_active, structure_id.name)
+                and not (
+                    _zerg_rush_timing_fleet_tech
+                    and structure_id.name in ("STARGATE", "FLEETBEACON")
+                )
+            ):
                 # O121-③(o120 局2/3/4 实证):防御评分达标(strong 同口径)→
                 # SG 过渡期提前解冻 —— 退出时链上只剩 FB,空窗 190s→~100s;
                 # FB 维持冻结(舰队本体不提前,波次资源仍优先生存)
@@ -4066,14 +5342,42 @@ class ProductionManager(Manager):
             ):
                 continue
             if structure_id == UnitID.FLEETBEACON:
+                # O213:power/macro 风格下,单基地且无 Nexus pending/在建时,
+                # FB 让位二矿——O212 Lane1 game_03 实证:FB 抢先派工吸走 300 矿,
+                # 首座 Nexus 拖到 466s 才落成,经济崩盘。先把二矿拍下去再舰队。
+                if (
+                    self._ai_build in ("power", "macro")
+                    and self.ai.townhalls.amount == 1
+                    and not self._structure_present_or_pending(UnitID.NEXUS)
+                ):
+                    continue
                 # 特例:tech_requirement_progress 对舰队航标不准,需有就绪星门才建
                 # O67(Terran Rush game_01 实证):E9 威胁期 FB(300 矿)让位塔链 ——
                 # 敌压境窗口里 FB+追加星门抢光塔钱,0 塔基地被推平(3→2→1 连锁)。
+                # O207:FB 已被摧毁且已转舰队时，舰队是唯一翻盘手段，威胁期也
+                # 必须重建 FB；F2 目标已被 _fb_waiting 压到保命底限。
+                # O209:Zerg Timing 在 transition 内若星门已就绪且 t≥360s，
+                # 即使威胁期也允许建 FB——拖延 FB 是导致 FleetBeacon 过晚/不建、
+                # 舰队无法成型的主因。 timing 波次间隙足够让 FB 落成。
+                _fb_truly_missing = getattr(self, "_fb_truly_missing", False)
+                _timing_fb_gate = (
+                    self._opp_race == "zerg"
+                    and self._ai_build == "timing"
+                    and self._transition_active
+                    # O216f:科技链 sprint 期间可建后,星门/FB 能提前到 200-250s
+                    # 落成;把 FB 门从 280 降到 200,匹配新窗口,避免 FB 被 threat
+                    # 门卡到 500s+。
+                    and self.ai.time >= 200.0
+                )
                 if (
                     not self._structure_present_or_pending(UnitID.FLEETBEACON)
                     and [s for s in structures_dict[UnitID.STARGATE] if s.is_ready]
-                    and not tech_yields_to_threat(
-                        self._threat_active, self._rush_active
+                    and (
+                        not tech_yields_to_threat(
+                            self._threat_active, self._rush_active
+                        )
+                        or (self._fleet_transitioned and _fb_truly_missing)
+                        or _timing_fb_gate
                     )
                 ):
                     await self._build_core_structure(UnitID.FLEETBEACON)
@@ -4135,7 +5439,11 @@ class ProductionManager(Manager):
                     UnitID.ASSIMILATOR
                 ] -= 1
                 tracker.pop(tag)
-        if UnitID.GATEWAY not in self.manager_mediator.get_own_structures_dict:
+        # O165-fix:defaultdict 的 key 被访问过即存在,用 len 判是否存在建筑。
+        if (
+            len(self.manager_mediator.get_own_structures_dict.get(UnitID.GATEWAY, []))
+            == 0
+        ):
             return  # 起手单气节奏归 _build_flow_structures,这里只管"有兵营后双气满采"
         # 在建气矿的落点(算各基地 pending 数用)
         pending_at = [
@@ -4159,7 +5467,15 @@ class ProductionManager(Manager):
         O115-②(o114 局3 实证):在建 Nexus 同步供电 —— 局3 分矿 482 失守时
         0 塔:水晶等 Nexus 落成才开始,再落后 80-100s(工人走路+被截),
         塔链全程没赶上波次。与 Nexus 并行 → 落成即有电、塔立刻起建。
+        O168:8 农民 carrier 核心科技缺失期间不铺保底水晶，把矿留给科技链。
         """
+        if (
+            getattr(self, "_early_core_missing", False)
+            and not (
+                self._opp_race == "zerg" and self._ai_build == "timing"
+            )
+        ):
+            return
         tracker = self.manager_mediator.get_building_tracker_dict
         pending_at = [
             info[TARGET].position
@@ -4191,6 +5507,82 @@ class ProductionManager(Manager):
                         find_alternative=True,
                     )
                 )
+
+    def _ensure_expansion_wall_gateway(self) -> None:
+        """O216:分矿 gateway 堵口——司令指示分矿 ramp 前/路口排一个兵营顶前,
+        后方密集光子塔防守。只针对 Zerg Timing(当前最劣对局),在分矿 Nexus
+        在建或就绪后,于其迎敌侧补一座 gateway,作为墙体/诱饵让塔集火。
+        """
+        if self._opp_race != "zerg" or self._ai_build != "timing":
+            return
+        # O216:即使 early_core_missing 也允许分矿 gateway 堵口,
+        # 它与 cybercore/stargate/FB 是并行防御投资,不抢核心科技资金。
+        if not self.ai.can_afford(UnitID.GATEWAY):
+            return
+        # O216c:Nexus 尚未开工时,gateway 150 矿可能把 Nexus 基金从 400+
+        # 吃回 250+,导致二矿继续拖延。先保证 Nexus 能落地,再补 gateway。
+        _nexus_unstarted = self.ai.not_started_but_in_building_tracker(
+            UnitID.NEXUS
+        )
+        _nexus_price = self.ai.calculate_cost(UnitID.NEXUS).minerals
+        if (
+            _nexus_unstarted > 0
+            and self.ai.minerals < _nexus_price + 150.0
+        ):
+            return
+        # 找分矿落点:就绪基地中离主基最远的,或在建 Nexus 的目标位置
+        _targets: list[Point2] = []
+        _start = self.ai.start_location
+        _ready = sorted(
+            [th.position for th in self.ai.townhalls.ready],
+            key=lambda p: p.distance_to(_start),
+        )
+        if len(_ready) >= 2:
+            _targets.append(_ready[-1])
+        tracker = self.manager_mediator.get_building_tracker_dict
+        for info in tracker.values():
+            if info[TRACKER_ID] == UnitID.NEXUS and info.get(TARGET):
+                _targets.append(info[TARGET].position)
+        if not _targets:
+            return
+        _enemy = self.ai.focused_enemy_start()
+        _pending_at = [
+            info[TARGET].position
+            for info in tracker.values()
+            if info[TRACKER_ID] == UnitID.GATEWAY and info.get(TARGET)
+        ]
+        for th_pos in _targets:
+            # 该基地 10 格内是否已有 gateway/warpgate(就绪或在建)
+            _have = (
+                self.ai.structures.ready.closer_than(10, th_pos).filter(
+                    lambda s: s.type_id in (UnitID.GATEWAY, UnitID.WARPGATE)
+                ).amount
+                + sum(1 for p in _pending_at if th_pos.distance_to(p) < 10)
+            )
+            if _have > 0:
+                continue
+            _anchor = base_defense_anchor(
+                False,
+                (th_pos.x, th_pos.y),
+                (_enemy.x, _enemy.y),
+                forward=4.0,
+            )
+            if _anchor is None:
+                continue
+            self.ai.register_behavior(
+                BuildStructure(
+                    th_pos,
+                    UnitID.GATEWAY,
+                    max_on_route=1,
+                    closest_to=Point2(_anchor),
+                    find_alternative=True,
+                )
+            )
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": "O216:分矿 gateway 堵口",
+            })
+            break  # 每帧只派一座,避免抢矿
 
     def _build_extra_production(self, structures_dict: dict[UnitID, list[Unit]]) -> None:
         """矿有富余时按流派配置追加产兵建筑（治"矿堆花不出去"）。
@@ -4282,6 +5674,21 @@ class ProductionManager(Manager):
             sid = getattr(UnitID, ep.id_name, None)
         if sid is None:
             return
+        # O216d(O216c-vh-zerg-timing 0-9 实证):FleetBeacon 实体落成之前,
+        # 追加星门会抢走 300/200 的 FB 资金窗,导致 3-4 星门空转、气体烂银行、
+        # 舰队转型永远完不成。先拍完 FB(实体)再爬坡;FB 被摧毁后同理先重建。
+        # O216e(o216d-vh-zerg-timing game_01/02 实证):FB 实体落成后仍不能追加 SG,
+        # 必须等首艘舰队单位(Tempest/Carrier)已在产/已出,否则 3 星门空转、
+        # pre_fleet 地面 floor 把资源吃干,首舰永远出不来。
+        if (
+            sid == UnitID.STARGATE
+            and UnitID.FLEETBEACON in self._flow.core_structure_ids()
+            and (
+                self._fb_entities_now == 0
+                or not self._first_fleet_seen()
+            )
+        ):
+            return
         # P2:pivot 模式(风暴主 C)产能解放——豁免矿门槛+气体闸门放宽;
         # 非 pivot 时三处判据全走默认值,行为零变化
         pivot = self._pivot_tempest_mode()
@@ -4291,7 +5698,13 @@ class ProductionManager(Manager):
         if not have_structures:
             return
         if tr is not None and sid == UnitID.GATEWAY:
-            desired = tr.gateway_cap  # O92:过渡期兵营目标 = gateway_cap(总数口径)
+            # O208:Zerg Timing 混编地面需要 2 兵营，Rush 用 flows.yml 的 cap。
+            _gw_cap = (
+                2
+                if (self._opp_race == "zerg" and self._ai_build == "timing")
+                else tr.gateway_cap
+            )
+            desired = _gw_cap  # O92:过渡期兵营目标 = gateway_cap(总数口径)
         elif sid == UnitID.STARGATE:
             gas_per_base = [
                 # O152-③:在途气矿也算(SG 建造 43s,在途气 21s 后即产能)
@@ -4311,6 +5724,8 @@ class ProductionManager(Manager):
         have = len(have_structures) + self.manager_mediator.get_building_counter[sid]
         if (
             have < desired
+            # O176:FB 已派工但买不起时,追加产能会抽干 FB 资金窗,先让位。
+            and not getattr(self, "_fb_waiting", False)
             # P2a:pivot 模式豁免「矿>400」追加门槛,两道前置:FB 就绪/在建
             # (E10c:追加星门抢 FB 的钱)+ 首艘 TEMPEST 已出/在产(E10d:追加
             # 星门卡「FB就绪→首艘风暴」窗,首艘晚 50-70s);非 pivot 门槛 400 原样
@@ -4336,6 +5751,15 @@ class ProductionManager(Manager):
                     )
                     else ep.mineral_gate
                 ),
+                # O157: 气体富余但矿物紧缺时抬高追加产能门槛。
+                vespene=self.ai.vespene,
+                minerals=self.ai.minerals,
+                fleet_total=(
+                    self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+                    + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
+                    + cy_unit_pending(self.ai, UnitID.TEMPEST)
+                    + cy_unit_pending(self.ai, UnitID.CARRIER)
+                ),
             )
             and self.ai.can_afford(sid)
         ):
@@ -4355,10 +5779,39 @@ class ProductionManager(Manager):
         # 开矿分支维持原阈值(矿≥800 才触发,Q3 已验证行为不变)
         # O93-B2/O96:转舰队后首舰(已出/在产)前不开矿 —— 局2 的 FB 资金窗被
         # 三矿吃掉;局4 实证等「FB 实体」不够,首舰前的二矿同样致命。
+        # O171:o171 game_01 实证,Stargate 就绪后 FleetBeacon 因没钱停滞 250s+,
+        # 此时 _spend_bank 却把 800 矿拿去开三矿,FB 永远落不了地。舰队饥饿期
+        # (FB 缺失且星门就绪)禁止滚雪球开矿,先把 FB 拍出来。
+        # O172/O175:o172 game_01 实证,FB pending 但工人被 O11 反复释放,实体永
+        # 远不落地;用稳定「无实体」信号(连续 5s 无真正实体)而非 present_or_pending,
+        # 确保 800 矿存款优先变成 FB。
+        _fb_missing_starved = (
+            UnitID.FLEETBEACON in self._flow.core_structure_ids()
+            and (
+                getattr(self, "_fb_truly_missing", False)
+                or getattr(self, "_fb_waiting", False)
+            )
+            and any(
+                s.is_ready
+                for s in self.manager_mediator.get_own_structures_dict[
+                    UnitID.STARGATE
+                ]
+            )
+        )
         if (
             self.ai.minerals >= 800
             and self.ai.townhalls.amount < 4
             and self.ai.can_afford(UnitID.NEXUS)
+            and not _fb_missing_starved
+            # O250(o249-lane game_04/05 实证):O247 首舰前不开矿被 _spend_bank
+            # 绕开(存款 800 早到 + SG 未就绪 → fb_missing_starved 永假,
+            # 二矿 249s 落成即被轮抄);舰队先行门同步接入滚雪球开矿。
+            and not (
+                self._opp_race == "zerg"
+                and self._ai_build == "timing"
+                and not self._first_fleet_seen()
+                and self.ai.time < 620.0
+            )
             and not fleet_expand_holds(
                 self._fleet_transitioned,
                 self._first_fleet_seen(),
@@ -4374,11 +5827,33 @@ class ProductionManager(Manager):
         ep = self._flow.extra_production
         if ep is None:
             return
+        # O166: 首矿扩张未落地/核心科技未出前，不拿追加产能(STARGATE/GATEWAY)
+        # 和 Nexus/科技抢钱。transition 流因 transition_expand_blocked 会自然放行。
+        # O176:FB 已派工但买不起时,追加产能/滚雪球会抽干 FB 资金,先让位。
+        if (
+            (self._expand_holding and self.ai.townhalls.amount < 2)
+            or self._nexus_waiting
+            or self._early_core_missing
+            or getattr(self, "_fb_waiting", False)
+        ):
+            return
         # O92:过渡形态期滚雪球也追加兵营不追加星门(与 _build_extra_production 同旨),
         # 目标数压到 gateway_cap(银行公式 cap=12 是给星门群的,兵营不需要)。
         tr = self._flow.transition if self._transition_active else None
         sid = UnitID.GATEWAY if tr is not None else getattr(UnitID, ep.id_name, None)
         if sid is None or not self.ai.can_afford(sid):
+            return
+        # O216d:滚雪球追加星门同样要等国航标实体落成,否则 800 矿存款会先变成
+        # 第二/三座星门,FB 建造窗被挤占、舰队产线继续空转。
+        # O216e:FB 实体落成后仍要守到首艘舰队单位在产/已出,避免星门空转。
+        if (
+            sid == UnitID.STARGATE
+            and UnitID.FLEETBEACON in self._flow.core_structure_ids()
+            and (
+                self._fb_entities_now == 0
+                or not self._first_fleet_seen()
+            )
+        ):
             return
         desired = bank_production_target(
             self.ai.minerals,
@@ -4389,7 +5864,13 @@ class ProductionManager(Manager):
         if desired is None:
             return
         if tr is not None:
-            desired = min(desired, tr.gateway_cap)
+            # O208:Zerg Timing 混编地面需要 2 兵营滚雪球上限。
+            _gw_cap = (
+                2
+                if (self._opp_race == "zerg" and self._ai_build == "timing")
+                else tr.gateway_cap
+            )
+            desired = min(desired, _gw_cap)
         have = (
             len(self.manager_mediator.get_own_structures_dict[sid])
             + self.manager_mediator.get_building_counter[sid]
@@ -4436,6 +5917,9 @@ class ProductionManager(Manager):
         # warpgate 研究好才值得造前线塔（否则 gateway train 用不上前线电源）
         if UpgradeId.WARPGATERESEARCH not in self.ai.state.upgrades:
             return
+        # O166: 前期不拿前线塔和科技/Nexus 抢钱
+        if self._early_core_missing or self._nexus_waiting:
+            return
         if self.ai.minerals > 300 and self.ai.can_afford(UnitID.PYLON):
             self.ai.register_behavior(
                 BuildStructure(self._front_point(), UnitID.PYLON)
@@ -4447,6 +5931,10 @@ class ProductionManager(Manager):
         rush 检测成立立即铺(E3b) / rush 预警(≥2 敌作战单位压到家门口 40 格,农民侦查不算)。
         E1: rush 相关铺塔受 pivot.rush_cannons 开关控制(false = 臂 B 纯叉子不铺塔;
         defend=yes 和 6 分钟自动铺不受影响,司令始终能手动铺)。"""
+        # O202:CarrierOpenerZergRush 的 build order 已硬编码 forge+双塔,
+        # 在 build order 完成/二塔在途前,PSD 不插手,避免与 build order 抢工人抢矿。
+        if self._carrier_rush_opener_early():
+            return False
         if order.get("defend") == "yes":
             return True
         # vs Zerg 提前到 4 分钟自动铺塔(roach/ravager all-in ~5:00,hydra push ~5:30;原 6 分钟太晚)
@@ -4478,6 +5966,41 @@ class ProductionManager(Manager):
             and u.position.distance_to(home) < 40
         )
         return attackers >= 2
+
+    def _carrier_rush_opener_early(self) -> bool:
+        """O202:判断当前是否为 CarrierOpenerZergRush 早期。
+
+        在该 opener 下,build order 已负责 forge+双塔的硬防御链;
+        在 build order 完成或至少 2 座 photoncannon 在途/落地前,
+        禁止 PSD/_presumed_defense_chain 插手,防止派工/矿物竞争把塔 timing 拖崩。
+        """
+        bor = getattr(self.ai, "build_order_runner", None)
+        if bor is None or bor.chosen_opening != "CarrierOpenerZergRush":
+            return False
+        if bor.build_completed:
+            return False
+        return self._count_structure(UnitID.PHOTONCANNON) < 2
+
+    def _is_zerg_rush_timing(self) -> bool:
+        """O207:当前为 vs Zerg 的 Rush 或 Timing 对局。
+
+        这类对局需要早期防御链(forge+首塔)在 cybercore/stargate 排队前启动,
+        因此部分被 `_early_core_missing` 保护的注册点要对 Zerg Rush/Timing 放行。
+        """
+        return self._opp_race == "zerg" and self._ai_build in ("rush", "timing")
+
+    def _is_zerg_timing_fb_exempt(self) -> bool:
+        """O215:vs Zerg Timing 时,开矿持有期仍允许 FleetBeacon 派工。
+
+        否则 Nexus 在途期间 core_allowed=False 会冻结 FB, Nexus 落成后 minerals
+        又被塔/兵抽干,FB 系统性晚 50-150s,舰队无法成型。
+        """
+        return (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            # O216:从 240 降到 180,Nexus 在途更早放行 FB,避免 fleet 转型被拖 50-150s。
+            and self.ai.time >= 180.0
+        )
 
     def _main_townhall(self):
         """需求3:压境防御锚定的 townhall = 最靠近敌方的 ready townhall(前线门户/分矿)。

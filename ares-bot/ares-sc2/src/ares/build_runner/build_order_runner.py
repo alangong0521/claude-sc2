@@ -339,7 +339,7 @@ class BuildOrderRunner:
                         select_persistent_builder=command != UnitID.REFINERY,
                         only_select_persistent_builder=persistent_worker_available,
                     )
-                    if worker:
+                    if worker and self.ai.can_afford(command):
                         self.current_build_position = next_building_position
 
                         if self.mediator.build_with_specific_worker(
@@ -482,12 +482,15 @@ class BuildOrderRunner:
                             step.command, step.target
                         ):
                             self.current_build_position = next_building_position
-                            if self.mediator.build_with_specific_worker(
-                                worker=worker,
-                                structure_type=command,
-                                pos=self.current_build_position,
-                                assign_role=worker.tag
-                                in self.mediator.get_unit_role_dict[UnitRole.GATHERING],
+                            if (
+                                self.ai.can_afford(command)
+                                and self.mediator.build_with_specific_worker(
+                                    worker=worker,
+                                    structure_type=command,
+                                    pos=self.current_build_position,
+                                    assign_role=worker.tag
+                                    in self.mediator.get_unit_role_dict[UnitRole.GATHERING],
+                                )
                             ):
                                 self._last_gas_order_time = self.ai.time
                 elif command in ADD_ONS and self.ai.can_afford(command):

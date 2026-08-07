@@ -2104,3 +2104,4632 @@ O22 / O24 / O25 / O27 / O28 已实现,单测全绿 + carrier 编译过。
   4. **基地清零重建可行性门**：`_rebuild_nexus` 加 `nexus_rebuild_viable` 检查（有工人、矿脉有剩、存款 ≥400），避免无收入死局仍暂停出兵 250s 空转。
 - **验证**：单测 616 passed / 1 skipped；O156 bench（VeryHard Zerg Power ×5）待开。
 - **状态**：O156 已落地，进入 bench 验证。
+
+
+## O156 bench 尸检：carrier @AbyssalReefLE vs VeryHard Zerg/Terran Power（2026-08-05）
+
+- **bench 配置**：`poetry run python bench.py --flow carrier --diff VeryHard --race {Zerg,Terran} --ai-build Power --map AbyssalReefLE -n 5 --tag o156-vh-* --timeout 900`，双 lane 并行。
+- **提前终止原因**：两条 lane 的 game_01 / game_02 全部 **Defeat**， signature 一致且趋势无悬念；为避免继续浪费机时，终止后台任务并做尸检。
+- **战绩**：Zerg Power 0-2，Terran Power 0-2（game_03 进行中未纳入）。
+
+### 关键数据
+
+| 对局 | 结果 | 时长 | 终局 | 农民峰值 | 基地峰值 | 舰队峰值 |
+|---|---|---|---|---|---|---|
+| Zerg Power game_01 | Defeat | 1224s | 0 基地 4 农民 army {} | 68 | 4 | TEMPEST×7, CARRIER×1, ZEALOT×6 |
+| Zerg Power game_02 | Defeat | 923s | 0 基地 0 农民 army {ORACLE×1} | 46 | 3 | TEMPEST×2, ZEALOT×2, STALKER×1 |
+| Terran Power game_01 | Defeat | 816s | 0 基地 10 农民 army {ORACLE×1} | 54 | 3 | TEMPEST×3, ZEALOT×2, STALKER×2 |
+| Terran Power game_02 | Defeat | 798s | 0 基地 5 农民 army {ORACLE×1} | 59 | 3 | CARRIER×1(拦截机×8), STALKER×1 |
+
+### 共同死因（三局以上一致）
+
+1. **炮塔建了但不重建，基地压缩到 1-2 个后防御归零**
+   - Zerg game_01：t=843 时 15 炮塔/2 电池/4 基地；t=1092 只剩 1 基地时炮塔骤降到 1。
+   - Terran game_01：t=494 时 11 炮塔/3 基地；t=594 只剩 2 基地时炮塔只剩 1。
+   - Zerg game_02：t=494 时 10 炮塔/2 基地；t=695 基地清零时炮塔 0。
+   - 根因：`cannon_target_capped` 在矿 < 主 C 造价（TEMPEST 250）时把目标压回 `ec.min=4`；一旦基地被打掉、矿收入断流，bot 继续憋舰队而不补防御，形成“丢基地→更没钱→更不补塔→再丢基地”的死螺旋。
+
+2. **舰队规模永远到不了临界质量就被推平**
+   - Terran Power 两局都在 550-700s 被 bio 一波穿，此时舰队 1-3 艘；Zerg game_02 更是在 600s 就只有 1 艘暴风。
+   - 根因：前期经济/产能被塔、水晶、农民摊薄，主 C（暴风/航母）产出过慢；敌方 Power 中盘波次到达时我方没有足够天空体反制。
+
+3. **基地丢失后的经济死锁**
+   - Zerg game_01 终局 vespene=3371、minerals=30；Terran game_02 终局 vespene=2818、minerals=615，都无法在 0 基地状态下重建 Nexus（需要 400 矿）。
+   - 根因：高气体烂在银行，矿物因丢矿/农民骤减而枯竭；现有 `_rebuild_nexus` 只在丢基地后暂停出兵攒钱，但没能力阻止其他系统（升级/追加产能/塔）继续抽血。
+
+### 改进点（≥3）并落地为 O157
+
+1. **压缩到 1-2 基地时不限流塔重建**：`cannon_target_capped` 增加 `bases` 参数，当 `bases <= 2` 时直接返回 `dynamic_count`（max 防御），不再因攒舰队而压到 `ec.min`；把生存优先级提到舰队之上。
+2. **提高 carrier 分矿 baseline 塔数**：`flows.yml` carrier 的 `expansion_cannons` 从 `{min:4, max:10}` 调到 `{min:6, max:12}`，让 3-4 基地阶段每矿炮塔更厚，减少被单波 bio/地面直接穿矿的概率。
+3. **基地丢失后进入“重建+防守” austerity**：当 `peak_bases > current_bases` 且 `current_bases <= 2` 时，掐掉非防御性开销（升级、追加产能、新扩张），把矿全部留给 Nexus 重建+炮塔/电池+地面保命兵；避免 3000 气 30 矿的死局空转。
+
+- **状态**：O157 已落地并通过单测，进入 bench 验证。
+
+
+## O157 落地与验证（2026-08-05）
+
+- **实现内容**：
+  1. `bot/production_plans.py` 新增 `mineral_crisis_gas_stop`：vespene≥1500 & minerals≤300 & fleet_total<8 时把气矿农民拉回采矿，解决 O156 终局“3371 气、30 矿”的矿物枯竭死锁。
+  2. `cannon_target_capped` 增加 `vespene/fleet_total/bases` 参数：
+     - `bases <= 2` 时返回 `dynamic_count`（生存优先，不限流）；
+     - gas-rich+mineral-poor+fleet-small 时按 `ec.min` 限流，避免 16 塔吃掉本可造舰队的矿。
+  3. `extra_production_mineral_gate`（未改名前的追加产能矿门）增加 gas-rich 抬高矿门参数，气多矿少舰队小时提高追加产能的矿门槛，防止星门/兵营在矿物危机期继续抽血。
+  4. `bot/managers/production_manager.py`：
+     - `_rush_gas_stop` 引入 `_mineral_crisis_gas_stop` 状态，危机时把气矿农民拉回采矿；
+     - `_should_build_defense` 调用 `cannon_target_capped` 时传入 `vespene/fleet_total/bases`；
+     - `_build_extra_production` 调用时传入 `vespene/fleet_total`。
+  5. `flows.yml` carrier 的 `expansion_cannons` 从 `{min:4, max:10}` 调到 `{min:6, max:12}`。
+
+- **验证**：单测 617 passed / 1 skipped。
+  - 修正了 O157 新增测试 `test_gas_rich_but_fleet_large_no_extra_cap` 参数与断言矛盾的问题（minerals 300 低于 fleet_mineral_cost 350，老逻辑本就会限流；改为 minerals=400 并拆分老逻辑限流用例）。
+  - 同步更新了 `test_flow_config.py` 对 carrier `expansion_cannons` 的断言到 (6, 12)。
+
+- **下一步 bench**：`o157-vh-zerg-power` 5 局 VeryHard Zerg Power @AbyssalReefLE，timeout 900；若仍败则继续尸检 → O158。
+
+
+## O157 bench 尸检：carrier @AbyssalReefLE vs VeryHard Zerg/Terran Power（2026-08-05）
+
+- **bench 配置**：双 lane 并行 `poetry run python bench.py --flow carrier --diff VeryHard --race {Zerg,Terran} --ai-build Power --map AbyssalReefLE -n 5 --tag o157-vh-* --timeout 900`；各跑 1 局后 signature 一致且为长时败局，提前终止。
+- **战绩**：Zerg Power 0-1，Terran Power 0-1（未跑满 5 局）。
+
+### 关键数据
+
+| 对局 | 结果 | 时长 | 峰值 | 终局 |
+|---|---|---|---|---|
+| Zerg Power game_01 | Defeat | 1095.8s | 4 基地 / 67 农民 / 18 炮塔 / 6 暴风 + 1 航母 | 农民被抄光，经济崩盘 |
+| Terran Power game_01 | Defeat | 1140.6s | 3 基地 / 57 农民 / 13 炮塔 / 7 暴风 + 1 航母 | 缩成 1 基地被磨死 |
+
+### 死因
+
+1. **舰队出门导致基地被抄**：O157 把 Power 局寿命从 O156 的 800s 级延长到 1100s+，但中盘舰队仍主动出门/追击，分矿/主矿被敌方持续地面小队轮抄，农民死光后经济断气。
+2. **航母数量仍不足**：两局虽然各产出一艘航母，但舰队主体仍是暴风；对 Power 持续中盘波次，航母成型慢、拦截机数量有限，站桩输出不够。
+3. **基地数过多分散防御**：`auto_expand.max_bases=4` 时 4 基地防御面太散，VeryHard Power 一波穿一个矿即经济崩塌。
+
+### 改进点（≥3）并落地为 O158
+
+1. **基地 ≤2 时舰队强制守家**：`bot/managers/combat_manager.py` 增加 `_home_guard`：当 `order.get("stance") is None` 且 `self.ai.townhalls.amount <= 2` 时，`attack_target = self._defend_anchor()`，避免舰队出门导致基地被逐个蚕食。
+2. **压扩到 3 矿集中防守**：`flows.yml` carrier `auto_expand.max_bases` 从 4 改为 3，减少防御面分散。
+3. **继续验证航母配额与塔重建协同**：O157 已放宽 `cannon_target_capped` 与 `mineral_crisis_gas_stop`，O158 通过守家进一步验证中盘经济能否保住，并观察暴风/航母比例是否改善。
+
+- **状态**：O158 已落地并通过单测（626 passed / 1 skipped），进入 bench 验证。
+
+
+## O158 落地与验证（2026-08-05）
+
+- **实现内容**：
+  1. `bot/managers/combat_manager.py`：新增 `_home_guard` 判据，基地 ≤2 个且司令未下 stance 时，舰队强制守家（`attack_target = self._defend_anchor()`），避免舰队出门导致基地被抄。
+  2. `flows.yml` carrier 的 `auto_expand.max_bases` 从 4 改为 3，集中防守。
+  3. `tests/test_flow_config.py` 同步更新 `max_bases` 断言到 3。
+
+- **验证**：单测 626 passed / 1 skipped。
+
+- **下一步 bench**：`o158-vh-zerg-power` / `o158-vh-terran-power` 各 5 局 VeryHard Power @AbyssalReefLE，timeout 900；若仍败则继续尸检 → O159。
+
+
+## O158 bench 尸检：carrier @AbyssalReefLE vs VeryHard Zerg Power（2026-08-05）
+
+- **bench 配置**：`poetry run python bench.py --flow carrier --diff VeryHard --race Zerg --ai-build Power --map AbyssalReefLE -n 5 --tag o157-vh-zerg-power --timeout 900`（启动时 O157 已落地；game_03 起崩溃/超时，判断为并发 SC2 客户端冲突，已清理）。
+- **战绩**：Zerg Power 0-2（第 3 局无结果，已停）。
+
+### 关键数据
+
+| 对局 | 结果 | 时长 | 峰值 | 终局 |
+|---|---|---|---|---|
+| game_01 | Defeat | 1095.8s | 4 基地 / 71 农民 / 26 炮塔 / 9 暴风 + 0 航母 | 0 基地 1 农民，被多线磨死 |
+| game_02 | Defeat | 707.9s | 1 基地 / 22 农民 / 5 炮塔 / 1 暴风 + 1 先知 | 0 基地 1 农民，单矿被一波穿 |
+
+### 共同死因
+
+1. **前期过度采气，矿物枯竭，舰队难产**
+   - game_01：394s 时气体 1688、矿物 145、舰队 0；562s 才出第一艘暴风。
+   - game_02：全程单矿，气体 1500+ 但矿物 0-300，600s 敌 25 supply 压境时我方仅 16 supply。
+   - 根因：`mineral_crisis_gas_stop` 触发太晚（vespene≥1500 & minerals≤300 & fleet<8），等到触发时矿物已经贴 0，农民长期停滞。
+
+2. **舰队成型前盲目扩张/铺塔**
+   - game_01：fleet=0 时已开二矿并铺塔；500s 开三矿、640s 开四矿，但每矿塔分散（三矿 0 塔），被 Power 一波穿一个。
+   - game_02：单矿情况下仍把资源摊到塔和科技，舰队只有 1 艘，无法抵挡中盘波次。
+   - 根因：`should_expand_dynamic` 只看农民饱和/优势/首扩时间，没有舰队规模和矿物门槛。
+
+3. **塔重建限流阈值过松**
+   - game_01 矿物 300-400 且气体烂银行时，塔目标仍按动态数重建，吃掉本可造舰队的矿。
+   - 根因：`cannon_target_capped` gas-rich 门限 `vespene≥1000 & minerals<400 & fleet<8` 过晚/过松。
+
+### 改进点（≥3）并落地为 O159
+
+1. **提前并强化矿物危机停气**：`mineral_crisis_gas_stop` 阈值从 `vespene≥1500 & minerals≤300 & fleet<8` 调整为 `vespene≥800 & minerals≤400 & fleet<5`；基地≤2 时矿物阈值放宽到 600，更早把气矿农民拉回采矿。
+2. **扩张增加舰队/矿物门槛**：`should_expand_dynamic` 新增 `fleet_total` / `minerals` 参数，首扩之后（bases≥2）要求 `fleet_total≥3` 或 `minerals≥500` 才允许继续扩张，避免 fleet=0 时连开三/四矿。
+3. **更严的塔重建限流**：`cannon_target_capped` gas-rich 门限调整为 `vespene≥800 & minerals<500 & fleet<5`，减少塔在矿物危机期抽血，把矿留给舰队和农民。
+
+- **状态**：O159 已落地并通过单测（627 passed / 1 skipped），进入 `REALTIME=True` bench 验证。
+
+
+## O159 bench 尸检：carrier @AbyssalReefLE vs VeryHard Zerg Power（2026-08-05）
+
+- **bench 配置**：`poetry run python bench.py --flow carrier --diff VeryHard --race Zerg --ai-build Power --map AbyssalReefLE -n 5 --tag o159-vh-zerg-power --timeout 1200 --realtime`。
+- **战绩**：第 1 局 1168s 仍无结果，bench 判定超时/崩溃并重试一次；重试局仍在前期时停止 bench 进入 O160 迭代。本组合 0 胜（有效局 0 胜）。
+
+### 关键数据（game_01 超时前快照）
+
+| 时间 | minerals | vespene | workers | bases | army | 炮塔 |
+|---|---|---|---|---|---|---|
+| 511s | 135 | 720 | 50 | 3 | 1 先知 | 15 |
+| 589s | 500 | 65 | 60 | 3 | 2 暴风 + 1 追猎 + 1 叉 + 1 先知 | 17 |
+| 918s | 110 | 1473 | 69 | 4 | 9 暴风 + 4 叉 + 1 先知 | 23 |
+
+### 死因
+
+1. **舰队成型后仍矿物枯竭、气烂银行**
+   - 918s 时 vespene=1473、minerals=110， fleet_total=9 艘，但矿物收入不够，星门/塔/科技全停产。
+   - 根因：`mineral_crisis_gas_stop` 仍绑 `fleet_total<5`，舰队成型后不再停气，农民继续采气，矿物永远补不上。
+
+2. **塔在矿物地板上继续抽血**
+   - 918s 时 minerals=110，塔目标仍高达 23 座，且 `idle_builder` 仍在等钱造 PhotonCannon。
+   - 根因：`cannon_target_capped` 没有矿物硬地板，gas-rich 限流只看 vespene≥800；当 minerals<250 时仍按动态数重建。
+
+3. **扩张门槛太松，经济面持续摊薄**
+   - 511s 已 3 基地、fleet=0；918s 出现 4 基地。
+   - 根因：`should_expand_dynamic` 首扩后用 OR 门（fleet≥3 或 minerals≥500），矿多但无舰队时仍会扩张；且 max_bases=3 未有效阻止第 4 矿（townhalls.amount 含 pending 时计数漂移）。
+
+### 改进点（≥3）并落地为 O160
+
+1. **矿物危机停气不再硬绑 fleet 规模**：`mineral_crisis_gas_stop` 触发改为 `vespene≥600 & minerals≤300`（基地≤2 时阈值 400），恢复阈值下调为 `vespene<300 或 minerals>500`，舰队成型后矿物枯竭仍会把气矿农民拉回采矿。
+2. **塔重建加矿物硬地板**：`cannon_target_capped` 新增 `mineral_floor=250`，`minerals<250` 时直接压回 min，避免塔抽干舰队矿；gas-rich 阈值同步降到 600。
+3. **扩张门槛收紧为 AND 并双保险**：`should_expand_dynamic` 首扩后要求同时满足 `fleet_total≥3` **且** `minerals≥500`；`flows.yml` carrier `max_bases` 保持 3，减少经济面摊薄。
+
+- **状态**：O160 已落地并通过单测（626 passed / 1 skipped），进入 `REALTIME=True` bench 验证。
+
+
+## O160b bench 尸检：carrier @AbyssalReefLE vs VeryHard Zerg Power（2026-08-05）
+
+- **bench 配置**：`poetry run python bench.py --flow carrier --diff VeryHard --race Zerg --ai-build Power --map AbyssalReefLE -n 5 --tag o160b-vh-zerg-power --timeout 900 --realtime`。
+- **战绩**：game_01 未结束即判定失败（手动停止 bench 进入迭代），有效局 0 胜。
+
+### 关键数据（game_01 运行中快照）
+
+| 时间 | minerals | vespene | workers | bases | army | 炮塔 | 备注 |
+|---|---|---|---|---|---|---|---|
+| 376s | 80 | ~1400 | 20 | 1 | 9 叉 + 2 追猎 | 5 | O131 死锁保险丝熔断，fleet=False |
+| 450s | 0 | 1658 | 20 | 1（刚开 2 矿） | 9 叉 + 2 追猎 | 5 | 刚拍下首座 STARGATE |
+| 527s | 0 | 1658 | 20 | 2 | 9 叉 + 2 追猎 | 9 | 二矿一落即补到 9 塔，无舰队 |
+
+### 死因
+
+1. **Protoss 没有专用 build order，农民停产**
+   - ares DataManager 对所有种族都选 `TempestRush`；该 opener `ConstantWorkerProductionTill: 0`，`OpeningBuildOrder` 只到 14 supply。
+   - bot 层 `ProductionManager._update` 对 Protoss 没有显式注册 `BuildWorkers`，农民完全依赖 build runner。
+   - 结果 527s 仅 20 农民，经济无法支撑舰队+塔+科技。
+
+2. **二矿塔 baseline 过高，fleet<3 时仍铺 6+ 塔**
+   - `flows.yml` carrier `expansion_cannons: {min: 6, max: 12}`，二矿刚落 `defense_syncs_with_nexus` 即启动分矿塔防。
+   - `cannon_target_capped` 在 `bases<=2` 时完全不限流（O157 生存优先），fleet=0 也把目标拉到 6-9 塔。
+   - 9 塔 × 150 矿 = 1350 矿，直接吃掉首舰/舰队航标/农民的矿。
+
+3. **农民干等造建筑，采矿未最大化**
+   - state 中多次出现 `idle_builder: 农民 xxx 干等3s(等钱造PHOTONCANNON/NEXUS/PYLON)`。
+   - 矿物被塔和科技押金锁死后，农民被 BuildStructure 钉在建造点等钱，进一步压低收入。
+
+### 改进点（≥3）并落地为 O161
+
+1. **为 carrier 添加专用经济开局 CarrierOpener**
+   - `protoss_builds.yml` 新增 `CarrierOpener`：`ConstantWorkerProductionTill: 34`，`OpeningBuildOrder` 把农民线拉到 30 supply。
+   - `bot/main.py` 在 `on_start` 中检测 `BUILD==carrier`，调用 `build_order_runner.switch_opening("CarrierOpener")`，确保 carrier 不再用 TempestRush 开局停产农民。
+
+2. **舰队成型前压低 expansion_cannons baseline**
+   - `bot/production_plans.py` 新增 `expansion_cannon_min_dynamic()`：fleet_total < 3 时把 `ec.min` 压到 3，成型后恢复 6。
+   - `bot/managers/production_manager.py` 在 `_build_defense` 中调用该函数，避免二矿一落就铺 6 塔。
+
+3. **基地压缩时仍对未成规模舰队限流**
+   - 修改 `cannon_target_capped`：`bases<=2` 不再无条件不限流，仅在 `fleet_total>=3` 时解除限流；fleet<3 时继续按 min 限流，保舰队经济。
+
+- **状态**：O161 已落地并通过单测（630 passed / 1 skipped），进入 `REALTIME=True` bench 验证。
+
+
+---
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O161 REALTIME bench，game_01/02 双 timeout）
+
+### 现象
+
+`poetry run python bench.py --flow carrier --diff VeryHard --race Zerg --ai-build Power --map AbyssalReefLE -n 5 --tag o161-vh-zerg-power --timeout 900 --realtime`
+
+- **game_01**：打到 865.8 秒无结果，最终记 `ERROR (1803s)`。
+- **game_02**：第一局打到 866.4 秒无结果，bench 自动重试第二局（仍在进行中时被停止）。
+- 两局共同特征：舰队规模其实已成型，但游戏无法在 15 分钟内结束。
+
+### 根因尸检（≥3）
+
+1. **静态防御严重超配，把舰队矿吸干**
+   - game_01：21 门光子炮；game_02：28 门光子炮。
+   - `flows.yml` carrier `expansion_cannons: {min: 6, max: 12}` 是**按每基地**计算的目标。3-4 基地时总炮塔目标达到 18-36 门，实际造出 21-28 门。
+   - 28 门炮 × 150 矿 = 4200 矿，约等于 12 艘航母/暴风的矿物成本，直接挤占舰队产能。
+   - 炮塔还会占用建造农民和建造槽，state 中多次出现 `idle_builder: 农民 xxx 干等3s(等钱造PHOTONCANNON/NEXUS)`，进一步压低采矿收入。
+
+2. **开局完全盲打，敌科技发现太晚**
+   - game_01：GreaterSpire/Hive 在 841s/845s 才发现（约 14 分钟）。
+   - game_02：SpawningPool/Spire/InfestationPit/Hive 在 646s-654s 才发现（约 11 分钟）。
+   - 原因：`bench.py` 未下发 `scout=on`，`_handle_scout` 只在 Zerg 每 60 秒循环 scout 且必须先有一次成功派遣后才会继续；实际首探机从未派出，导致全局长时间无情报。
+
+3. **主基 siege 也按 12 门塔拉满，进一步失血**
+   - `main_siege: {cannons: 12}` 在敌压上主基时额外注册 12 门塔。
+   - carrier 流矿物应优先变舰队和农民，主基 siege 12 门塔会一次性抽走 1800 矿，舰队重建窗直接被拖垮。
+
+4. **fleet 成型后仍不推出去，在家蹲到超时**
+   - game_02 到 866s 已有 17 暴风 + 4 航母 + 24 拦截机，supply 195/200，但仍在不断补塔/补农民。
+   - 虽然 `combat_manager` 有 carrier 推进闸，但海量炮塔建设和持续的小队骚扰把舰队永远钉在防御跑步机里，加上没侦查找不到敌军薄弱点，最终拖到 15 分钟 timeout。
+
+### 改进点（≥3）并落地为 O162
+
+1. **大幅压缩 carrier 流炮塔预算**
+   - `flows.yml` carrier `expansion_cannons: {min: 6, max: 12}` → `{min: 2, max: 4}`（每基地），3 基地总炮塔目标从 18-36 降到 6-12。
+   - `flows.yml` carrier `main_siege.cannons` 12 → 6，主基 siege 不再堆 12 门塔。
+   - 同步更新 `tests/test_flow_config.py` 和 `tests/test_main_siege.py` 的 shipped 配置断言。
+
+2. **开局自动派一次探机，解决盲打问题**
+   - `bot/main.py`：新增 `_auto_scout_done` 标记；`_handle_scout` 在 `steer_order.scout != "on"` 时，若游戏时间 >12 秒且还没自动派过，自动抽一个农民去侦察。
+   - 自动 scout 成功后标记完成，后续仍走原有 Zerg 60 秒循环 scout 或手动 `scout=on` 命令，互不冲突。
+
+3. **把省下的矿和建造槽还给舰队**
+   - 炮塔目标降低后，`cannon_target_capped` 和 `expansion_cannon_min_dynamic` 的限流逻辑会自然把矿物让给星门/舰队航标/航母。
+   - 农民 idle_builder 事件中的 "等钱造炮塔" 应显著减少，采矿效率回升。
+
+- **状态**：O162 已落地，单测通过，进入 `REALTIME=True` bench 重新验证。
+
+
+---
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O162 REALTIME bench，game_01 早期崩盘）
+
+### 现象
+
+O162 bench 启动后 game_01 正常运行，但约 4 分半时主动停止观察：
+- 273.3 秒（约 4:33）：24 农民、2 基地、8 水晶、2 气矿、1 锻造炉、1 光子炮。
+- **零科技建筑**：没有 GATEWAY / CYBERNETICSCORE / STARGATE / FLEETBEACON。
+- **零军队**：`army: {}`。
+- 矿物长期贴 0（75-360 振荡），气体却积到 928。
+
+### 根因尸检（≥3）
+
+1. **开矿持有期冻结全部核心科技链**
+   - `auto_expand.first_expand_at: 150` 让二矿在 2 分半左右即触发 `_expand_holding=True`。
+   - `core_tech_allowed(expand_holding=True, fleet_transitioned=False)` 返回 False，`_build_flow_structures` 直接 return，GATEWAY/CYBERNETICCORE/STARGATE 全被冻结。
+   - 结果：bot 只造农民、水晶、气矿、Nexus，4 分半仍零兵零科技。
+
+2. **气矿太早、矿物枯竭**
+   - `_build_flow_structures` 在持有期仍补满 2 气/基地（因为 gas 不被 core_allowed 冻结）。
+   - 14-21 农民时就把 4 个农民派去采气，矿物收入被抽空，连 150 矿的 GATEWAY 都拍不下。
+
+3. **水晶过度建设**
+   - 273 秒时已建 8 根水晶，占用大量矿物；其中多根是 `_ensure_expansion_pylon` 和 O55 自救逻辑反复补的。
+   - 矿物被水晶和气矿吸走后，首兵营永远排不上队。
+
+### 改进点（≥3）并落地为 O163
+
+1. **开矿持有期也强制拍下首 GATEWAY**
+   - `bot/managers/production_manager.py` 在 `_build_flow_structures` 的 `if not core_allowed: return` 前加例外：若尚未有 GATEWAY（含 pending），调用 `_build_core_structure(UnitID.GATEWAY)`。
+   - 保证经济开局不至于 4 分半零科技，至少能出叉/追猎应急和解锁后续 CYBERNETICCORE。
+
+2. **保留 O162 的炮塔和侦查优化**
+   - `flows.yml` carrier `expansion_cannons {2,4}` 与 `main_siege.cannons=6` 不变，避免回到 21-28 门塔的矿出血。
+   - `bot/main.py` 开局自动 scout 不变，保证前期有情报。
+
+3. **后续观察点**
+   - 首 GATEWAY 解冻后，观察是否仍因矿物不足迟迟拍不下 CYBERNETICCORE/STARGATE；若复现，再考虑把 `first_expand_at` 延后或限制早期气矿数量。
+
+- **状态**：O163 已落地，单测通过，进入 `REALTIME=True` bench 重新验证。
+
+
+### O163 补充修正（build order 内嵌科技链）
+
+仅解冻 `_build_flow_structures` 中的首 GATEWAY 仍不足：o163-vh-zerg-power game_01 在 188s 矿物仅 105，连 150 矿的 GATEWAY 都拍不下。根因是 presumed 窗优先拍下 FORGE（150 矿）+ 双气矿（150 矿），科技链被挤到矿物归零后 still 无法启动。
+
+**补充落地**：
+- `protoss_builds.yml` 的 `CarrierOpener` 直接把 `17 gate`、`22 core`、`26 stargate` 写进 `OpeningBuildOrder`。
+- 这样 GATEWAY/CYBERNETICCORE/STARGATE 由 build runner 在固定 supply 触发，不受 bot 层 `core_allowed=False` 或 presumed 防御链的资源优先级影响。
+- `bot/managers/production_manager.py` 中 O163 的「持有期也拍首 GATEWAY」保留作为双保险，避免 build runner 因矿物不足卡住时 bot 层仍尝试补科技。
+
+- **状态**：O163 修正已落地，单测通过，进入 `REALTIME=True` bench 重新验证。
+
+
+### O163c 再修正（关闭 ConstantWorkerProductionTill）
+
+o163b game_01 在 5 分半时：34 农民、2 基地、8 水晶、2 兵营、4 气矿、3 塔，**仍无 CYBERNETICCORE/STARGATE**。GATEWAY 虽按 build order 在 3:05 落地，但 `ConstantWorkerProductionTill: 34` 让 runner 在 GATEWAY 后仍疯狂插农民，CYBERNETICCORE(150 矿)/STARGATE(150 矿)/PYLON/EXPAND 全在抢所剩无几的矿物，科技链再次被饿死。
+
+**再落地**：
+- `protoss_builds.yml` 的 `CarrierOpener.ConstantWorkerProductionTill` 从 34 改为 0，农民全部显式写入 `OpeningBuildOrder`。
+- 这样 runner 严格按顺序执行：GATEWAY → CYBERNETICCORE → STARGATE，不会被自动农民插队和吸干矿物。
+- bot 层在 build order 完成后接管经济和产能，维持中后期的农民/航母产出。
+
+- **状态**：O163c 已落地，单测通过，进入 `REALTIME=True` bench 重新验证。
+
+
+### O163c game_01 尸检（@AbyssalReefLE vs Zerg VeryHard/Power，timeout）
+
+### 现象
+- 870 秒（14:30）仍无胜负，被 bench timeout 900 秒判负。
+- 军力：**11 暴风 + 2 航母 + 5 追猎 + 1 先知**，supply 157/175；敌方可见 army 约 60-80 supply。
+- 经济：4 基地、58 农民、存款 2400/1400。
+- 防御：主矿 + 分矿共 **17 门光子炮**（O162 目标 6-12 仍超标，但实际压力来自 Power 持续小队）。
+
+### 根因尸检（≥3）
+
+1. **舰队成型后被 `_hot_base_anchor` 钉死在防守跑步机**
+   - carrier 推进闸要求 `should_push_advantage` 或 `full_pop_all_in` 才放行。
+   - 14:30 时我方 157 supply 对敌 60-80 supply 看似优势，但 `supply_used - supply_workers = 97`，敌方可见 supply 在 60-80 波动，margin 条件在 0/15 边界震荡，经常不满足。
+   - 每次 Power 派 10-18 地面小队扰分矿，`_hot_base_anchor(min_threat=25)` 以下即召回舰队；舰队刚出门就被拉回家，500+ 秒寸功未立。
+
+2. **满人口/高存款窗口未触发 `full_pop_all_in`**
+   - 157/175 尚未达到 95% 满人口，5000 矿存款门槛也未触发（仅 2400）。
+   - 实际上航母/暴风产能是瓶颈，再等只会给 Zerg 补满腐化/飞蛇，优势窗口被浪费。
+
+3. **推进闸对「舰队临界质量」后没有强制 timer**
+   - 暴风本身射程 10 碾压腐化 6，11 暴风 + 2 航母已是决战级力量；
+   - 但 bot 仍按普通优势逻辑犹豫，等到 timeout 仍未推出去。
+
+### 改进点（≥3）并落地为 O164
+
+1. **舰队 ≥10 且时间 >10 分钟强制推进**
+   - `bot/managers/combat_manager.py`：在 carrier 推进闸增加 `_force_push` 条件：
+     `_fleet_count >= 10 and ai.time > 600` 时跳过 `should_push_advantage` / `full_pop_all_in` 检查，只要 `carrier_push_safe` 通过就推进。
+   - 避免舰队成型后继续蹲家 timeout。
+
+2. **硬对空安全线不变**
+   - 强制推进不豁免 `carrier_push_safe`：敌方硬对空（腐化/维京/凤凰/飞蛇）超过 `fleet_count * 1.5` 仍蹲家。
+   - 防止「强行送舰队」换另一种失败。
+
+3. **单测覆盖三种边界**
+   - `tests/test_push_gate.py` 新增：
+     - `test_force_push_after_ten_minutes`：10 分钟后舰队 ≥10 且无敌硬对空 → 推进；
+     - `test_force_push_before_ten_minutes_holds`：时间未到 → 仍按原判据；
+     - `test_force_push_respects_hard_aa`：硬对空超标 → 仍蹲。
+
+- **状态**：O164 已落地，单测通过，进入 `REALTIME=True` bench 重新验证。
+
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O164 REALTIME bench，game_01 timeout）
+
+### 现象
+
+O164 REALTIME bench 启动后 game_01 进行到约 12 分钟仍无胜负，最终被 bench timeout（900 秒）判无结果、重试一局：
+- 730 秒（约 12:10）：5 暴风 + 1 先知 + 少量地面，supply 109/127，矿物 20、气体 629。
+- 农民因 Zerg Power 地面小队反复扰家而撤离， fleet 数量始终起不来。
+- 重试局同样开局，chrono 拖到 00:44 才触发。
+
+### 根因尸检（≥3）
+
+1. **本机 SC2 环境 Protoss 开局只有 8 农民（非标准 12）**
+   - `state_000000.0.json` 稳定显示 `workers=8, supply=8/13`（用最小 python-sc2 bot 复现确认）。
+   - `CarrierOpener` 原 build order 从 supply 12 起触发：第一步 `12 chrono @ nexus` 要额外造 4 农民才能执行，导致 chrono 拖到 40-45 秒；后续 `15 supply / 17 gate / 22 core / 26 stargate` 全部顺延。
+   - 结果 stargate 在 6:33 才拍下，fleet 成型太晚，O164 的强制推进条件（fleet≥10 且 t>600）直到 timeout 都未触发。
+
+2. **兵营建好前主动下 1 个气矿**
+   - `_build_flow_structures` 逻辑：`GATEWAY 未建成时 max_gas_buildings=1`，24 秒左右就派农民下气矿。
+   - 8 农民开局经济本已紧张，75 矿的气矿进一步拖慢 pylon/gate/cyber，形成「气矿→没钱→建筑更晚→农民更慢」的负反馈。
+
+3. **build order 阈值与真实开局 mismatch 被长期忽略**
+   - 此前所有 bench（o160/o161/o162/o163 系列）的 state_000000 都是 8 农民，但一直按标准 12 农民设计 build order；这解释了为何 carrier 经济开局屡屡「timing 对不上」、建筑被拖后 1-2 分钟。
+
+### 改进点（≥3）并落地为 O165
+
+1. **CarrierOpener 全部 supply 阈值 -4，对齐 8 农民开局**
+   - `protoss_builds.yml`：`12 chrono @ nexus` → `8 chrono @ nexus`，`15 supply` → `11 supply`，`17 gate` → `13 gate`，`22 core` → `18 core`，`26 stargate` → `22 stargate`，后续农民/水晶线同步下调。
+   - 目标：让 chrono/农民/建筑的相对节奏恢复到原本为 12 农民开局设计的 timing。
+
+2. **农民 <12 且兵营未好时暂停 early gas**
+   - `bot/managers/production_manager.py` 中 `_build_flow_structures` 的 opener 逻辑改为：
+     `GATEWAY in structures_dict ? 2*ready_bases : (workers >= 12 ? 1 : 0)`。
+   - 把早期 75 矿省给 pylon/gate/cyber，避免 8 农民开局被气矿吸血。
+
+3. **保留 O164 强制推进作为终局保险**
+   - `bot/managers/combat_manager.py` 的 `_force_push` 条件不变；fleet 成型后仍会在 10 分钟强制推进，避免蹲家 timeout。
+   - 本次修复主攻「fleet 成型不了」的根因，强制推进闸继续作为成型后的出口。
+
+- **状态**：O165 已落地，单测通过，进入 `REALTIME=True` bench 重新验证。
+
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O165 REALTIME bench，game_01 timeout 续检）
+
+### 现象
+
+O165 REALTIME bench 启动后 game_01 进行到 884 秒仍无胜负，最终被 bench timeout（900 秒）判无结果；同一任务自身也超时，未能完成 5 局。
+- 153 秒：workers=15, minerals=10, structures 只有 forge/gateway/5 水晶/1 气矿，CYBERNETICCORE 未建。
+- 250 秒：workers=20, minerals=150, structures 只有 forge/gateway/1 光子炮/9 水晶/2 气矿，CYBERNETICSCORE 仍未建；一个农民从 223 秒起就在等钱造 NEXUS。
+- 866 秒：workers=8, bases=1, army=6 tempest + 1 oracle + 1 stalker；敌方 16 corruptor + 地面小队反复扰家，经济已被磨穿。
+
+### 根因尸检（≥3）
+
+1. **前期水晶/防御/气矿过度消费，CYBERNETICCORE/STARGATE 被挤到 4:53/6:14**
+   - 8 农民开局经济极薄，presumed 防御链（forge + 水晶 + 首炮）+ 自动补的水晶/气矿在 150-250 秒间消耗了约 900 矿。
+   - 这笔矿正好等于 `CYBERNETICCORE(150) + STARGATE(150) + NEXUS(400)` 的启动资金，科技链和二矿双双被饿死。
+   - `_build_flow_structures` 在 `_expand_holding` 期间把 `core_allowed` 置 false，进一步冻结了 CYBERNETICCORE/STARGATE。
+
+2. **二矿从未落地：first_expand_at=150 与 8 农民经济 mismatch**
+   - `flows.yml` 的 `first_expand_at=150` 是按 12 农民开局设计的；8 农民开局在 150 秒时存款只有 10，根本拍不下 Nexus。
+   - 之后虽然触发了 `_want_expand`，但 Nexus 派工后资金被其他建筑持续抽走，农民在扩张点干等 600+ 秒仍无法开工。
+
+3. **农民协防战损过大，经济被 Power 小队滚雪球磨死**
+   - 832 秒事件显示「首波农民协防×10」；后续连续出现「农民骤减 5/9/6/4」。
+   - `escort_pull_cap` 旧默认 `keep_mining=6, cap=10`，在 Power 中后期反复扰家时把采矿农民拉空，worker 从 21 崩到 8，再无力恢复 Nexus/产能。
+
+### 改进点（≥3）并落地为 O166
+
+1. **延后首扩 deadline 并保护核心科技资金**
+   - `flows.yml` carrier `first_expand_at` 从 150 改为 210，给 CYBERNETICCORE/STARGATE 留出窗口。
+   - `bot/managers/production_manager.py` 新增 `_early_core_missing` 与 `_nexus_waiting` 两个闸：
+     - 单矿早期 CYBERNETICCORE/STARGATE 缺失且无 rush/威胁时，额外产能水晶、buffer 水晶、前线水晶、F2 塔/电池、追加产能全部让位。
+     - 只要已有农民被派去造 Nexus 但钱不够，就把余钱锁给 Nexus，禁止其他建筑插队。
+
+2. **开矿持有期不再冻结 CYBERNETICCORE/STARGATE**
+   - `_build_flow_structures` 的 `core_allowed` 增加 `_early_core_missing` 豁免，避免「Nexus 工人干等 + 科技链冻结」的两头空死锁。
+
+3. **收紧协防农民上限，保住经济底线**
+   - `bot/managers/production_manager.py` 调用 `escort_pull_cap` 时改为动态 `keep_mining=max(4, workers//2)`、`cap=6`。
+   - 中后期 worker 多的时候保留至少一半采矿，避免反复协防把经济拉崩；农民过少时优先保矿不参战。
+
+- **状态**：O166 已落地，单测通过（634 passed, 1 skipped），进入下一局 bench 验证。
+
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O166 REALTIME bench，game_01 崩溃）
+
+### 现象
+
+O166 REALTIME bench 启动后 game_01 在 76 秒（游戏内）后无 state 写入，`run.log` 在 iteration 1795 处中断；bench 判定无结果并自动重试，重试局同样崩溃。
+- `state_000076.4.json`：workers=14, minerals=59, structures 只有 2 pylon + 1 assimilator + 1 nexus，无 forge/gateway/cybercore。
+- `run.log` traceback：`UnboundLocalError: cannot access local variable '_early_core_missing' where it is not associated with a value`，触发点 `bot/managers/production_manager.py:396`。
+
+### 根因尸检（≥3）
+
+1. **Python 局部变量前向引用导致每局必崩**
+   - O166 把 `_early_core_missing` / `_nexus_waiting` 的定义放在 `update()` 中部（原 lines 437-455），却在定义之前（line 396-397）的「额外产能水晶」分支里就读取它们。
+   - Python 函数内一旦某变量被赋值，编译器就把它视为局部变量；任何提前引用都会抛 `UnboundLocalError`。这不是逻辑错误，是作用域顺序错误，单测未覆盖到实际 `update()` 执行路径因此漏检。
+
+2. **单测未能拦截运行时崩溃**
+   - 634 个单测全部通过，但没有测试会真正调用 `ProductionManager.update()` 的完整 early-game 分支（需要 mock `self.ai.race == Race.Protoss` + carrier flow + 实际建筑/资源状态）。
+   - 此前「修复变量作用域 bug 并重跑单测」被误标为 done，实际代码里定义仍位于使用之后，说明验证环节只看了单测绿标，没跑实际游戏/集成 smoke。
+
+3. **O166 的拦截闸设计过粗，可能顺带饿死 build order 防御**
+   - 崩溃前的 state 显示 76 秒仍无 forge/gateway，说明 `_early_core_missing` 一旦生效，会把 presumed 防御链（forge）也按住；若对手是 rush，这将导致零防御开门。
+   - 即便修复作用域，仍需观察：carrier 单矿早期在保 CYBERNETICCORE/STARGATE/NEXUS 的同时，是否仍允许 `protoss_builds.yml`  opener 里的 gateway/forge 按 build order 正常落地。
+
+### 改进点（≥3）并落地为 O166-fix
+
+1. **把 `_early_core_missing` / `_nexus_waiting` 定义移到使用之前**
+   - `bot/managers/production_manager.py`：将这两个闸的计算提前到 `update()` 头部（extra-production-pylon 分支之前），并立即赋值给 `self._early_core_missing` / `self._nexus_waiting`。
+   - 删除原中部重复定义，保留 `_expand_holding` 在原位置计算并赋值给 `self._expand_holding`。
+
+2. **新增运行时 smoke 作为 bench 前的强制关卡**
+   - 单测通过后必须至少跑一局 headless/realtime 到游戏内 5 分钟以上，确认 bot 主循环不抛异常、build order 能推进，再启动正式 bench。
+   - 本次已执行：REALTIME=0 BUILD=carrier DIFF=VeryHard OPPONENT_RACE=Zerg AI_BUILD=Power MAP=AbyssalReefLE，成功跑过 6 分钟并完成 build order。
+
+3. **保留闸的精细度，但后续继续观察 forge/gateway 落地情况**
+   - O166 的闸目前只在「单矿早期、非 rush、非威胁、CYBERNETICCORE/STARGATE 缺失」时生效，理论上不会阻止 build order 注册 gateway/forge（它们不是 `_flow.core_structure_ids()`）。
+   - 但 8 农民开局资源仍然极紧，下一 bench 需重点尸检：forge 是否在 opener 预期时间内落地、Nexus 是否在 210 秒前后真正拍下、CYBERNETICCORE/STARGATE 是否被进一步延迟。
+
+- **状态**：O166-fix 已落地，单测通过（634 passed, 1 skipped），headless smoke 通过；准备重新启动 REALTIME bench。
+
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O166-fix REALTIME bench，game_01 经济崩盘）
+
+### 现象
+
+O166-fix bench 启动后 game_01 在 294 秒（4:54）被我主动停止：此时已必败，继续打只会 timeout。
+- 294s：24 农民、1 基地、2 星门已就绪、Cybercore 就绪、1 炮塔/1 Forge/1 Gateway/7 Pylon/2 气矿，军队只有 2 Stalker。
+- 存款：矿 280 / 气 424，Fleet Beacon 始终未建，星门空闲无产出。
+- 关键时间点：Forge 61s 派工等钱 → Gateway 71s 等钱 → PhotonCannon 125s 等钱 → CyberneticCore 158s 等钱 → Stargate 218s 等钱。
+
+### 根因尸检（≥3）
+
+1. **presumed 防御链在核心科技缺失时仍强下首塔，Cybercore 被拖到 158s**
+   - vs Zerg 探机失联后 `_presumed_rush` 从 55s 激活到 170s 判决落地，`_presumed_defense_chain` 硬编码 forge → 首塔供电水晶+首塔 → GW1 → 首叉。
+   - 首塔（150 矿）+ 供电水晶（100 矿）在 8 农民开局下直接吃掉 Cybercore 的资金窗，导致 Cybercore 从 opener 预期的 ~100s 拖到 158s，Stargate 拖到 218s。
+   - `_early_core_missing` 闸在 F2 段豁免了 `_presumed_rush` 和 `_unknown_defense`，所以首塔没有被拦住。
+
+2. **单矿 2 气矿过早，把本已稀缺的农民从矿线拉走**
+   - `_build_flow_structures` 在 Gateway 建好后即按 `2 * ready_bases` 允许下气矿，本机 1 基地时上限为 2。
+   - 8 农民开局到 165s 只有 17 农民，2 气矿需要约 6 个农民采气，剩余 11 个采矿，矿物收入被压到无法支撑 Cybercore→Stargate→FleetBeacon 的连续 150+150+300 矿支出。
+   - 结果气 424 烂在银行，矿始终 60-280 振荡，Fleet Beacon 买不起也建不了。
+
+3. **Fleet Beacon 被 `_expand_holding` 冻结，星门空转**
+   - `_build_flow_structures` 的 `core_allowed = core_tech_allowed(_expand_holding, _fleet_transitioned) or _early_core_missing`。
+   - `_early_core_missing` 只检查 CYBERNETICSCORE/STARGATE，不检查 FLEETBEACON；一旦这两座落成、`_want_expand` 触发（first_expand_at=210），`_expand_holding` 翻 true，Fleet Beacon 被冻结。
+   - 星门 263s 就绪后直到 294s 仍无 Fleet Beacon，无法生产 Tempest/Carrier，2 星门 + 424 气完全空转。
+
+### 改进点（≥3）并落地为 O167
+
+1. **核心科技缺失期只下 1 气矿**
+   - `bot/managers/production_manager.py` 的 `_build_flow_structures`：当 `_early_core_missing` 为真时，`max_gas_buildings` 强制压到 1（无论 Gateway 是否已好），把农民和矿留给 Cybercore/Stargate/FleetBeacon 链。
+
+2. **presumed 防御链首塔让位给核心科技**
+   - `bot/managers/production_manager.py` 的 `_presumed_defense_chain`：当 `self._early_core_missing` 为真时，forge 和 gateway 照建，但跳过 photon cannon 和 zealot。
+   - 真实 rush 局 `_rush_active` 为真 → `_early_core_missing` 为假 → 首塔仍正常下；非 rush 的 presumed/unknown 局不再用首塔拖慢科技链。
+
+3. **Fleet Beacon 纳入早期核心科技保护**
+   - `bot/managers/production_manager.py` 的 `_early_core_missing` 检查把 FLEETBEACON 也加入缺失列表；`core_allowed` 因此豁免 Fleet Beacon，避免 `_expand_holding` 把它冻住。
+   - 同步把 `_fleet_starved` 触发阈值从 600 气降到 400 气，作为 300s 后 `_early_core_missing` 到期的二次保险。
+
+- **状态**：O167 已落地思路，进入代码修改+单测+重跑 bench 验证。
+
+
+- **O167 热修**：O167 bench game_01 开局 52s 即因 1 气矿占用 75 矿导致 Forge/Gateway 双双等钱。进一步把「兵营落地前 1 气」改为「兵营落地前 0 气」，确保 Pylon/Gateway/Cybercore 链优先拿矿。代码已落地、单测通过，重启 bench `o167b-vh-zerg-power`。
+
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O167b REALTIME bench，game_01 经济链仍崩盘）
+
+### 现象
+
+O167b REALTIME bench 启动 game_01 后，在 169 秒（2:49）主动停止：经济链仍未走上正轨，必败。
+- 169s：18 农民、1 基地、1 CyberneticCore（在建）/1 Gateway/1 Forge/6 Pylon/0 气矿/0 军队。
+- 关键时间点：Pylon#1 52s → Forge 76s 等钱 → Gateway 88s 等钱 → Pylon#3 108s → CyberneticCore 137s 等钱 → Nexus 153s 等钱 → Pylon#6 161s。
+- 全程 0 气矿、0 军队，FleetBeacon 遥不可及；6 根 Pylon 吃掉 600 矿，是 Cybercore 被拖到 137s 的直接主因之一。
+
+### 根因尸检（≥3）
+
+1. **Pylon 过度建造，把核心科技资金窗吃光**
+   - AutoSupply 只要 `can_afford(PYLON)` 就注册水晶，8 农民开局收入低、农民持续生产，每攒够 100 矿就下一根 Pylon。
+   - `_ensure_expansion_pylon` 同时按"每个基地保底 2 根 Pylon"持续补水晶。
+   - 结果 161s 已有 6 Pylon（含初始），消耗 600+ 矿；Cybercore 直到 137s 才有钱拍下，Stargate/FleetBeacon 遥遥无期。
+
+2. **presumed 防御链仍过早下 Forge，150 矿拖慢 Gateway/Cybercore**
+   - O167 只拦了首塔/首叉，但 Forge 仍在 55s 触发后立刻派工。Forge 76s 等钱、Gateway 88s 等钱、Cybercore 137s 等钱，形成顺序阻塞。
+   - 8 农民开局下，Forge 的 150 矿是 Cybercore 资金窗的关键竞争者；vs Zerg Power 运营局这 150 矿保险不必要。
+
+3. **二矿触发过早，Nexus 把剩余矿吸干**
+   - `auto_expand.when_workers=16`，8 农民开局在 153s 已有 18 农民，`saturated` 条件触发，`ExpansionController` 开始派工下 Nexus。
+   - Nexus 400 矿 + Pylon  spam 直接把本可用于 Cybercore→Stargate→气矿的钱全部吸干；153s 出现 `idle_builder 等钱造 Nexus`。
+
+4. **气矿为 0，舰队科技链断气**
+   - 虽然 O167b 允许 Gateway 好后 max_gas=1，但矿被 Pylon/Forge/Nexus 吃光，根本无余钱下 75 矿的气矿。
+   - 169s 时 vespene=0，Cybercore 完成后也无法立刻转 Stargate（需要气），更无法支撑 Tempest/Carrier 生产。
+
+### 改进点（≥3）并落地为 O168
+
+1. **核心科技缺失期禁用 can_afford 触发 AutoSupply，只在 supply_left≤2 紧急放行**
+   - `bot/managers/production_manager.py`：注册 AutoSupply 时，若 `_early_core_missing` 为真则把 `can_afford` 视为 False。
+   - 避免"每有 100 矿就下一根 Pylon"，把矿让给 Cybercore/Stargate/FleetBeacon。
+
+2. **核心科技缺失期 `_ensure_expansion_pylon` 与动态扩张全部暂停**
+   - `_ensure_expansion_pylon` 开头判断 `_early_core_missing` 直接 return。
+   - `_want_dynamic_expand` 开头判断 `_early_core_missing` 直接返回 False，避免 Nexus 在 150-210s 吸干科技资金。
+
+3. **presumed 防御链在核心科技缺失期连 Forge 一起跳过**
+   - `bot/managers/production_manager.py` 的 `_presumed_defense_chain`：把 `_early_core_missing` 检查提前到 Forge 派发之前。
+   - 真实 rush 局 `_rush_active=True` → `_early_core_missing=False` → Forge/首塔/首叉链正常走；非 rush 运营局不再为不存在的 rush 付 150 矿保险。
+
+- **状态**：O168 已落地，单测 627 passed / 1 skipped，短时 smoke 验证中。
+
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O169 REALTIME bench，game_01 超时败局 + game_02/03 崩溃）
+
+### 现象
+
+O169 REALTIME bench game_01 运行至 874s 超时，未分胜负但经济/防线已崩盘；game_02/03 因 O17x 编辑引入 `UnitID.CYBERNETICCORE` 拼写错误（应为 `CYBERNETICSCORE`）在开局 0s 崩溃。
+- 874s 关键指标：49 农民、90 矿 / 1220 气、敌 36 supply 压境、我方 24 supply、2 基地且持续丢矿。
+- 全局 idle_builder 事件 **406 次**：PhotonCannon 193 次、Pylon 103 次、CyberneticScore 57 次、Gateway 53 次。
+- FleetBeacon 从 313s 到 520s+ 持续停滞（O110 自救循环：no_money），即星门就绪后超过 200s 拍不出 FB，气烂银行、舰队零产出。
+
+### 根因尸检（≥3）
+
+1. **前期农民/建筑工大量干等，采矿未最大化（司令观察）**
+   - 8 农民开局收入极紧，但 BuildStructure/AutoSupply/气矿派工路径仍频繁派出工人「到位等钱」。
+   - O11 watchdog 早期 grace=1s、early_age=3s，对 8 农民开局来说每等 1s 都滚雪球；game_01 开局即出现 Gateway/CyberneticScore 工人干等。
+   - `_build_flow_structures` 在 Gateway 好后即允许 1 气矿，Cybercore 未排队前就把 75 矿和 1 个农民拉走。
+
+2. **FleetBeacon 资金窗被 F2 防御塔持续抽干**
+   - Stargate 约 382s 就绪，但 FleetBeacon 直到 520s+ 才落地，期间 O110 持续报 `no_money`。
+   - 原因是 `_early_core_missing` 只在 time<300s 生效；300s 后 F2 照常铺 PhotonCannon/Pylon/电池，把 FB 的 300 矿持续吃掉。
+   - 塔越铺越多，舰队越晚成型，最终中局波次到脸时无足够 Tempest/Carrier，被 Zerg 地面滚平。
+
+3. **气矿过早，进一步挤压核心科技资金**
+   - `_early_core_missing` 期间仍允许 1 气矿（Gateway 已好的前提下），但 Cybercore 尚未排队，气矿 75 矿 + 农民占用直接拖慢 Cybercore→Stargate 链。
+   - game_01 200s 后气开始上涨，但矿始终 0-300 振荡，FB/Stargate/塔互相抢钱。
+
+### 改进点（≥3）并落地为 O170/O171
+
+1. **收紧开局等钱建筑工人的撤回阈值**
+   - `bot/main.py`：非 TOWNHALL 建筑在 time<120 时 grace 从 1s → 0.5s，early_age 从 3s → 1.5s。
+   - 钉点 1.5s 且 5s 收入补不上缺口就立即撤回采矿，减少前期采矿损失。
+
+2. **核心科技缺失期气矿进一步后移**
+   - `bot/managers/production_manager.py` 的 `_build_flow_structures`：`_early_core_missing` 期间，CyberneticScore 未排队/就绪前 `max_gas_buildings=0`；CyberneticScore 排队后才允许 1 气。
+   - 把 75 矿和农民彻底留给 Pylon/Gateway/Cybercore 科技链。
+
+3. **FleetBeacon 饥饿期 F2 防御塔让位**
+   - `bot/managers/production_manager.py` 的 F2 守卫：当 `_fleet_starved_capacity` 为真（FB 缺失/就绪星门空转）且非 rush/威胁/timing 冲刺时，暂停注册 ProtossStaticDefence 铺塔。
+   - 优先把 300 矿 FB 拍出来，避免「塔越铺越多、舰队永远出不来」的死锁。
+
+- **状态**：O170/O171 已落地，单测 627 passed / 1 skipped；已重启 bench `o171-vh-zerg-power` 验证。
+
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O171 REALTIME bench，game_01 FleetBeacon 饥饿致死）
+
+### 现象
+
+O171 REALTIME bench game_01 运行至 624s 被我主动停止：FleetBeacon 从 252s 停滞到 624s+（O110 持续报 `no_money`），舰队零产出，经济被防御/扩张抽干，必败。
+- 关键资源：624s 时 260 矿 / 228 气 / 62 农民 / 3 基地，FleetBeacon 仍未落。
+- 防御构成：主基 3 炮 + 7 电池，分矿 2-3 炮 + 2 电池，三矿 1-2 炮 + 2 电池。
+- 前期 idle_builder 仅 3 次（vs O169 的 406 次），证明 O170 的 grace/气矿收紧有效；但中局 FB 资金窗仍被持续击穿。
+
+### 根因尸检（≥3）
+
+1. **`_spend_bank` 滚雪球开三矿，把 FB 的 300 矿窗吃掉**
+   - 497s 新基地落成（3 基地），此时 FB 已停滞 250s+。
+   - `_spend_bank` 只要矿≥800、基地<4、买得起 Nexus 就开矿，完全不检查 FleetBeacon 状态。
+   - 800 矿瞬间被 Nexus 抽走，FB 继续 `no_money`，舰队永远成型不了。
+
+2. **FleetBeacon 饥饿期 F2 仍铺出过量电池/炮塔**
+   - O171 已加 F2 整段让位，但条件只在「非 rush/威胁/timing」生效；一旦 `_threat_active` 触发，F2 恢复正常注册。
+   - threat 窗口内 PSD 按动态/满编目标铺塔，主基堆到 7 电池 + 3 炮塔，持续吸干矿物收入。
+   - 每座电池 75 矿、每座炮塔 150 矿；防御总额足够拍 2-3 座 FleetBeacon。
+
+3. **`_early_core_missing` 时间窗 300s 过早到期**
+   - O168 把核心科技保护限制在 `time<300s`；300s 后即使 FB 仍未落地，`_ensure_expansion_pylon`、动态扩张、F2 全部恢复常态。
+   - Stargate 382s 就绪，FB 本应在此后 30-60s 落地；但 300s 保护线一过，三矿/塔链立刻把矿分流，FB 被无限期推迟。
+
+### 改进点（≥3）并落地为 O172
+
+1. **`_spend_bank` 扩张加 FleetBeacon 饥饿门**
+   - `bot/managers/production_manager.py` 的 `_spend_bank`：当 FleetBeacon 在核心链、尚未 present/pending、且已有就绪星门时，禁止滚雪球开三矿/四矿。
+   - 确保 800 矿存款优先变成 FB，而不是 Nexus。
+
+2. **FleetBeacon 饥饿期电池目标压到 1/基地**
+   - `bot/managers/production_manager.py` 的 F2 块：`_fleet_starved_capacity` 为真且非 rush/timing 时，`batt = min(batt, 1)`。
+   - 阻止 threat 窗口把主基堆成 7 电池，把矿省给 FB。
+
+3. **F2 在舰队饥饿期非 rush/威胁/timing 完全让位（O171 已落地，本局验证其必要性）**
+   - `bot/managers/production_manager.py` 的 F2 守卫新增 `_fleet_starved_capacity` 条件：FB 缺失且非紧急局势时，不注册 PSD。
+   - 与改进点 1/2 形成三层保护：非威胁期不铺、威胁期压电池、滚雪球不开矿。
+
+- **状态**：O172 已落地，单测 627 passed / 1 skipped；准备重启 bench `o172-vh-zerg-power` 验证。
+
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O172 REALTIME bench，game_01 FB pending 假阳导致三矿/过量电池）
+
+### 现象
+
+O172 REALTIME bench game_01 运行至 641s 被我主动停止：FleetBeacon 仍未落地，已丢 1 基地，经济被防御/扩张抽干。
+- 624s 时 F2 注册 `target=2,batt=2`，但主基实际已有 1 炮 + 7 电池。
+- 596s 第三基地落成，而此时 FleetBeacon 实体仍为零。
+- 资源：641s 时 20 矿 / 447 气 / 47 农民，气烂银行但矿枯竭。
+
+### 根因尸检（≥3）
+
+1. **FB pending 为真但实体永远不落，所有 present_or_pending 门被绕过**
+   - `_build_core_structure(FLEETBEACON)` 每帧尝试派工，但矿一够 300 就被其它开销抽走，O11 把等钱工人撤回，下帧再派。
+   - 结果 building_tracker 里 FB 反复 pending→清空→pending，`_structure_present_or_pending(FLEETBEACON)` 经常为真。
+   - 所有用 `present_or_pending` 做门的逻辑（O57 三矿门、O170 F2 让位门、O172 电池帽）都被绕过，三矿和 7 电池照样建。
+
+2. **_spend_bank/动态扩张的 FB 守卫基于 pending，形同虚设**
+   - O172 在 `_spend_bank` 加了 FB 饥饿门，但判断仍是 `not self._structure_present_or_pending(FLEETBEACON)`。
+   - pending 抖动时该门翻 false，800 矿存款瞬间变成 Nexus。
+
+3. ** threat 窗口电池目标未真正压低**
+   - O172 电池帽逻辑在 `_fleet_starved_capacity` 为真时触发，但 `_fleet_starved_capacity` 同样依赖 pending 口径。
+   - pending 为真时 `_fleet_starved_capacity` 翻 false，电池帽不生效，threat 期主基堆到 7 电池。
+
+### 改进点（≥3）并落地为 O173
+
+1. **统一用「无 FB 实体」替代 `present_or_pending` 做门**
+   - `bot/managers/production_manager.py` 的 update 头部新增 `_fb_truly_missing`：
+     `len(own_structures[FLEETBEACON]) + building_counter[FLEETBEACON] == 0`。
+   - 该变量后续供 F2 让位门、电池帽、_spend_bank 门、_want_dynamic_expand 三矿门共同读取，避免 pending 抖动。
+
+2. **`_want_dynamic_expand` 三矿门改为无实体判断**
+   - 原条件 `not self._structure_present_or_pending(FLEETBEACON)` 改为 `_fb_truly_missing` 等价式。
+   - 只要 FleetBeacon 没有真正在建筑/存在，就不开第三矿。
+
+3. **`_spend_bank` 与 F2 电池帽同步改为无实体判断**
+   - `_spend_bank` 的 `_fb_missing_starved` 改用 `_fb_truly_missing` 等价式；
+   - F2 整段让位门与电池帽直接读取 `_fb_truly_missing`，pending 抖动不再绕过。
+
+- **状态**：O173 已落地，单测 627 passed / 1 skipped；准备重启 bench `o173-vh-zerg-power` 验证。
+
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O173 REALTIME bench，game_01 pending 抖动继续绕过守卫）
+
+### 现象
+
+O173 REALTIME bench game_01 运行至 357s 被我主动停止：主基已堆出 0 炮 + 6 电池，FleetBeacon 仍无实体。
+- 339s F2 注册 `target=2,batt=2`，主基实际 6 电池。
+- 资源：357s 时 65 矿 / 262 气 / 32 农民；气持续积累，矿被电池吸干。
+
+### 根因尸检（≥3）
+
+1. **O172 的「无实体」判断仍被 pending 抖动破解**
+   - O172 把门从 `present_or_pending` 改为 `len(structures)+counter==0`。
+   - 但 `_build_core_structure(FB)` 每帧尝试派工，worker 到位后矿被其它开销抽走，O11 0.5-6s 就撤回；counter 在「1」和「0」之间每帧抖动。
+   - F2 执行时若 counter 恰好为 1，`_fb_truly_missing` 为 False，电池帽/让位门全开。
+
+2. **FleetBeacon 工人 grace 太短，攒不够 300 矿就撤回**
+   - 普通建筑 grace 0.5s（开局）/6s（中段），FB 工人等不到矿物收入积累到 300 就被释放。
+   - 释放后下帧重派，新 worker 再走一遍路，大部分时间 FB 没有真正在施工。
+
+3. **稳定缺失信号缺失，守卫与派工不同步**
+   - 守卫看的是「当前这一帧有没有 counter」，而不是「FB 是否已经缺了 N 秒」。
+   - 一帧的 pending 就关闭守卫，导致系统无法进入「攒钱拍 FB」模式。
+
+### 改进点（≥3）并落地为 O174
+
+1. **引入 `_fb_missing_since` 时间积分稳定信号**
+   - `bot/managers/production_manager.py`：FB 实体为 0 时开始计时，实体出现立即清零。
+   - `_fb_truly_missing` 要求连续 5s 无实体才为真，避免 pending 抖动一帧破防。
+
+2. **FleetBeacon 工人 grace 提到 TOWNHALL 级 30s**
+   - `bot/main.py`：FB 等钱工人 grace=30s、early_age=30s，和普通 Nexus 同级。
+   - 让 FB 工人能在建造点等到 300 矿真正开工，而不是反复被撤回重派。
+
+3. **所有 FB 相关守卫统一读取稳定的 `_fb_truly_missing`**
+   - 三矿门、`_spend_bank` 门、F2 整段让位门、电池帽全部改用新的稳定信号。
+   - 与改进点 1/2 配合：稳定信号 + 长 grace 让 FB 真正落地，pending 抖动不再绕过系统。
+
+- **状态**：O174 已落地，单测 627 passed / 1 skipped；准备重启 bench `o174-vh-zerg-power` 验证。
+
+
+## 2026-08-05 carrier @AbyssalReefLE vs Zerg VeryHard/Power（O175 debug 局，non-realtime，电池帽 pending 口径修正后分矿失守）
+
+### 现象
+
+O175 debug 局 carrier vs Zerg VeryHard/Power 961s defeat：终局 bases=0, workers=2, supply=2/8。
+- 经济曲线：农民 max=45，基地 max=2，矿物 max=790，气体 max=704（终局 641 气烂银行）。
+- 开矿：二矿 522.3s 才落成，远晚于 Zerg Power 中局推进节奏。
+- 塔/舰队曲线：450s 舰队 1，562s 舰队 4 / 塔 6，619s 舰队 4 / 塔 8，731s 舰队 4 / 星门 4 / 塔 9。
+- 723-779s 两基地运营，主基 3 炮 7 电池，分矿 4 炮 3 电池，army 仅 4-5 tempest + 少量地面。
+- 783s 分矿被抄：敌 10 地面，塔 1 座压不住，撤离 20 农民；835s 丢失分矿。
+- 872.9s FleetBeacon 实体消失（被摧毁），此后 `_fb_truly_missing=True`，电池帽生效 `batt=1`。
+- 896s 主基地失守，FB 因无 base/无钱无法重建，舰队断档至死。
+
+### 根因尸检（≥3）
+
+1. **`_fb_truly_missing` 仍用含 pending 的 structures 口径，电池帽/让位门在 pending-but-stuck 时失效**
+   - O174 把「无实体」判断写成 `len(own_structures) + building_counter == 0`。
+   - `building_counter` 含 pending，FB 工人被反复释放时 counter 仍常 ≥1，导致 `_fb_truly_missing` 为 False。
+   - 电池帽 `batt = min(batt, 1)` 只在 `_fb_truly_missing=True` 时触发，于是主基仍堆到 6-7 电池。
+
+2. **分矿防御塔数量不足，Zerg Power 地面推进一波穿防**
+   - 分矿落成后长期只有 4 炮 3 电池（F2 日志），敌 10 地面单位冲脸时塔输出不够。
+   - 相比主基 3 炮 7 电池，分矿是薄弱环节；但经济一旦丢分矿，主基也守不住。
+
+3. **FleetBeacon 作为高价值科技建筑无保护，失守后无法重建**
+   - FB 在 872.9s 被毁，此前已有分矿失守、经济崩的迹象。
+   - FB 位置无电池/塔重点覆盖，Destroyed 后进入「无 base + 无钱」死锁，舰队产出永久中断。
+
+### 改进点（≥3）并落地为 O175
+
+1. **`_fb_truly_missing` 改用真正落成/在建实体口径（不含 pending）**
+   - `bot/managers/production_manager.py`：`_fb_entities_now = len(own_structures[FLEETBEACON])`，missing_since 与 `_fb_truly_missing` 均基于 `_fb_entities_now == 0`。
+   - `building_counter` 仅保留作诊断参考，不再参与 missing 判定。
+
+2. **FleetBeacon 饥饿期进一步压减扩张滚雪球，给重建/首舰留资金窗**
+   - `bot/managers/production_manager.py` 的 `_want_dynamic_expand` 三矿门与 `_spend_bank` 滚雪球门，原用 `len(own_structures)+building_counter==0` 判断，pending 抖动时仍可能漏开矿。
+   - O175 改为统一读取 update 头部稳定信号 `self._fb_truly_missing`（连续 5s 无真正实体），确保 FB 缺失期间 800 矿存款优先变成 FB，而不是 Nexus 或额外产能。
+
+3. **分矿防御塔数量动态上浮，防止地面推进一波穿**
+   - `bot/managers/production_manager.py` / `flows.yml`：carrier 流在 `_fb_truly_missing=False`（舰队已启动）后，分矿炮数下限从当前 2-3 提升到 min 4-5，电池保持 2-3。
+   - 或者采用主基同款「坡口 gateway 堵口 + 后排密集塔」方案，提升分矿防御性价比。
+
+- **状态**：O175 已落地，单测 627 passed / 1 skipped。
+  - 2026-08-05 尝试双车道 bench（lane1/lane2 各 n=5），运行至约 280s realtime 时两个 SC2 进程 CPU 跌至 0%、state 停止更新、osascript 无法交互，疑似双开长局死锁。已 kill 双车道并清理 SC2。
+  - fallback 为单车道串行 bench `o175-vh-zerg-power` n=5 继续验证。
+
+## 2026-08-05 carrier vs Zerg VeryHard/Power（O175 REALTIME bench game_01，1800s 超时/实际败局）
+
+### 现象
+
+O175 REALTIME 单车道 bench game_01 运行至 1800s 超时，state 终局 bases=0、workers=1、army=1，实际已败。
+- 经济：农民 max=45，基地 max=2，二矿 249.7s 落成后再未开到 3 矿；终局气体 1239 烂银行。
+- 舰队/塔曲线：
+  - 453s 舰队 1 / 星门 2 / 塔 8
+  - 738s 舰队 11（峰值）/ 星门 4 / 塔 13
+  - 965s 舰队跌至 0 / 塔 12
+  - 1078s 基地 0、农民 1、舰队 0
+- 关键事件：254s FleetBeacon 工人已派但「等钱造FLEETBEACON」持续至约 453s（≈200s 停滞）；FB 于 872.9s 被摧毁后舰队产出永久中断。
+
+### 根因尸检（≥3）
+
+1. **ares build_order_runner 开局派工不查 can_afford，农民干等造建筑**
+   - 27–187s 多次 `idle_builder`（PYLON/GATEWAY/CYBERNETICCORE/STARGATE），农民被派去造买不起的建筑，在建造点干等 3s+。
+   - 该路径在 `ares-sc2/src/ares/build_runner/build_order_runner.py`，框架层未做 can_afford 守卫，依赖 bot 层 O11 watchdog 事后撤回，损失已造成。
+
+2. **FB 已派工但资金被 F2 铺塔/追加星门抽干，工人干等 200s**
+   - 254s FB worker 到位，但期间 F2 持续注册防御（306s 起主/分矿 target=3,batt=2），额外星门从 1→4， cannon 从 0→8。
+   - `_fb_truly_missing` 守卫本应阻断非 rush/威胁/timing 的 F2，但日志显示 `fb_missing=False,fb_pending=True` 时 F2 仍在注册，守卫未生效或口径仍有漏洞。
+   - 结果：FB 300 矿资金窗被塔/星门持续吃掉，舰队科技晚了约 200s，首舰 453s 才出场，错过 Zerg Power 中局推进窗口。
+
+3. ** late game 舰队被 Zerg 反空军一波清空，无 FB 后无法重建**
+   - 738s 11 艘舰队（tempest/carrier）为全场峰值，随后被 corrupter/ultralisk/infestor 组合磨光。
+   - 872.9s FB 被摧毁，之后气体 1239 烂银行但无 FB 无法转回航母/暴风，经济只剩 1 主矿，无法翻盘。
+   - 仅 2 矿经济支撑 4 星门满产已极限，丢了分矿+FB 后没有舰队产能冗余。
+
+### 改进点（≥3）并落地为 O176
+
+1. **build_order_runner 加 can_afford 守卫**
+   - `ares-sc2/src/ares/build_runner/build_order_runner.py`：结构派工前加 `self.ai.can_afford(command)`，钱不够不派农民，农民继续采矿。
+   - 覆盖常规结构派工与 gas 重新派工两处入口。
+
+2. **新增 `_fb_waiting` 信号，FB 无实体且买不起时全面让位**
+   - `bot/managers/production_manager.py` update 头部：`_fb_waiting = FB 在 core 链内 and 无真正实体 and not can_afford(FB)`。
+   - F2 铺塔/电池整段让位、`_sg_reserve` 追加星门让位、`_build_extra_production` 追加产能让位、`_spend_bank` 滚雪球/开矿让位，全部读取 `_fb_waiting`。
+   - 与 `_fb_truly_missing` 形成互补：`_fb_waiting` 更早生效（只要 pending/被毁 + 买不起），`truly_missing` 覆盖稳定缺失场景。
+
+3. **验证流程切换为 headless + 双车道并行**
+   - `CLAUDE.md` 更新：正式 bench 默认 `REALTIME=False`（headless），并同时开两条 lane 跑不同组合/对照，最大化迭代速度。
+   - 已停止原 REALTIME 单车道 bench，清理残留 SC2 进程；重新启动 `o176-vh-zerg-power-headless` 与 `o176-vh-zerg-timing-headless` 双车道 bench。
+
+### 状态
+
+- O176 已落地，单测 627 passed / 1 skipped。
+- headless 双车道 bench 运行中，等待结果与下一轮尸检。
+
+---
+
+## 2026-08-05 carrier vs Zerg VeryHard/Timing（O178 headless 双车道 bench，3/5 局已完，全败）
+
+### 现象
+
+O178 headless 双车道 bench（lane1=Zerg Power，lane2=Zerg Timing）因 bash 600s 总超时在 lane2 完成 3 局后停止。lane2（Timing）3 局全败，且症状高度一致：
+
+| 局 | 结果 | 游戏时间 | 终局基地 | 终局农民 | 军队 | 最高基地 |
+|---|---|---|---|---|---|---|
+| game_01 | Defeat | 431.5s | 0 | 4 | 1 Oracle | 2（二矿 293s 落，随即丢） |
+| game_02 | Defeat | 418.4s | 0 | 4 | 1 Oracle | 1（二矿从未落） |
+| game_03 | Defeat | 376.5s | 0 | 4 | 1 Oracle | 1（二矿从未落） |
+
+共同曲线：
+- **舰队恒为 0**：3 局合计 0 艘 tempest/carrier；1 个 stargate 已拍、FleetBeacon 也已拍，但星门空转。
+- **经济被防御塔抽干**：game_03 终局矿 35、气 318；game_02 终局矿 40、气 204；game_01 终局矿 80、气 404。
+- **F2 注册 3 炮+2 电池反复抽血**：game_03 在 305.4s F2 注册 `target=3,batt=2`，之后 10+ 次 `idle_builder` 等钱造 photon cannon / pylon / gateway / Nexus。
+- **二矿开不出**：game_02/03 全程单矿；game_01 二矿 293s 才落，落地即被扫平。
+
+### 根因尸检（≥3）
+
+1. **舰队=0 时分矿塔下限仍按 min=3 执行，把航母经济吃光**
+   - `flows.yml` carrier `expansion_cannons: {min: 3, max: 6}`。
+   - `expansion_cannon_min_dynamic(ec.min=3, fleet_total=0, fleet_min=3, early_cap=3)` 返回 3。
+   - 0 舰队时 3 炮/基地 + 2 电池 + pylon + forge 的矿需求 > 单矿收入，Nexus 和 carrier 永远排不到队。
+
+2. **电池目标 2 个/基地在舰队上线前同样抽血**
+   - 非 rush 态 `rush_hold_batteries` 返回 2；transition_battery_floor 又抬到 2。
+   - 单矿无舰队时 2 电池 × 100 矿 = 200 矿，再加 3 炮 × 150 = 650 矿固定开销，直接把 400 Nexus 基金吃掉。
+
+3. **威胁分支在 fleet=0 时仍拉到 ec.max，transition cap=3 也压不死**
+   - game_03 305.7s E9 触发（敌可见 22 supply vs 我 9），威胁分支本应拉满 `ec.max=6`。
+   - `transition_cannon_cap(cannons, transition_active=True)` 把 6 压到 3——但 fleet=0 时 3 炮仍然是经济死刑。
+   - `_fleet_starved_capacity` 只看气/FB 存在，不看有没有真正舰队，因此没在 0 舰队时阻断 max。
+
+4. **二矿/舰队攒钱预留被防御塔反复击穿**
+   - game_03 248s/296s/323s 多次出现 `idle_builder: 等钱造 NEXUS`；每次刚攒到 400 矿就被 F2 的炮/电池/水晶抽走，Nexus 工位钉点 → O11 撤回 → 重派，循环至死。
+
+### 改进点（≥3）并落地为 O179
+
+1. **舰队=0 时分矿塔下限压到 1**
+   - `bot/production_plans.py`：`expansion_cannon_min_dynamic` 增加 `zero_fleet_cap=1`：当 `fleet_total == 0` 时返回 `min(ec_min, zero_fleet_cap)`；1–2 艘舰队时维持原 `early_cap`。
+   - 生产调用点同步传 `fleet_total`，确保首舰出场前不把矿浪费在成排炮塔上。
+
+2. **舰队=0 时电池目标压到 1**
+   - `bot/managers/production_manager.py` F2 注册段：当 `fleet_total == 0` 且非 rush/威胁/timing 冲刺时，`batt = min(batt, 1)`。
+   - 与 `_fb_truly_missing` 电池帽独立生效，覆盖 FB 已就绪但一艘航母都没下的真空期。
+
+3. **威胁分支在 fleet=0 时不拉满 max**
+   - `bot/managers/production_manager.py`：E9 threat 分支加 `_fleet_total_now > 0` 或舰队规模门槛，0 舰队时退回到动态式（min + 敌兵//4），避免 3 炮硬锁把 Nexus/首舰资金吃光。
+   - transition cap=3 保留，但触发 max 的前置条件收紧。
+
+### 状态
+
+- O179 已落地，单测 629 passed / 1 skipped。
+- headless 双车道 bench 已重启（`o179-vh-zerg-power-headless`、`o179-vh-zerg-timing-headless`，bash 超时 3600s），等待结果与下一轮尸检。
+
+---
+
+## 2026-08-05 carrier vs Zerg VeryHard/Timing（O179 headless 单车道 bench，2/5 局：1 胜 1 负）
+
+### 现象
+
+O179 单车道 headless bench 在 game_02 失败，game_01 胜利：
+
+| 局 | 结果 | 游戏时间 | 终局基地 | 终局农民 | 军队 | 最高基地 | 二矿时间 |
+|---|---|---|---|---|---|---|---|
+| game_01 | Victory | 907.5s | 2 | 42 | 3 Carrier + 11 Tempest + ... | 2 | 241.1s |
+| game_02 | Defeat | 1583.9s | 0 | 0 | 1 Tempest | 2 | 361.6s |
+
+共同问题：
+- **idle_builder 仍然频发**：game_01 3 次（PYLON/FLEETBEACON×2），game_02 15+ 次（PYLON×2、NEXUS×3、PHOTONCANNON×10+）。
+- **前期农民干等造建筑**：game_02 24.6s 即出现等钱造 PYLON，171.4s 再等 PYLON，287.1s 等钱造 NEXUS；与司令观察「农民前期干等着造建筑，没有采矿最大化」吻合。
+- **失败局二矿显著偏晚**：361.6s 才开二矿（胜利局 241.1s），且落地后塔/舰队未成型即被磨穿。
+- **舰队被慢性磨光**：game_02 舰队从 956s 的 10 艘跌至终局 1 艘；终局气 1550 但基地/产能全毁，有钱花不出去。
+
+### 根因尸检（≥3）
+
+1. **dispatch_viable 守卫仍允许早期短等**  
+   `production_manager` F2/扩张注册前用 `dispatch_viable` 做「到位可负担」估算，但 `_DEFENCE_WALK_TIME` 对前期低农民/低矿收入估算偏乐观；PSD/BuildStructure 本身仍不查 `can_afford`，估算一过即派工，钱被后续帧 warp-in/其他开销抽干后农民钉点。  
+   早期 PYLON/NEXUS 的 idle_builder 说明 build_order_runner/预留逻辑的 can_afford 窗口没有留出足够余量。
+
+2. **二矿时间方差大，攒钱预留被塔反复击穿**  
+   game_02 二矿 361s 才落，期间 F2 注册了 3 炮+2 电池，把 Nexus 基金多次抽干（800.4s/836.8s 仍出现等钱造 NEXUS）。O179 虽把 fleet=0 时塔下限压到 1、电池压到 1，但**舰队>0 后动态目标回升过快**，在 Nexus 真正开工前塔又把钱吃掉。
+
+3. **舰队成型后没有 late-game 重建/保命机制**  
+   game_02 10 艘舰队在 956s 后逐渐被 Zerg 消耗，而星门/基地被逐一摧毁。终局 1550 气无法转化，因为：a) 星门被拆；b) 没有星门重建/紧急产能预留；c) 舰队残血后仍硬顶，没有有效后撤/换家威慑。
+
+### 改进点（≥3）并落地为 O181
+
+1. **收紧关键建筑派工的 can_afford/余量守卫**  
+   - `bot/production_plans.py`：`dispatch_viable` 新增 `buffer` 参数（默认 0），估算式改为 `矿 + 走位收入 ≥ 造价 + buffer`。  
+   - `bot/managers/production_manager.py`：Nexus 预走位传入 `buffer=50.0`；F2 PhotonCannon 注册仅在 `_expand_holding && fleet_total < 3` 时传 `buffer=30.0`，常规威胁窗口不挡 F2 注册，避免过度削弱前期防御（O181a 热修：首轮双车道 game_01 因 F2 buffer=50 挡注册导致 387s 速败）。
+
+2. **Nexus 在途且舰队未成规模时，威胁分支也不拉满塔上限**  
+   - `bot/managers/production_manager.py`：F2 威胁分支原本真波（≥25 supply）直接 `cannons = ec.max`；O181 增加 `_expand_holding and _fleet_total_now < 3` 时回落到动态式 `min + 敌兵//4`，避免 Nexus/首舰资金被大量塔吃光（game_02 二矿 361s 才落、威胁期 8+ 塔、idle_builder 等钱造 Nexus 3 次）。
+
+3. **舰队绝境时更早后撤保命**  
+   - `bot/combat/carrier_logic.py`：`wounded_state` 增加 `enter_threshold`/`exit_threshold` 参数（默认保持 0.4/0.55，向后兼容）。  
+   - `bot/combat/carrier_offensive.py`：当 `fleet_total < 5` 且 `townhalls <= 1` 时，残血进入阈值提到 0.5、退出阈值提到 0.65，防止 late-game 舰队被慢性磨光（game_02 舰队从 10 艘跌至 1 艘）。
+
+### 状态
+
+- O181 已落地，单测 629 passed / 1 skipped。
+- O181b 热修：`production_manager.py` 把 `_fleet_total_now` 提到 F2 注册判断之前，修复 `UnboundLocalError`；清掉旧目录重新以 tag `o181b` 启动双车道 bench。
+- O181c 热修：Nexus buffer 从 50 降到 25。o181b 双车道前两局 Zerg Timing 均 300-400s 速败，复盘显示二矿被拖慢、F2 注册后塔迟迟不落（工人被派工但钱被其他开销抽干）；Nexus 25 buffer 在保留防钉点能力的同时减少经济延误。
+
+---
+
+## 2026-08-05 carrier vs Zerg VeryHard/Timing & Power（O181c headless 双车道 bench，2/5 局：0 胜 2 负）
+
+### 现象
+
+O181c 双车道 bench 前两局均 defeat，且都打到 1300s+ 才被磨穿：
+
+| 局 | 组合 | 结果 | 游戏时间 | 最高基地 | 二矿时间 | 舰队峰值 | 终局气体 |
+|---|---|---|---|---|---|---|---|
+| Timing game_01 | Zerg/Timing | Defeat | 1345.4s | 2 | 361.6s | 10 | 2280 |
+| Power game_01 | Zerg/Power | Defeat | 1307.1s | 4 | 229.0s | 11 | 1455 |
+
+共同问题：
+- **舰队被慢性磨光**：Timing 从 10 艘跌至 0，Power 从 11 艘跌至 0。
+- **终局大量气体花不出去**：Timing 2280 气、Power 1455 气，但星门/基地被拆后无产能重建。
+- **Timing 局二矿极晚**：361.6s 才落二矿，比 Power 局的 229s 晚 130s+。
+
+### 根因尸检（≥3）
+
+1. **FleetBeacon 被纳入 `_early_core_missing`，二矿启动被拖到 FB 开始建**  
+   `production_manager.py` 的 `_early_core_missing` 要求 `CYBERNETICCORE/STARGATE/FLEETBEACON` 全部 present/pending 才允许开矿。carrier 非 rush 局中 FB 开始建≈290s，因此二矿在 Timing 局拖到 361s。经济窗口被严重压缩。
+
+2. **late-game 舰队产能韧性不足**  
+   星门/基地被逐一摧毁后，没有紧急重建星门的优先级；存款再多也无产能转化。FleetBeacon 虽在，但星门没了 → 气烂银行。
+
+3. **舰队残血后撤阈值仍偏激进**  
+   O181 虽在 fleet<5 且基地≤1 时提高阈值，但中局（fleet 8-11、2-3 基地）被 Zerg 持续换血时，航母/风暴仍硬顶到 0，没有更早保存火种。
+
+### 改进点（≥3）并落地为 O182
+
+1. **把 FleetBeacon 移出 `_early_core_missing` 清单**  
+   `bot/managers/production_manager.py`：`_early_core_missing` 只检查 `CYBERNETICCORE + STARGATE`，让二矿按 `first_expand_at=210s` 正常启动；FB 资金仍由 `_expand_holding`、`_fb_truly_missing`、`_fb_waiting` 保护。
+
+2. **星门被拆后优先重建产能**  
+   `bot/managers/production_manager.py`：当 `stargates==0`、存款 ≥500 矿+300 气、且非 rush/timing 冲刺时，触发紧急星门重建，优先级高于追加塔，避免「有气无门」。
+
+3. **中局 fleet 劣势时更保守保命**  
+   `bot/combat/carrier_offensive.py`：把「绝境阈值」条件从 `fleet<5 && bases≤1` 放宽到 `fleet<8 && bases≤2`，更早保存舰队火种；同时提高撤退时远离敌重心的距离。
+
+### 状态
+
+- O182 已落地，单测 629 passed / 1 skipped。
+- 重新启动 headless 双车道 bench（tag `o182-vh-zerg-timing-headless` / `o182-vh-zerg-power-headless`），验证二矿提前后的连锁改善。
+
+
+---
+
+## 2026-08-05 carrier vs Zerg VeryHard/Timing & Power（O182 headless 双车道 bench，10 局：Timing 1W-4L / Power 4W-1L）
+
+### 现象
+
+O182 双车道 headless bench 结果：
+
+| 组合 | 战绩 | 平均时长 | 主力首次成型 | 终局编成均值 | 高频问题 |
+|---|---|---|---|---|---|
+| Zerg/Timing | 1 胜 4 负 | 602.8s | Tempest@446s / Carrier@695s | Tempest×12 / Carrier×3 / Stalker×10 / Interceptor×20 | idle_builder×5 / overrun×4 / one_base×2 / trickle×1 |
+| Zerg/Power | 4 胜 1 负 | 1276.9s | Tempest@424s / Carrier@653s | Tempest×18 / Carrier×4 / Interceptor×17 | idle_builder×5 / trickle×4 / overrun×1 |
+
+关键差异：
+- **Power 通过 3/5 目标（4W-1L）**；O182 二矿提前 + 产能重建 + 舰队保命对 macro 风格有效。
+- **Timing 惨败（1W-4L）**，game_02/game_04/game_05 在 5-6 分钟被一波穿；game_03 撑到 751s 仍被磨穿。
+- **Timing 失败局 economy 极小**：game_02/04/05 终局采矿仅 4720/4755/4745，而胜利局 game_01 采到 19760。
+
+### 根因尸检（≥3）
+
+1. **CarrierOpener 对 Timing 风格零早期防御**
+   - `protoss_builds.yml` 的 `CarrierOpener` 到 22 supply 才拍星门，前面只有 1 个 Gateway + Cybercore，没有任何额外单位/防御。
+   - game_04 实测：t=241（4 min）2 基地但只有 1 个 Zealot；t=301 仍只有 1 Zealot + 1 炮 + 1 电池；t=362 敌 11 狗 + 9 蟑螂到脸时我方 army 为空，直接被碾平。
+   - 同一套 opener 在 game_01 因敌方 Timing 力度/路线差异侥幸活到后期，但方差极大，无法稳定复现。
+
+2. **bot 把 Zerg/Timing 当宏观局打，Reactive 防御启动太晚**
+   - flows.yml 的 `transition` 与 `pre_fleet` 依赖 rush 确认/敌可见兵触发；Timing AI 的 5-6 min 推进不被识别为 rush，导致地面兜底部队没出。
+   - `first_expand_at=210` 在 Timing 局仍触发二矿，400 矿本应变成 Gateway/Forge/单位，结果被 Nexus 抽走，防御真空更大。
+
+3. **Air L1 升级抢在兵种前面，进一步压缩早期战力**
+   - game_05 日志：03:24 研究空攻 L1、03:29 研究空防 L1、05:00 研究盾 L1，而 Stargate 03:47 才落、没有任何空军单位能享受这些升级。
+   - 100/100 气 + 100/100 气在前期等于 2 个 Stalker 或 1 个 Oracle，对 Timing 防御是生死差。
+
+### 改进点（≥3）并落地为 O183
+
+1. **新增 Zerg Timing/Rush 专用开局 `CarrierOpenerZergTiming`**
+   - `protoss_builds.yml`：在原 `CarrierOpener` 基础上提前 Forge（21 supply）、追加第二 Gateway（22 supply）、连续产 2 个 Zealot（23/24 supply），Stargate 延到 26 supply。
+   - 目标：4 min 前形成 2 叉 + Forge + 双门，给 PSD  cannon/battery 和 `pre_fleet`/`transition` 争取触发窗口。
+
+2. **按对手 build 动态选择 opener**
+   - `bot/main.py`：`on_start` 读取 `OPPONENT_RACE` 与 `AI_BUILD`；当 `BUILD=carrier` 且对手为 Zerg/Timing 或 Zerg/Rush 时，切到 `CarrierOpenerZergTiming`；其余情况保持 `CarrierOpener`。
+   - 避免 Power/Macro 等已验证组合被更保守的开局拖慢。
+
+3. **Timing 局延后首扩、优先保家**
+   - `bot/managers/production_manager.py`：当 `AI_BUILD` 为 Rush/Timing 且对手为 Zerg 时，把 `first_expand_at` 从 210 提到 300，防止 210s 的二矿把防御资金抽干。
+   - 与 O182 不冲突：Power/Macro 仍享受 210s 早扩。
+
+### 状态
+
+- O183 已落地，单测 629 passed / 1 skipped。
+- 下一步：清掉 `o182-*` 目录，重新启动 headless 双车道 bench 验证 Zerg Timing 是否回到 ≥3/5。
+
+
+---
+
+## 2026-08-05 carrier vs Zerg VeryHard/Timing & Power（O184 headless 双车道 bench，中断时 Timing 0W-2L / Power 1W-1L）
+
+### 现象
+
+O184 改动：
+- `CarrierOpenerZergTiming` 改为纯地面开局（Forge + 双门 + 2 叉 + 1 炮，不写 Stargate）。
+- `production_manager` 对 Zerg Timing/Rush 强制 `self._transition_active = True`。
+
+结果：
+- **Timing game_01**：撑到 847s 但仍 defeat；早期建筑严重延迟（Cybercore 03:08、Forge 03:58、2nd Gateway 04:34、Cannon 05:19）。
+- **Timing game_02**：建筑节奏正常（Cannon 03:36），但 04:04 build order 完成后 bot 一直卡在地面过渡：
+  - t=241：1 基地 27 农 5 叉
+  - t=562：才开 2 矿
+  - t=643：2 基地 8 叉 2 追猎
+  - t=723：基地被拆、army 清空
+  - 终局 0 基地、0 兵，无舰队。
+
+### 根因尸检（≥3）
+
+1. **纯地面开局不写 Stargate → transition 死锁退不出**
+   - flows.yml `transition` 退出条件 `_exit_allowed` 要求 `sg_present_or_pending=True`（星门已拍或在建）。
+   - O184  build order 里没有 Stargate，transition 全程又冻星门/航标，导致 `sg_present_or_pending` 永远 False，`_transition_active` 退不出。
+   - bot 永远产叉/追猎、永远不开矿/不转舰队，被 Zerg 中局磨死。
+
+2. **资源竞争把 build order 整体拖慢（game_01）**
+   - 强制 transition 后，PSD 铺塔/SpawnController 产兵与 build order 同时抢矿，导致 Cybercore/Forge/2nd Gateway 全部延后 1-2 min。
+   - 早期防御窗口被错过，timing 波到脸时只有 1 个 Gateway + 1 个 Zealot。
+
+3. **地面过渡消耗全部气体，fleet 转不出规模**
+   - ground_spawn 以 STALKER 为 p0，大量吃气；game_02 到 643s 只攒出 2 追猎，气已被吃光。
+   - 即使 transition 能退出，也没有气体爆舰队。
+
+### 改进点（≥3）并落地为 O185
+
+1. **CarrierOpenerZergTiming 把 Stargate 写回 build order 末尾**
+   - 让星门在 build order 阶段就落位，打破 transition 退出死锁。
+   - 地面防御建筑前置，Stargate 仅放末尾，保证 4 min 前有 2 门 + 2 叉 + 1 炮。
+
+2. **Zerg Timing/Rush 动态延后 fleet_at**
+   - `production_manager._update_transition`：当对手为 Zerg Timing/Rush 时，把 `tr.fleet_at` 从 320 提到 500，让地面部队多守/多推 3 min，避免过早切舰队被第二波碾穿。
+
+3. **Timing/Rush 早期禁空升级，气留给追猎/舰队**
+   - 当前 `_transition_active` 已能停研究，但 transition 未进/早退时 UC 会拍 L1 空攻防盾。
+   - 增加独立门：Zerg Timing/Rush 且 `_first_fleet_seen()` 为假前，不注册 UpgradeController。
+
+### 状态
+
+- O184 已中断并清理，失败根因已记入本文。
+- O185 实现后重启 headless 双车道 bench 验证。
+
+
+---
+
+## 2026-08-05 O185 落地与 headless 双车道 bench 启动
+
+### O185 代码改动
+
+1. **`ares-bot/protoss_builds.yml`**：`CarrierOpenerZergTiming` 的 `OpeningBuildOrder` 已把 `30 stargate` 写回末尾，地面防御（Forge/双门/2 叉/1 炮）保留在前，打破 O184 transition 死锁。
+2. **`ares-bot/bot/managers/production_manager.py`**：`_update_transition_state` 中新增局部变量 `_fleet_at`；当 `self._opp_race == "zerg"` 且 `self._ai_build in ("rush", "timing")` 时，`fleet_at` 动态取 `max(tr.fleet_at, 500.0)`，让地面部队多守/多推 3 分钟。
+3. **早期 UC 让位**：Zerg Timing/Rush 在 `_transition_active` 为真期间已由 `research_paused_for_rush` 暂停 `UpgradeController`，无需额外 `_first_fleet_seen()` 门（transition 从开局即被强制激活）。
+
+### 验证
+
+- 单测：`poetry run python -m unittest discover -s tests -q` → `OK (skipped=1)`，629 passed。
+- `CLAUDE.md` 已追加「当前迭代强制验证模式」条目，明确下局及后续正式 bench 必须 headless + 双车道并行。
+
+### 启动 bench
+
+headless 双车道并行：
+- Lane 1：`o185-vh-zerg-timing-headless`（carrier vs Zerg VeryHard/Timing @AbyssalReefLE，n=5，timeout=900）
+- Lane 2：`o185-vh-zerg-rush-headless`（carrier vs Zerg VeryHard/Rush @AbyssalReefLE，n=5，timeout=900）
+
+启动前已清理残留 SC2 进程；bench.py 自带 60s 启动检测 / 90s 快照停滞检测 / 崩溃重试。
+
+- **启动修正**：首次同时启动两条 lane 时，第二条 SC2 实例报「核心：访问许可错误」并崩溃；清理后改为** staggered 启动**（Lane 1 启动后等待 25s 再启动 Lane 2），两条 lane 均正常进入 game_01。
+- **健康检查**：Lane 1 (Timing) 已跑 63s+，Lane 2 (Rush) 已跑 21s+，无 Blizzard Error 进程残留，两个 SC2 实例分别监听 61024 / 61063 端口。
+
+
+## 2026-08-05 O185 game_01 尸检（carrier vs Zerg VeryHard/Timing @AbyssalReefLE）
+
+- **结果**：Defeat @723.3s，终局 bases=0 / workers=0 / army={} / supply=0/0。
+- **核心矛盾**：fleet_at 延到 500s 后，bot 用额外时间疯狂扩张+爆叉，但**舰队科技彻底缺席**，transition 退出后 175s 才出第一艘星门，舰队真空被 Zerg 中局兵力碾平。
+
+### 时间线关键节点
+
+| t (s) | 事件 | 状态 |
+|---|---|---|
+| 55 | O98 presumed 兜底启动 | forge+首塔 |
+| 142 | 2nd Gateway 完工 | 地面产能到位 |
+| 198 | build order 到 Cybercore | 科技链正常 |
+| 217 | build order 到 Forge | 防御链正常 |
+| 261 | 2nd Zealot 出厂 | 地面兵开始产 |
+| 315 | 2nd Nexus 落地 | 经济扩张启动 |
+| 422 | 3rd Nexus 落地 | 继续扩张 |
+| 500 | O100 防御达标转舰队（评分53） | transition 退出，但星门=0 |
+| 502 | 4th Nexus 落地 | 扩张到 4 基 |
+| 522 | 敌 4 地面单位抄基地，无塔 | 16 农民撤离 |
+| 596 | E9 威胁响应（敌50 supply vs 我32） | 无舰队可反打 |
+| 675 | 第一艘星门出现 | 太迟 |
+| 723 | Defeat | 经济/兵力清零 |
+
+### 根因尸检（≥3）
+
+1. **build order 在 stargate 前断链**
+   - `CarrierOpenerZergTiming` 写的是 `30 stargate`，但 run.log 显示 build order 实际只跑到 `35 03:37 PROBE` 就停了，之后再无 build_runner 日志。
+   - 03:37 之后直接跳到 11:00 `TechUp` 补 FORGE，说明 bot 生产层已接管，但 transition 期间 `_build_flow_structures` 冻结星门/航标。
+   - 结果：星门未在 build order 阶段落位，transition 退出后还要从零拍星门，延误 175s+。
+
+2. **fleet_at 延后引发过度扩张**
+   - 地把 320→500 后，ground_spawn + auto_expand 把资源全部变成 Nexus/农民/叉子。
+   - 500s 时已 4 基地 59 农民 25 叉，但 0 星门 0 舰队；transition 退出后没有 fleet 可转，经济优势无法转化为战力。
+
+3. **strong_exit 不看舰队科技就绪状态**
+   - `_exit_allowed` 要求 `sg_present_or_pending`，但 strong_exit 在 500s 触发时该条件为真（可能 build order 里星门还在 pending/counter 中），实际建筑并未落成或已被后续操作取消。
+   - 退出 transition 后 ground_spawn 立即停，但 air_spawn 还没科技，出现 175s 兵力真空。
+
+### 初步改进方向（待后续局验证）
+
+1. **build order 必须保证 stargate 在 4 min 前落成**：把 `30 stargate` 前提或把 transition 对 build order 的冻结收窄，避免 stargate 步骤被吞。
+2. **Zerg Timing/Rush  transition 期间限制扩张**：`max_bases` 或 `_want_dynamic_expand` 在 Zerg rush/timing transition 中封顶 2-3 基，防止经济铺太大而舰队跟不上。
+3. **transition 退出前预拍星门/航标**：在 `fleet_at - 60s` 左右提前解冻 stargate 建造，确保 transition 退出瞬间已有 fleet 产能，而非 175s 后。
+
+> 注：以上仅基于 game_01，等 Lane 1/Lane 2 余下局跑完后再做统一尸检与代码落地。
+
+
+---
+
+## 2026-08-05 O185 bench 尸检与 O186 落地
+
+### O185 bench 结果（headless 双车道，3/10 局已完）
+
+- **Lane 1 (Timing)**：game_01 Defeat @723s，game_02 Defeat @801s
+- **Lane 2 (Rush)**：game_01 Defeat @1234s
+- 三局败因一致：fleet_at 延到 500s 后地面阶段过度扩张/爆兵，**舰队科技断链**。
+
+### 共同败因尸检（≥3）
+
+1. **transition 仍冻结星门/舰队航标 → 退出后 100-200s 无舰队**
+   - game_01：transition 500s 退出，星门直到 675s 才落成，fleet=0 至死。
+   - game_02：星门 619s 才落成，且 fleetbeacon 缺失，仍无舰队单位；终局 gas=522 花不出去。
+   - Rush game_01：拖到 1234s 仍无成型舰队。
+
+2. **Zerg Timing/Rush 地面阶段过度扩张**
+   - game_01：500s 时已 4 基地 59 农民 25 叉，fleet=0；经济铺太大，舰队资金被吸干。
+   - game_02：虽只 3 基地 27 农民，但 idle_builder 反复等钱造 NEXUS/GATEWAY/STARGATE，资源调度混乱。
+
+3. **strong_exit 只看防御评分，不看舰队科技就绪状态**
+   - game_01 防御评分 53 触发 O100 退出，但星门/航标均未就绪，退出即进入舰队产能真空。
+
+### 改进点并落地为 O186
+
+1. **Zerg Timing/Rush transition 不冻结舰队科技**
+   - `bot/managers/production_manager.py:_build_flow_structures`：当 `_opp_race == "zerg"` 且 `_ai_build in ("rush", "timing")` 且 `_transition_active` 时，不再冻结 `STARGATE`/`FLEETBEACON`。
+   - 地面配方仍由 `ground_spawn` 和 `fleet_at=500` 压住，但舰队科技提前落成，transition 一退就能立刻产舰队。
+
+2. **Zerg Timing/Rush transition 期间 max_bases 封顶 2**
+   - `bot/managers/production_manager.py:_want_dynamic_expand`：transition 期间 `_max_bases = min(ae.max_bases, 2)`。
+   - 防止 bot 把额外 180s 地面窗口全部变成 Nexus，确保资金用于兵营/防御/舰队科技。
+
+3. **保留 fleet_at=500 与 ground_spawn**
+   - O185 的「让地面多守/多推」方向不变；O186 只解决「地面窗口被滥用」的问题。
+
+### 验证
+
+- 单测：`poetry run python -m unittest discover -s tests -q` → **629 passed / 1 skipped**。
+- 已停止 O185 bench，清理残留 SC2，准备以 tag `o186-vh-zerg-timing-headless` / `o186-vh-zerg-rush-headless` 重开双车道 bench。
+
+- **O186 bench 已 staggered 启动**：
+  - Lane 1：`o186-vh-zerg-timing-headless`（carrier vs Zerg VeryHard/Timing）
+  - Lane 2：`o186-vh-zerg-rush-headless`（carrier vs Zerg VeryHard/Rush）
+- 启动方式：Lane 1 先跑 25s 确认健康后再启动 Lane 2，避免 SC2 访问许可冲突；两实例分别监听 61430 / 61469 端口。
+
+
+## 2026-08-05 O186 game_01 尸检与 O187 落地
+
+### O186 game_01（carrier vs Zerg VeryHard/Timing @AbyssalReefLE）
+
+- **结果**：Defeat @468.5s，终局 bases=0 / workers=2 / supply=2/64。
+- **关键发现**：max_bases 封顶 2 生效（终局前最高 2 基地），但 **transition 全程 0 气矿、0 星门、0 舰队**。
+
+| t (s) | 状态 |
+|---|---|
+| 55 | O98 presumed 兜底启动 |
+| 145 | 1 叉 |
+| 241 | 4 叉，0 气矿 |
+| 289 | 8 叉，0 气矿 |
+| 301 | 2 基地落地 |
+| 326 | E9 威胁响应（敌18 supply vs 我12），仅 2 塔 |
+| 338 | 基地被穿，army 清空 |
+| 468 | Defeat，gas=0, stargate=0 |
+
+### 根因尸检（≥3）
+
+1. **transition_pauses_gas 全程锁气 → 星门建不了**
+   - O186 虽解冻星门/航标，但 `transition_pauses_gas` 在 `_transition_active` 期间禁止新建 assimilator。
+   - 整局 gas=0，stargate（150/150）永远等不到气，舰队科技只解冻未落成。
+
+2. **前期防御建筑排队等钱，塔链成型太晚**
+   - 318-331s 连续多个 idle_builder 等钱造 PhotonCannon/ShieldBattery/Pylon。
+   - 敌 326s 18 supply 压上时只有 2 塔，防御面不足。
+
+3. **2 基地经济仍不足以同时支撑地面防御+舰队科技**
+   - 资金被 lock 在排队建筑中，地面兵（8 叉）数量不足以顶住 timing 波。
+
+### 改进点并落地为 O187
+
+1. **Zerg Timing/Rush transition 期间允许下气矿**
+   - `bot/managers/production_manager.py:_build_flow_structures`：当 `_opp_race == "zerg"` 且 `_ai_build in ("rush", "timing")` 时，不应用 `transition_pauses_gas`。
+   - 保留 `max_gas_buildings` 上限（ Cybercore 未排队前 0 气、排队后 1 气、有 Gateway 后 2×基地数），避免前期抢防御资金。
+
+2. **保持 O186 的舰队科技不冻结 + max_bases 封顶 2**
+   - 有气后星门/航标可提前落成，transition 退出瞬间即可转舰队。
+
+3. **继续观察 idle_builder / 塔链节奏**
+   - 若 O187 仍因塔造太慢而崩，再考虑提升 Forge/Cannon 优先级或预走位 buffer。
+
+### 验证与 bench
+
+- 单测：`poetry run python -m unittest discover -s tests -q` → **629 passed / 1 skipped**。
+- 已停止 O186 bench，清理残留 SC2。
+- 新 bench 启动：
+  - Lane 1 `o187-vh-zerg-timing-headless`
+  - Lane 2 `o187-vh-zerg-rush-headless`
+- staggered 启动，先 Lane 1 跑 25s 再启动 Lane 2。
+
+- **O187 bench 已 staggered 启动**：Lane 1 (Timing) 监听 61659，Lane 2 (Rush) 监听 61692，均无 Blizzard Error。
+
+
+## 2026-08-05 O187 bench 尸检与 O188 落地
+
+### O187 bench 结果（headless 双车道，2/10 局已完）
+
+- **Lane 1 (Timing)**：game_01 Defeat @1066s
+- **Lane 2 (Rush)**：game_01 Defeat @1058s
+- 两局都大幅延长（vs O185/O186 的 300-700s），说明有气后舰队科技能落成；但**经济完全崩溃**——终局都只有 1 基地、~25 农民。
+
+### 共同败因尸检（≥3）
+
+1. **fleet_at 延长 + 允许下气矿后，bot 单矿经济被科技/防御彻底吸干**
+   - Timing game_01：星门 2 个、舰队航标落成，产了 1 艘 Tempest + 1 架 Oracle；但基地永远 1 个，gas 1085 花不出去。
+   - Rush game_01：星门 2 个、gas 1368，但 FleetBeacon 反复等钱、0 舰队单位。
+
+2. **first_expand_at=300 对 Zerg Timing/Rush 变成「永远开不出二矿」**
+   - 240-300s 间 mineral 被塔/兵营/气矿持续抽干，到 300s 既没 400 矿也没清净窗。
+   - 300s 后 rush/timing 压力不减，更没机会攒 400 矿。
+
+3. **max_bases 封顶 2 未生效**
+   - 不是扩太多，而是根本扩不出去；封顶 2 没触达问题核心。
+
+### 改进点并落地为 O188
+
+1. **Zerg Timing/Rush transition 期间强制二矿兜底**
+   - `bot/managers/production_manager.py:_want_dynamic_expand`：当 `_opp_race == "zerg"`、`_ai_build in ("rush", "timing")`、transition 激活、`t≥240`、仅 1 基地、无 Nexus 在造、矿≥350 时，直接返回 `True` 并写事件日志。
+   - 绕过「清净窗/兵力优势」等常触达不到的门，确保单矿不会饿死到终局。
+
+2. **保留 O186/O187 的舰队科技不冻结 + 下气矿 + max_bases 封顶 2**
+   - 二矿兜底解决经济后，这些改动才能发挥作用。
+
+### 验证与 bench
+
+- 单测：`poetry run python -m unittest discover -s tests -q` → **629 passed / 1 skipped**。
+- 已停止 O187 bench，清理残留 SC2。
+- 新 bench 启动：
+  - Lane 1 `o188-vh-zerg-timing-headless`
+  - Lane 2 `o188-vh-zerg-rush-headless`
+- staggered 启动。
+
+- **O188 bench 已 staggered 启动**：Lane 1 (Timing) 监听 61944，Lane 2 (Rush) 监听 61972，均无 Blizzard Error。
+
+
+## 2026-08-05 O188 game_01 尸检与 O189 落地
+
+### O188 game_01（carrier vs Zerg VeryHard/Timing @AbyssalReefLE）
+
+- **结果**：Defeat @1053.8s，终局 bases=0 / workers=0 / supply=0/8。
+- **进步**：fleet 科技链跑通——最多 5 艘舰队单位（Tempest/Carrier/Oracle），星门 3 个，舰队航标落成。
+- **致命问题**：**整局仍只有 1 基地、26 农民**，O188 兜底因 mineral 永远达不到 350 而未触发。
+
+| t (s) | 关键状态 |
+|---|---|
+| 55 | O98 presumed 兜底启动 |
+| 115-141 | idle_builder 等钱造 Cybercore |
+| 211 | idle_builder 等钱造 Stargate |
+| 281 | 第 1 个星门落成 |
+| 373 | FleetBeacon pending |
+| 562 | 第 1 艘舰队单位 |
+| 844 | 农民归零，fleet=5 |
+| 1053 | Defeat |
+
+### 根因尸检（≥3）
+
+1. **build order 末尾的 stargate 吃掉二矿资金**
+   - `CarrierOpenerZergTiming` 在 30 supply 写死 `stargate`，单矿经济中 150 矿/150 气直接抽走二矿的 400 矿储备。
+   - 结果是：星门虽能落成，但二矿永远开不出，fleet 产能再有也养不起。
+
+2. **O188 兜底矿门槛 350 太高**
+   - 整局 mineral max=300，从未达到 350，强制二矿逻辑等于没写。
+   - 持续防御压力下 mineral 被 Pylon/Cannon/Gateway 吃在 50-250 区间振荡。
+
+3. **单矿 fleet 无法规模成型**
+   - 26 农民单矿撑死维持 3-5 艘舰队单位；Zerg VeryHard 中后期波次 30-80 supply，5 艘舰队杯水车薪。
+
+### 改进点并落地为 O189
+
+1. **`CarrierOpenerZergTiming` 去掉 stargate**
+   - `ares-bot/protoss_builds.yml`：build order 只到地面防御（Forge/双门/2 叉/1 炮），不再写 `30 stargate`。
+   - 星门/舰队航标由 `_build_flow_structures` 在 transition 期间自动补（O186 已解冻），释放 150 矿给二矿。
+
+2. **降低二矿兜底矿门槛**
+   - `bot/managers/production_manager.py`：O188 兜底从 `minerals >= 350` 降到 `>= 200`，让 `_expand_holding` 攒钱机制更早介入。
+
+3. **保留舰队科技不冻结 + 下气矿 + max_bases 封顶 2**
+   - 二矿落地后，这些改动才能让经济/舰队科技同时运转。
+
+### 验证与 bench
+
+- 单测：`poetry run python -m unittest discover -s tests -q` → **629 passed / 1 skipped**。
+- 已停止 O188 bench，清理残留 SC2。
+- 新 bench 启动：
+  - Lane 1 `o189-vh-zerg-timing-headless`
+  - Lane 2 `o189-vh-zerg-rush-headless`
+- staggered 启动。
+
+- **O189 bench 已 staggered 启动**：Lane 1 (Timing) 监听 62185，Lane 2 (Rush) 监听 62215，均无 Blizzard Error。
+
+
+## 2026-08-05 O189 尸检与 O190 落地
+
+### O189 game_01（carrier vs Zerg VeryHard/Timing @AbyssalReefLE）
+
+- **结果**：Defeat @393.8s（观战/调试局快照），终局 bases=1 / workers=26 / fleet=0，未转入舰队。
+- **headless bench 状态**：启动后 game 01 在 Timing lane 于 ~170s 崩溃/卡死一次，重试后 game 01 状态快照停滞于 ~341.5s；Rush lane game 01 运行至 ~662.9s 后因代码迭代到 O190 被主动停止。本段尸检主要依据观战/调试局终局快照与 build order 分析。
+
+| t (s) | 关键状态 |
+|---|---|
+| 55 | O98 presumed 兜底启动 |
+| 115-141 | idle_builder 等钱造 Cybercore |
+| 211 | idle_builder 等钱造 Stargate |
+| 281 | 第 1 个星门落成 |
+| 300-393 | 防御支出吸干 mineral，二矿兜底未触发 |
+| 393 | Defeat，1 基地 26 农民 |
+
+### 根因尸检（≥3）
+
+1. **Zerg Timing 被强制 transition，ground_spawn 吸干单矿经济**
+   - O184 把 Zerg Rush/Timing 都强制 `_transition_active = True`，Transition 的 ground_spawn 配方（ zealot/stalker 为主）成为主配方。
+   - Timing 压力比 Rush 晚/轻，但 transition 期间星门冻结、追加产能暂停、fleet 科技让位，所有 mineral 被 Pylon/Cannon/Gateway/Zealot 吃掉，二矿兜底门槛 200 仍触达不到。
+   - 结果：单矿 26 农民被防御拖死，舰队科技即使不冻结也因为没有二矿支撑而无法规模产出。
+
+2. **去掉 stargate build order 后 early core 仍被等钱阻塞**
+   - O189 把 `CarrierOpenerZergTiming` 的 stargate 去掉，想释放 150 矿给二矿。
+   - 但 transition 期间 Forge/双 Gateway/Cannon 连续等钱，Cybercore→Stargate 的 early core 窗口被拉长；idle_builder 在 Cybercore/Stargate 处反复等钱，科技链实际解锁时间推后。
+
+3. **二矿兜底与 transition 的优先级未解耦**
+   - `_expand_holding` 攒钱逻辑只在 `_want_dynamic_expand=True` 时生效；transition 期间 `transition_expand_blocked` 会在 gateway 未到 cap 时阻断开矿。
+   - 单矿环境下 gateway cap 永远达不到，开矿被无限期阻塞；同时 `_expand_holding` 又因为没有 `want_dynamic_expand=True` 而不攒钱。
+
+### 改进点并落地为 O190
+
+1. **Zerg Timing 不再强制 transition，仅 Rush 强制**
+   - `bot/managers/production_manager.py:__init__`：`_transition_active = True` 的触发条件从 `self._ai_build in ("rush", "timing")` 收窄为 `self._ai_build == "rush"`。
+   - Zerg Timing 恢复 carrier 主配方，星门/舰队科技不再被 ground_spawn 冻结，避免单矿经济被地面防御吸干。
+
+2. **保留 O189 的二矿兜底门槛 200 与无 stargate build order**
+   - 解除 transition 后，Timing 局的 early core 资金压力减小，二矿兜底 200 更容易触发；fleet 科技链在 transition 外不再被 ground_spawn 抢占。
+
+3. **保留 rush 期间的 transition 机制与 ground 防御窗口**
+   - Zerg Rush 仍强制 transition，用 ground_spawn 顶住前期窗口后再转舰队；这是 O184/O186 验证过的 rush  survival 路径。
+
+### 验证与 bench
+
+- 单测：`poetry run python -m unittest discover -s tests -q` → **629 passed / 1 skipped**。
+- 已停止 O189 headless bench，清理残留 SC2 进程。
+- 新 bench 启动：
+  - Lane 1 `o190-vh-zerg-timing-headless`
+  - Lane 2 `o190-vh-zerg-rush-headless`
+- staggered 启动。
+
+- **O190 bench 已 staggered 启动**：Lane 1 (Timing) 监听 62416，Lane 2 (Rush) 监听 62444，均无 Blizzard Error。
+
+
+## 2026-08-05 O190 双 lane game_01 尸检与 O191 方向
+
+### O190 game_01 结果总览
+
+| lane | 对手 | 结果 | bench 真实时间 | 游戏内时间 | 终局基地/农民 |
+|---|---|---|---|---|---|
+| Lane 1 Timing | Zerg VeryHard/Timing | **Defeat** | 487s | 1386.2s | 0 / 3 |
+| Lane 2 Rush | Zerg VeryHard/Rush | **Defeat** | 268s | 887.9s | 0 / 0 |
+
+O190 改动（Zerg Timing 不强制 transition）在 Timing lane 实现了**二矿/三矿运营 + 舰队科技链跑通**，但终局仍因经济转化失衡被碾压；Rush lane 仍按 transition 走 ground 防御，单矿经济无法支撑翻盘。
+
+### Lane 1 Timing 尸检
+
+**关键状态时间线**：
+
+| t (s) | 经济 | 兵力 | 塔/建筑 | 备注 |
+|---|---|---|---|---|
+| 156 | 21 农民 / 1 基地 | 无 | cybercore pending | 开局矿紧 |
+| 317 | 26 农民 / 2 基地 | 2 叉 | 1 炮 1 电池 FB pending | 二矿刚落 |
+| 478 | 41 农民 / 2 基地 | 4 叉 1 先知 1 风暴 | 6 炮 3 星门 FB ready | 舰队起步 |
+| 638 | 41 农民 / 3 基地 | 2 叉 1 先知 4 风暴 | 9 炮 | 敌 40 supply 压境 |
+| 799 | **63 农民 / 3 基地** | 5 叉 1 先知 1 航母 6 风暴 | **23 炮** | **矿 60 / 气 1828** |
+| 1386 | 3 农民 / 0 基地 | 1 先知 | 1 水晶 1 FB | Defeat |
+
+**根因（≥3）**：
+
+1. **光子炮严重超建，吸干舰队矿**
+   - `flows.yml` carrier `expansion_cannons: {min:3, max:6}` 是**每基地**目标；3 基地时理论上限 18 门，实际 799s 造出 23 门。
+   - 23 门炮 × 150 矿 = 3450 矿，相当于 11-14 艘航母/风暴的产能被塔吃掉。
+   - 结果是气大量富余（1828），矿枯竭（60），fleet 数量无法对抗 Zerg 中后期空军（腐化/刺蛇/感染/大龙）。
+
+2. **fleet 成型速度仍慢**
+   - 799s 仅有 1 航母 + 6 风暴，面对 13 腐化 + 10 蟑螂 + 3 刺蛇 + 2 感染完全不够。
+   - 3 星门但矿不够，产出周期被拉长；舰队航标、升级虽然齐，但无矿转化为实际兵力。
+
+3. **威胁响应过度拉满塔**
+   - E9 敌压境时 `_should_build_defense` 把塔目标拉到 `ec.max`（每基地 6）， rush/timing 波次间隙也不及时降回来。
+   - 慢性威胁下持续铺塔，没有「威胁解除后停止铺塔、把钱转 fleet」的切换。
+
+### Lane 2 Rush 尸检
+
+**关键状态时间线**：
+
+| t (s) | 经济 | 兵力 | 塔/建筑 | 备注 |
+|---|---|---|---|---|
+| 116 | 18 农民 / 1 基地 | 无 | 1 门 1 gateway | presumed 兜底 |
+| 237 | 19 农民 / 1 基地 | 3 叉 1 追猎 | 1 forge | 首塔刚派工 |
+| 357 | 22 农民 / 1 基地 | 6 叉 2 追猎 | 3 炮 1 星门 | 单矿 ground |
+| 478 | 26 农民 / 1 基地 | 12 叉 5 追猎 | 4 炮 3 gateway | O189 强制二矿 |
+| 598 | 26 农民 / 2 基地 | 3 叉 9 追猎 1 虚空 | 3 炮 1 星门 | O100 解冻舰队 |
+| 887 | 0 农民 / 0 基地 | 1 风暴 | 1 气矿 1 水晶 | Defeat |
+
+**根因（≥3）**：
+
+1. **transition ground 阶段过长，单矿经济无法 scaling**
+   - Rush 强制 transition 后，主配方是 zealot/stalker；单矿 26 农民要同时养 forge/gateway/塔/气矿/二矿，地面部队只能续命，无法反攻。
+
+2. **转舰队太晚**
+   - 530s（游戏内）才触发 `O100:防御达标转舰队`，此时敌方已经发展壮大；fleet 没成型前基地已被打穿。
+
+3. **农民数量不足**
+   - 整局农民最高 27，二矿落地后没有快速补到 40+，经济和产能双双不足。
+
+### 改进点并落地为 O191
+
+1. **降低 carrier 塔数上限**
+   - `ares-bot/flows.yml` carrier `expansion_cannons.max` 从 6 降到 4（每基地），释放矿给舰队/农民。
+
+2. **Rush transition 期间允许经济扩张**
+   - `bot/managers/production_manager.py:_want_dynamic_expand`：Zerg Rush 在 transition 且防御基本站稳（塔≥2 + 地面≥8 + 家 40 格清净 15s）时，不再被 `transition_expand_blocked` 阻断二矿，让地面阶段有经济支撑。
+
+3. **fleet 未成规模时威胁分支也不拉满 max**
+   - `_should_build_defense` threat 分支：当前要求 `_fleet_total_now > 0` 才拉满 max，但 1-2 艘 fleet 也算 >0；改为 `fleet_total >= 3` 才拉满，否则走动态式。
+
+### 验证与 bench
+
+- 单测：`poetry run python -m unittest discover -s tests -q` → **629 passed / 1 skipped**。
+- 已停止 O190 bench，清理残留 SC2 进程。
+- 新 bench 启动：
+  - Lane 1 `o191-vh-zerg-timing-headless`
+  - Lane 2 `o191-vh-zerg-rush-headless`
+- staggered 启动。
+
+- **O191 bench 已 staggered 启动**。
+
+
+## 2026-08-05 O191 双 lane 尸检与 O192 落地
+
+### O191 game_01 结果总览
+
+| lane | 对手 | 结果 | bench 真实时间 | 游戏内时间 | 终局基地/农民 |
+|---|---|---|---|---|---|
+| Lane 1 Timing | Zerg VeryHard/Timing | **Defeat** | 330s | 1133.0s | 0 / 1 |
+| Lane 2 Rush | Zerg VeryHard/Rush | **进行中→无法挽回** | 302s+ | 1092.9s | 0 / 0 |
+
+O191 改动（限塔 + Rush transition 经济解锁）在 Timing lane 把塔数压到合理范围，
+但终局仍因舰队规模不足、经济转化失衡被碾压；Rush lane 进入残局拖时状态。
+
+### Lane 1 Timing 尸检
+
+**关键状态时间线**：
+
+| t (s) | 经济 | 兵力 | 塔/建筑 | 备注 |
+|---|---|---|---|---|
+| 28 | 11 农民 / 1 基地 | 无 | PYLON pending | **idle_builder: 农民钉点等 PYLON 30s+** |
+| 160 | 21 农民 / 1 基地 | 2 叉 | cyber/forge/gateway | 开局矿紧 |
+| 321 | 28 农民 / 2 基地 | 3 叉 | 1 炮 1 星门 | 二矿落地 |
+| 482 | 41 农民 / 2 基地 | 5 叉 1 先知 1 风暴 | 1 炮 | 舰队起步 |
+| 723 | 43 农民 / 3 基地 | 5 风暴 1 航母 | 1 炮 | 舰队小成 |
+| 803 | 41 农民 / 2 基地 | 6 风暴 | 1 炮 | 基地被打掉 1 个 |
+| 964 | 38 农民 / 2 基地 | 3 风暴 1 航母 | 1 炮 | 经济开始崩 |
+| 1133 | 1 农民 / 0 基地 | 1 先知 | 1 气矿 | Defeat |
+
+**终局统计**：idle worker time **631.25**、collected minerals 18630、vespene 5644。
+
+**根因（≥3）**：
+
+1. **开局农民反复钉点等 PYLON，采矿没有最大化**
+   - `AutoSupply` 在 supply_left<=2 的紧急人口通道下，被 O11 撤回的 PYLON 农民会立即重派。
+   - 同一农民从 t≈27 钉到 t≈55，等 100 矿 PYLON 空转近 30s，开局经济直接亏炸。
+   - 司令观察「仍然有农民，前期干等着造建筑，没有采矿最大化」实证命中。
+
+2. **Zerg Timing 转舰队太晚**
+   - O185 把 Zerg Rush/Timing 的 transition 退出点统一提到 500s，导致 Timing 局 fleet_at=500。
+   - 320s 前未转舰队，Timing 推进 400-500s 到脸时只有少量风暴/航母，被滚雪球。
+
+3. **舰队规模无法进入临界质量**
+   - 1133s 终局仅 1 航母 + 零星风暴，1125s 只剩 1 农民 0 基地。
+   - 3 基地经济因 base 被打、农民被屠没有持续转化为舰队；空有科技链无兵力。
+
+4. **残局无自动投降，拖长 bench 时间**
+   - Lane 2 在 0 基地 0 农民、只剩 2 风暴 + 1 水晶的情况下仍运行到 1090s+ 未结束。
+   - SC2 不判负导致 bench 真实时间被无意义拉长，且存在「SC2 进程卡死」误判风险。
+
+### Lane 2 Rush 尸检
+
+- state t=1092.9s：0 基地 / 0 农民 / 1 水晶 / 2 风暴，敌 Roach/Hydra/Corruptor/Locust 大军。
+- 已进入数学死局但 SC2 未判负，等待时间无意义。
+
+### 改进点并落地为 O192
+
+1. **开局前 60s PYLON 农民钉点强制 2s 冷却**
+   - `bot/managers/production_manager.py`：AutoSupply 注册条件改用 `_pylon_redispatch_ok`。
+   - 60s 内即使 supply_left<=2，PYLON 农民被 O11 撤回后也要冷却 2s 才重派，让农民先采矿。
+   - `bot/production_plans.py`：新增 `_pylon_redispatch_ok()` 纯函数，含单测接口。
+
+2. **Zerg Timing 不拖到 500s 转舰队**
+   - `bot/managers/production_manager.py`：`_fleet_at` 从 `max(_fleet_at, 500)` 仅对 Rush 生效，Timing 走 flows.yml 的 320s。
+
+3. **中残局自动投降/止损**
+   - `bot/main.py`：Q5 判负从「前 10 分钟」扩展到全时段；10 分钟后若基地全失且
+     工人≤2 或存款<250，立即 `await self._client.leave()`，避免垃圾时间与卡死误判。
+
+### 验证与 bench
+
+- 单测：`poetry run python -m unittest discover -s tests -q` → **629 passed / 1 skipped**。
+- 已停止 O191 bench，清理残留 SC2 进程。
+- 新 bench 启动：
+  - Lane 1 `o192-vh-zerg-timing-headless`
+  - Lane 2 `o192-vh-zerg-rush-headless`
+- staggered 启动。
+
+- **O192 bench 已 staggered 启动**。
+
+
+## 2026-08-05 O192 双 lane game_01 尸检与 O193 落地
+
+### O192 game_01 结果总览
+
+| lane | 对手 | 结果 | bench 真实时间 | 游戏内时间 | 终局基地/农民 |
+|---|---|---|---|---|---|
+| Lane 1 Timing | Zerg VeryHard/Timing | **Defeat** | 446s | 1292.9s | 0 / 21 |
+| Lane 2 Rush | Zerg VeryHard/Rush | **Defeat** | 405s | 1295.7s | 0 / 2 |
+
+O192 改动（开局 PYLON 冷却 + Timing 早转舰队 + 残局投降）让 Timing lane 经济/舰队规模一度成型,
+但终局仍因 fleet 被慢性磨光、不拆建筑而战败；Rush lane 地面阶段后单矿经济无法支撑舰队转型。
+
+### Lane 1 Timing 尸检
+
+**关键状态时间线**：
+
+| t (s) | 经济 | 兵力 | 塔/建筑 | 备注 |
+|---|---|---|---|---|
+| 26.8 | 11 农民 / 1 基地 | 无 | PYLON pending | **idle_builder 仍存在** |
+| 320 | 3 基地 42 农 | 4 风暴 | 1 炮 | 舰队起步 |
+| 654 | 3 基地 47 农 | 6 风暴 + 1 航母 | 1 炮 | 成型中 |
+| 928 | 3 基地 64 农 | **9 风暴 + 3 航母** | 1 炮 | **优势顶点** |
+| 1056 | 3 基地 63 农 | 6 风暴 | 1 炮 | 舰队开始损耗 |
+| 1292 | 0 基地 21 农 | 2 风暴 | 无 | Defeat |
+
+**终局统计**：idle worker time **799.56**、collected minerals **28840**、vespene 9188、
+killed value units **25325**、killed value structures **800**。
+
+**根因（≥3）**：
+
+1. **开局 PYLON 农民仍然空转**
+   - O192-① 只卡住了 AutoSupply 的 2s 冷却,但 **build_runner 开局序列的 PYLON 农民不在此限**。
+   - CarrierOpenerZergTiming 第一个 `11 supply` 触发后,接下来两个 PROBE 花掉 100 矿,
+     农民从 t≈27 钉到 t≈50+,idle worker time 继续滚雪球。
+
+2. **舰队成型后不拆建筑,只交换单位**
+   - 928s 优势顶点时 9 风暴 + 3 航母,但终局 killed value structures 仅 800,
+     敌方记住 4  Hatchery + 产兵建筑几乎全在。
+   - 舰队被敌方 Broodlord/Corruptor/Roach 慢性磨光,敌人 4 矿续兵永不断档。
+
+3. **fleet 补充跟不上战损**
+   - 从 928s(12 艘舰队) 到 1292s(2 艘), fleet 数量单调下降,星门产出未能填补损耗。
+   - cap 6 / mineral_gate 250 在 3 基地经济下只能维持 3 星门,产能不够。
+
+### Lane 2 Rush 尸检
+
+**关键状态时间线**：
+
+| t (s) | 经济 | 兵力 | 塔/建筑 | 备注 |
+|---|---|---|---|---|
+| 200 | 22 农 / 1 基地 | 地面部队 | 塔/门建造中 | idle_builder 刷屏 |
+| 400 | 25 农 / 1 基地 | 20 叉 + 5 追猎 | 3 门 1 星门 | 地面 peak |
+| 600 | 24 农 / 2 基地 | 9 叉 + 5 追猎 + 1 虚空 | 3 炮 | 刚转舰队 |
+| 900 | 22 农 / 2 基地 | 10 虚空 + 5 追猎 | 无 | 单矿经济枯竭 |
+| 1295 | 0 基地 2 农 | 6 虚空 | 无 | Defeat |
+
+**终局统计**：idle worker time **771.69**、collected minerals **14405**、vespene 5340、
+killed value structures **0**。
+
+**根因（≥3）**：
+
+1. **单矿 ground 阶段过长,经济无法 scaling**
+   - Rush transition 到 500s 才解冻舰队,ground 阶段把单矿资源吸干,
+     二矿虽然能开但农民/气矿跟不上。
+
+2. **完全不拆建筑**
+   - 终局 killed value structures = 0,敌方 Hatchery/产兵建筑一个没掉,
+     单矿换兵永远换不过。
+
+3. **农民 idle 依然严重**
+   - 771s idle,大量建造等待期农民干等,经济转化效率低下。
+
+### 改进点并落地为 O193
+
+1. **开局 PYLON 推迟到 12 supply**
+   - `ares-bot/protoss_builds.yml`：CarrierOpenerZergTiming 把第一个 `'11 supply'` 改为
+     `'12 supply'`,让 PYLON 农民派出时已有足够矿物,避免 build_runner 开局空转。
+
+2. **提高星门产能 cap + 降低矿门**
+   - `ares-bot/flows.yml`：`carrier.extra_production` 从 `{cap:6, mineral_gate:250}` 改为
+     `{cap:8, mineral_gate:200}`,让 3 基地后能拉到 4 星门,持续补充 fleet。
+
+3. **Rush 更早转舰队**
+   - `bot/managers/production_manager.py`：Zerg Rush 的 `_fleet_at` 从 `max(_fleet_at, 500)`
+     降到 `450`,给舰队更多成型窗口,strong_exit 评分门兜底防早退。
+
+### 验证与 bench
+
+- 单测：`poetry run python -m unittest discover -s tests -q` → **629 passed / 1 skipped**。
+- 已停止 O192 bench，清理残留 SC2 进程。
+- 新 bench 启动：
+  - Lane 1 `o193-vh-zerg-timing-headless`
+  - Lane 2 `o193-vh-zerg-rush-headless`
+- staggered 启动。
+
+- **O193 bench 已 staggered 启动**。
+
+
+## 2026-08-05 O193 game_01 结果与 O194 落地计划
+
+### O193 game_01 结果总览
+
+| lane | 对手 | 结果 | bench 真实时间 | 游戏内时间 | 终局基地/农民 | 关键问题 |
+|---|---|---|---|---|---|---|
+| Lane 1 Timing | Zerg VeryHard/Timing | **Victory** | ~520s | 1114.6s | 2 / 43 | trickle / supply_block / idle_builder |
+| Lane 2 Rush | Zerg VeryHard/Rush | **Defeat** | ~260s | 855.4s | 0 / 9 | one_base / idle_builder×32 / overrun |
+
+O193-①(PYLON 12 supply) 让 Timing lane 经济成型并赢下首局；但 Rush lane 仍因开局防御过慢、舰队重建窗掐死农民、单矿滚雪球失败而战败。
+
+### Lane 2 Rush 尸检
+
+**关键状态时间线**：
+
+| t (s) | 经济 | 兵力 | 备注 |
+|---|---|---|---|
+| 201 | 21 农 / 1 基地 | 1 叉 | 首批 10 狗到脸 |
+| 321 | 21 农 / 1 基地 | 1 叉 | 狗群峰值 16 只 |
+| 362 | 22 农 / 1 基地 | 2 追猎 + 1 叉 | 首条追猎才出 |
+| 495 | 24 农 / 1 基地 | 4 追猎 + 4 叉 | **O100 防御达标转舰队(评分26)** |
+| 603 | 25 农 / 2 基地 | 5 叉 + 4 追猎 + 1 虚空 | **首舰出场，距转舰队 108s** |
+| 723 | 24 农 / 2 基地 | 5 叉 + 4 追猎 + 3 虚空 | 敌方roach/ravager/infestor/hydra混合波到 |
+| 855 | 0 基地 / 9 农 | 无 | Defeat |
+
+**终局统计**：idle worker time 771.69、collected minerals 14405、vespene 5340、killed value structures 0。
+
+**根因（≥3）**：
+
+1. **Zerg Rush 沿用 Timing 开局，首塔/首叉太晚**
+   - `main.py` 对 Zerg Rush/Timing 统一用 `CarrierOpenerZergTiming`。
+   - 本局 forge 07:25、gateway 08:02、首叉 08:14、首炮 08:44 才落地（build_runner log），狗群 03:20 已到家门口。
+   - 等价的 03:00-04:00 物理空窗只靠 1 叉 + 农民硬顶，被滚雪球。
+
+2. **舰队重建窗掐死农民，经济在转舰队后断气**
+   - `production_manager.py` 在 `fleet_rebuild_window` 期间且 `workers >= 14` 就停止造农民。
+   - 本局 495s 转舰队 → 603s 首舰出场，这 108s 内工人卡在 24-27，二矿虽已就绪但农民不增长，矿收入无法支撑舰队 + 防御双轨。
+   - 阈值 14 过低：2 基地饱和需要 ~44 农，14 农就停训等于自杀。
+
+3. **星门/舰队航标在过渡期内被冻结，首舰出场严重滞后**
+   - transition 期间 `_build_flow_structures` 冻结 STARGATE/FLEETBEACON，转舰队后需从零拍星门 → 虚空，首舰 108s 后才出厂。
+   - 敌方在 600-700s 已转出 roach/ravager/infestor，3 艘虚空杯水车薪。
+
+### O194 落地计划
+
+1. **Zerg Rush 专用开局 `CarrierOpenerZergRush`**
+   - `protoss_builds.yml` 新增 opener：提前 Forge(~14 supply)、PhotonCannon(~17 supply)、Zealot(~19 supply)，让 03:00-04:00 有塔有叉。
+   - `main.py`：仅当 `_ai_build == "rush"` 且 Zerg 时切到该 opener；Timing 继续用 `CarrierOpenerZergTiming`。
+
+2. **舰队重建窗不再在低农时掐农民**
+   - `production_manager.py`：把 `fleet_rebuild_window(...) and workers >= 14` 改为按当前基地饱和数判定（例如 `workers >= 22 * max(1, townhalls)`）。
+   - 转舰队后优先保经济回血，避免 108s 零农民增长。
+
+3. **Rush 下允许过渡期内预建 STARGATE**
+   - `production_manager.py`：transition 冻结列表对 Zerg Rush 放行 STARGATE（FLEETBEACON 仍冻结到转舰队后），或把 Zerg Rush 的 `_fleet_at` 进一步降到 400 并用 strong_exit 兜底。
+   - 目标：转舰队后 30-45s 内首舰出场，而不是 108s。
+
+### 验证与 bench
+
+- 单测：改完后 `poetry run python -m unittest discover -s tests -q`。
+- 重开双车道 bench：
+  - Lane 1 `o194-vh-zerg-timing-headless`
+  - Lane 2 `o194-vh-zerg-rush-headless`
+
+
+## 2026-08-05 O194 双 lane 初步结果
+
+O194 已落地并启动双车道 bench：
+- Lane 1：`o194-vh-zerg-timing-headless`
+- Lane 2：`o194-vh-zerg-rush-headless`
+
+### 当前战绩（series 进行中）
+
+| lane | game_01 | game_02 | 备注 |
+|---|---|---|---|
+| Timing | Defeat (459.2s) | **Victory** (1134.7s) | game_01 方差/被快攻碾平，game_02 正常运营取胜 |
+| Rush | Defeat (1215.1s) | 进行中 | 前期明显改善，终局 fleet 仍被慢性磨光 |
+
+### O194 Rush game_01 复盘
+
+**关键状态时间线**：
+
+| t (s) | 经济 | 兵力 | 备注 |
+|---|---|---|---|
+| 136 | 16 农 / 1 基地 | 1 叉 | 新 build order 首叉比 O193 早 ~6 min |
+| 181 | 16 农 / 2 基地 | 2 叉 | 二矿很早落地 |
+| 342 | 27 农 / 2 基地 | 6 叉 + 1 追猎 | 地面防御站住 |
+| 590 | 25 农 / 2 基地 | 5 叉 + 4 追猎 + 1 虚空 | 首舰出场 |
+| 699 | 25 农 / 2 基地 | tempest 首次出现 | 舰队开始成型 |
+| 924 | 3 基地 | 1 航母 | 航母登场 |
+| 1100 | 3 基地 | 7 暴风 + 2 航母 + oracle | **优势顶点** |
+| 1215 | 0 基地 / 0 农 | 4 暴风 | Defeat |
+
+**终局统计**：idle worker time 待补、collected minerals 待补、max_bank 1095、终局敌 29 supply vs 我 4。
+
+**暴露的新问题**：
+
+1. **Fleet 不拆建筑，被慢性磨光**
+   - 1100s 优势顶点有 7 tempest + 2 carrier，但终局 killed value structures 仅 800（同 O192 Timing 模式）。
+   - 舰队在优势期没有主动推进拆 Hatchery/产兵建筑，敌方 4 矿续兵永不断档。
+
+2. **航母微操/目标优先级仍有问题**
+   - 终局只剩 tempest，carrier 被消耗掉且拦截机未发挥作用。
+   - 需要检查 carrier_offensive 在推家/engage 时的锚点和目标选择。
+
+3. **Idle_builder 仍 ×23**
+   - 新 build order 虽然快，但农民干等建造事件仍有 23 次，前期矿物被浪费。
+
+> 系列仍在跑（Timing 1-1，Rush 0-1），等 5 局打完再决定是否进入 O195。若 Rush 最终未达 3 胜，O195 重点：**fleet 推进拆建筑 + carrier 微操 + 减少 idle_builder**。
+
+
+## 2026-08-05 O195：O194 双 lane 提前终止 + 尸检
+
+O194 双车道因 Stability 问题提前终止（Timing game_03 超时，Rush game_02 崩溃/卡死、game_03 再负）。已收集的失败样本足够做尸检，直接进 O195。
+
+### O194 最终有效样本
+
+| lane | game_01 | game_02 | game_03 | 备注 |
+|---|---|---|---|---|
+| Timing | **Defeat** 459.2s | **Victory** 1134.7s | ERROR（超时，重试中） | 1-1，且第三局陷入长盘/超时 |
+| Rush | **Defeat** 1215.1s | **Defeat** 1284.4s（首局崩溃后残留 state） | **Defeat** 687.8s | 0-3，Rush 仍未达标 |
+
+### 失败局共性尸检（≥3 改进点）
+
+1. **idle_builder 仍是最大出血点**
+   - Timing game_01：开局 PYLON 农民在 `40,113` 从 t=32s 干等到 t=273s，同一 tag 反复被派去等 100 矿。
+   - Rush game_03：PHOTONCANNON 农民连续干等（155s、162s、174s、184s、191s、196s、204s、216s、234s、248s、250s…），每次 3s，累计大量矿物损失。
+   - 根因：
+     - `CarrierOpenerZergRush` 第一个 PYLON 写在 `10 supply`，触发瞬间下一个 PROBE 把 100 矿花掉。
+     - `AutoSupply` 的 `supply_left<=2` 紧急通道 + `_pylon_redispatch_ok` 在买不起时仍每 2s 重派，农民在「钉点→O11 撤回→再钉点」循环。
+   - **O195 改法**：
+     - Rush opener PYLON 推到 `11 supply` 且 worker 在前。
+     - `_pylon_redispatch_ok` 增加 `can_afford` 参数：买得起直接放行；买不起且 `supply_left>0` 时不重派农民，等钱够或 supply_left==0 再说。
+
+2. **Rush 中盘 remax 大波把基地滚平，fleet 成型太晚**
+   - Rush game_01：07:00 后敌方可见兵力从 57 → 116 supply，我方只有 4 tempest + 少量地面。
+   - Rush game_03：06:30 后敌方 20+ supply 虫群到家，fleet 仅 1 zealot，基地直接被推光。
+   - 根因：`CarrierOpenerZergRush` 的 CYBERNETICCORE/STARGATE 拖到 24/26 supply 以后，首舰出场在 11-12 min，赶不上 Zerg 5-7 min 的 remax。
+   - **O195 改法**：把 core 提前到 23 supply、stargate 提前到 25 supply，让舰队早出 30-60s。
+
+3. **1 基地时的 `_home_guard` 导致「丢基地→推不出去→被滚雪球」死循环**
+   - Rush game_01：1100s 优势顶点 7 tempest + 2 carrier，但只剩 1 基地，舰队被强制守家，无法推进换家；终局 0 基地。
+   - Rush game_03：同理，基地一掉 fleet 就蹲家等死。
+   - 根因：`combat_manager` 中 `_home_guard` 只要 `townhalls.amount < 2` 就全军蹲家；`_force_push` 阈值 10 艘/10 min，Rush 局优势顶点 9 艘不触发。
+   - **O195 改法**：
+     - `_force_push` 阈值从 `≥10 / t>600` 降到 `≥8 / t>540`。
+     - `_home_guard` 增加例外：舰队 ≥8 且 t>9min 时，即便只剩 1 基地也出门换家/抢回分矿，不再蹲家等死。
+
+4. **bench 稳定性：超时/崩溃后残留 SC2 孤儿进程污染下局**
+   - Timing game_03 超时后，SC2 进程变成 PPID=1 的孤儿；bench 重试新局时旧 SC2 仍在跑，双车道相互干扰。
+   - Rush game_02 崩溃重试后，旧 `state_*.json` 留在 `game_02/` 目录，retro 会读到崩溃局的脏数据。
+   - **O195 改法**：
+     - `bench.py` 增加 `_kill_orphan_sc2()`：单局结束后杀掉 PPID=1 的 SC2 孤儿。
+     - `bench.py` 增加 `_reset_game_dir()`：重试同一局前删除旧 state/result，旧 `run.log` Rotate 为 `run.log.1`。
+
+### O195 已落地改动
+
+1. `protoss_builds.yml`：`CarrierOpenerZergRush` PYLON 改 `11 supply`，core/stargate 各提前 1-2 supply。
+2. `bot/production_plans.py`：`_pylon_redispatch_ok` 按 `can_afford` 分流，买不起且有余人口时不重派农民。
+3. `bot/managers/production_manager.py`：把 `can_afford` 传给 `_pylon_redispatch_ok`。
+4. `bot/managers/combat_manager.py`：`_force_push` 阈值 8/540s；`_home_guard` 对成型舰队放行。
+5. `bench.py`：崩溃/超时后杀孤儿 SC2，重试前清理 game_dir 旧快照。
+
+### 验证
+
+- `poetry run python -m unittest discover -s tests`：629 passed / 1 skipped。
+- 下一组 bench：继续双车道 `o195-vh-zerg-timing-headless` + `o195-vh-zerg-rush-headless`。
+
+---
+
+## 2026-08-05 O195 headless 双车道 bench（Rush game_01 尸检）
+
+**对局**：`o195-vh-zerg-rush-headless` game_01，地图 `BelShirVestigeLE`，对手 Zerg VeryHard/Rush。  
+**结果**：Defeat @ 940.7s，结算 `supply=4/64, bases=0, workers=1, idle_worker_time=687.5`。  
+**同时进行的 Timing lane**：`o195-vh-zerg-timing-headless` game_01 运行至 1200s+（3 基地/64 农/195 人口），但 bench 任务因 10min 总超时被打断，未拿到最终 result。
+
+### 关键时间线
+
+| t (s) | 我方 | 敌方可见 | 经济/产能 |
+|---|---|---|---|
+| 164 | Forge 开始建造，农民已干等 3s | 6 狗 | 17 农/2 矿 |
+| 225 | 3 叉 + 1 炮，2 基地 | 1 农民 | 20 农 |
+| 353 | 6 叉，Cybercore 就绪 | 无 | 33 农 |
+| 417 | 9 叉/2 追猎，**首座 Stargate** 落地 | 无 | 41 农 |
+| 450 | 11 叉/2 追猎，3 基地 | 无 | 46 农 |
+| 482 | 地面部队被一波打残（剩 1 叉/1 追猎） | 5 蟑螂/3 刺蛇/1 狗 | 47 农 |
+| 610 | 2 叉/1 虚空，2 基地 | 22 单位（蟑螂/刺蛇/感染/狗） | 39 农 |
+| 867 | **FleetBeacon 才落地** | 无 | 30 农 |
+| 940 | 0 基地/1 农，Defeat | 37 单位大波 | 崩盘 |
+
+### 失败局尸检（≥3 改进点）
+
+1. **build runner 开局仍派农民「干等钱」造建筑（司令观察命中）**
+   - 本局 `idle_builder` 事件 **550 条**，最早从 t=164（Forge）开始，后续 PYLON、PHOTONCANNON 反复出现「等钱 3s」。
+   - 根因：`ares.build_runner.build_order_parser` 对神族建筑的 `start_condition` 是 `minerals >= cost - 75`（Pylon 只要 25 矿、Forge 只要 75 矿）就派农民；工人到位后钱被后续开销抽走，只能在建造点空转。
+   - **O196 改法**：Patch `ares-sc2/src/ares/build_runner/build_order_parser.py`——Protoss 的 SUPPLY/STRUCTURE 步骤改为 `can_afford` 才触发，买不起不派农民，彻底消灭 build-order 阶段的 idle_builder。
+
+2. **舰队转型极晚，全程无航母**
+   - Stargate 417s 才落地（build order 写的是 25 supply，但被地面防御/叉子吸干矿），FleetBeacon 867s 才拍，游戏结束没有一艘 CARRIER/TEMPEST，星门产的是虚空辉光舰（FB 前无法造暴风/航母）。
+   - 根因：transition 期的 ground_spawn（0.4 追猎/0.6 叉子）+ 3 兵营 + 塔链把矿物窗口全部吃掉，舰队科技被无限后置。
+   - **下一步改法**：
+     - 降低 transition 期地面兵力天花板（pre_fleet zealot cap 从 12 调低、gateway_cap 从 3 调 2），把矿物让给 FB/Stargate。
+     - 或给 carrier 流加「FB 就绪后强制 quota 补航母」机制，避免 TEMPEST p0 永远把 CARRIER p1 饿死。
+
+3. **地面部队集结不足、被小股部队分批吃掉**
+   - 450s 时我方 11 叉/2 追猎，敌方仅 9 单位；482s 时我方被打到只剩 1 叉/1 追猎。Zealot 无支援冲进 Roach/Hydra 射程被风筝。
+   - 根因：carrier 流没有 `rally_min_army`，transition 期单位逐只送上前线；且地面兵种配比中 Zealot 占 60%，面对 Zerg 远程兵种性价比差。
+   - **下一步改法**：transition 期临时启用 `rally_min_army`（例如 ≥8 地面 supply 才出门），并把 ground_spawn 调整为更偏追猎/更少叉子。
+
+4. **SC2 崩溃/超时后残留 `Blizzard Error` 孤儿进程**
+   - ps 中发现 PPID=1 的 `/Applications/StarCraft II/Support/Blizzard Error.app/Contents/MacOS/Blizzard Error` 已存活 4-5 分钟，是之前崩溃局遗留。
+   - **O196 改法**：`bench.py` 新增 `_cleanup_blizzard_error()`，bench 启动时杀掉存活 >60s 的 Blizzard Error 报告进程。
+
+### O196 已落地改动
+
+1. `ares-sc2/src/ares/build_runner/build_order_parser.py`：Protoss 的 SUPPLY/STRUCTURE 步骤 `start_condition` 改为 `can_afford`，开局 idle_builder 根因消除。
+2. `ares-bot/bench.py`：新增 `_cleanup_blizzard_error()`，启动时清理 SC2 崩溃遗留的 `Blizzard Error` 进程。
+3. 已记录到 `CLAUDE.md`：headless + 双车道并行作为项目记忆，O196 继续按此模式验证。
+
+### 验证
+
+- `poetry run python -m unittest discover -s tests`：待运行（本条目写入时）。
+- 下一组 bench：O196 继续双车道 `o196-vh-zerg-timing-headless` + `o196-vh-zerg-rush-headless`。
+
+---
+
+## 2026-08-05 O196 headless 双车道 bench（Rush game_01 尸检）
+
+**对局**：`o196-vh-zerg-rush-headless` game_01，地图 `AbyssalReefLE`，对手 Zerg VeryHard/Rush。  
+**结果**：Defeat @ 941.3s，`supply=5/48, bases=0, workers=3, idle_worker_time=900.9`。  
+**Timing lane**：game_01 运行到 t=1104s 时被中断，当时 2 基地/10 暴风/1 航母/50 农，占优但未完赛。
+
+### 关键时间线
+
+| t (s) | 我方 | 敌方可见 | 经济/产能 |
+|---|---|---|---|
+| 120 | 18 农，1 基地 | 无 | min=200 |
+| 181 | 2 叉，Cybercore 在建 | 无 | 21 农 |
+| 241 | 4 叉 | 无 | 23 农 |
+| 362 | 10 叉/1 追猎，Stargate 落地 | 无 | 25 农 |
+| 422 | 15 叉/2 追猎 | 无 | 25 农 |
+| 482 | 15 叉/8 追猎 | 无 | 25 农，min=215 |
+| 542 | 15 叉/8 追猎/1 虚空 | 1 狗 | 25 农 |
+| 570 | 14 叉/8 追猎/2 虚空 | 无 | 26 农，**二矿落地** |
+| 723 | 几乎全军覆没 | 波次 | 34 农 |
+| 900 | 5 叉/1 虚空 | 50 单位大波 | 崩盘 |
+
+### 失败局尸检（≥3 改进点）
+
+1. **FleetBeacon 永远没建出来，舰队转型彻底失败**
+   - Stargate 362s 落地，但直到败亡 FleetBeacon 都是「在建停滞 >45s 自救」状态，原因统一是 `no_money`。
+   - 根因：`_fleet_reserve` 只在 `fleet_transitioned + 首舰已出/防御评分≥25` 时保护 Nexus 资金，对 FB 资金没有同等保护；transition 期地面配方 + 塔链把 300/200 的 FB 资金窗永久吃光。
+   - **O197 改法**：
+     - 减少 transition 期地面兵力天花板，把矿物/气体让给 FB。
+     - 代码层：当 `_fb_truly_missing` 为真时，额外 Gateway 和 PSD 超 `min` 部分的塔也暂停，确保 FB 资金不被抽走。
+
+2. **地面兵力严重过量，经济被叉/追猎/塔吸干**
+   - 422s 已有 15 叉/2 追猎，后期叉子维持在 14-15；PhotonCannon idle_builder 事件 302 条，Gateway 152 条。
+   - `pre_fleet.max=12` + `transition.gateway_cap=3` 让 bot 在 transition 期无限拍兵营/叉子，把本该给 FB/二矿的钱全部吃掉。
+   - **O197 改法**：
+     - `flows.yml` carrier `pre_fleet.max` 12 → 8（减少叉海上限）。
+     - `flows.yml` carrier `transition.gateway_cap` 3 → 2（少一座兵营 = 150 矿给 FB）。
+
+3. **单矿经济被滚雪球，二矿拖到 10 分钟**
+   - 全程 25 农顶在 1 基地直到 570s，二矿落地即面临敌波，没有经济缓冲。
+   - 根因：防御 + 地面产能把矿吃光，`_fleet_reserve` 又因无首舰/评分不足无法保护 Nexus 资金。
+   - **O197 改法**：
+     - 降低 ground_spawn 矿耗后，二矿资金窗自然出现。
+     - 如仍不足，考虑在 transition 退出条件里加「地面兵力≥12 且家 40 格无敌 15s 即提前转舰队」，而不是死等 30s。
+
+4. **idle_builder 仍然泛滥（662 条）**
+   - build-order 阶段干等减少，但 PSD 炮塔/追加 Gateway/电池/气矿仍派农民等钱。
+   - **O197 改法**：在 `_build_extra_gateways` 和 PSD 调用点再收紧 `dispatch_viable` / 增加 `can_afford` 前闸，避免同时派多个工人等钱。
+
+### O197 已落地/计划改动
+
+1. `ares-bot/flows.yml`：carrier `pre_fleet.max` 12 → 8；`transition.gateway_cap` 3 → 2。
+2. `ares-bot/bot/managers/production_manager.py`（计划）：`_fb_truly_missing` 为真时，暂停追加 Gateway 和超 min 的 PSD 塔，优先保 FB 资金。
+3. 同步更新 `tests/test_flow_config.py` 的 shipped 断言。
+
+### 验证
+
+- `poetry run python -m unittest discover -s tests`：待运行（本条目写入时）。
+- 下一组 bench：O197 继续双车道 `o197-vh-zerg-timing-headless` + `o197-vh-zerg-rush-headless`。
+
+
+## 2026-08-05 O197 双车道 bench 结果 vs Zerg VeryHard（headless）
+
+### 战绩
+
+| Lane | 局 | 结果 | 时长 | 地图 | 终局状态 |
+|---|---|---|---|---|---|
+| Timing | game_01 | Defeat | 317.9s | PaladinoTerminalLE | 0 基地 / 3 农 / 3 人口 |
+| Timing | game_02 | Defeat | 1224.6s | NewkirkPrecinctTE | 0 基地 / 2 农 / 2 人口 |
+| Rush | game_01 | Defeat | 1656.2s | PaladinoTerminalLE | 0 基地 / 2 农 / 2 人口 |
+
+O197 3 局全败，未拿到任何一胜。
+
+### 关键数据
+
+- **Rush game_01** idle worker time = **730.8s**，Timing game_01 = 146.9s，Timing game_02 同样有大量 idle_builder 事件。
+- **Rush game_01** 终局 14 虚空 + 1 追猎 + 1 叉，但全程 **1 基地 11 农**，FleetBeacon 始终未建成（O110 反复报告「建造停滞 >45s，no_money」）。
+- **Timing game_02** 终局 8 Tempest，但全程 **1 基地 54 农**（后期被屠到 2 农），无法扩张。
+- **Timing game_01** 317s 即被击穿：CarrierOpenerZergTiming 在 PaladinoTerminalLE 这张图上太慢，3 分半还没 PhotonCannon。
+- **Rush game_01** 科技链过慢：CYBERNETICCORE 4:42 才落地，STARGATE 6:07 才落地，FleetBeacon 从未落地。
+
+### 失败局尸检（≥3 改进点）
+
+1. **FleetBeacon 资金在 rush/threat 期间被 F2 持续抽干，舰队转型永远完不成**
+   - `_fb_truly_missing`/`_fb_waiting` 已能识别 FB 缺资金，但 F2 注册守卫在 line 1248 对 `_fb_waiting` 开了三个例外：`_threat_active`、`_rush_active`、`_timing_sprint` 成立时继续铺塔。
+   - Rush game_01 中 rush_active 从 145s 持续到终局，于是塔/Pylon/电池/追加 Gateway 持续把 300/200 的 FB 资金窗吃光，14 虚空永远等不到 FleetBeacon。
+   - **O198 改法**：`_fb_waiting`（FB 已可建但买不起）时，F2 只保留 `ec.min` 底线，其余塔/电池/追加 Gateway/追加星门全部让位；buffer pylon（line 895-922）也接入 `_fb_ready_to_build()` 闸，禁止在 FB 资金未攒够时花 100 矿补人口 buffer。
+
+2. **buffer pylon 直接派工导致农民干等，idle_worker time 爆炸**
+   - fleet_supply_buffer_needed 分支用 `BuildStructure(PYLON)` 直接注册，只查 `can_afford`，没走 `dispatch_viable` 收入/走位守卫；钱在派工后被其他开销抽干 → 农民钉点等钱，反复触发 idle_builder。
+   - 三条 lane 的 idle_builder 事件里 PYLON 占大头（同 tag 反复 3s+ 等钱）。
+   - **O198 改法**：buffer pylon 注册前加 `dispatch_viable(self.ai.minerals, self._mineral_income_per_sec(), 0, 100)` 守卫；若 FB 资金保护激活，buffer pylon 让位。
+
+3. **单矿锁死，开矿条件被 rush/threat 永久冻结**
+   - 三局终局都是 1 基地；`auto_expand.first_expand_at=210` 在 rush/threat 期间被 `should_expand_dynamic` 的 rush 门拦住，transition 期又被 `_expand_holding` 锁住。
+   - Rush game_01 撑到 1656s 仍 1 基地 11 农，经济被滚雪球；Timing game_02 54 农仍 1 基地，无法把经济转成多基地产能。
+   - **O198 改法**：降低 carrier `first_expand_at` 210→150（8 农民开局 150s 约等于 12 农民 210s 的经济窗口）；在 rush/threat 解除后的安静窗强制开矿（ `_want_expand` 增加「家 40 格无敌 20s 且农民≥20」兜底），不再死等 `advantage_supply`。
+
+### O198 已落地/计划改动
+
+1. `ares-bot/bot/managers/production_manager.py`：
+   - F2 注册守卫收紧：`_fb_waiting` 时 threat/rush/timing 不再无限制铺塔，最多保留 `ec.min`。
+   - buffer pylon 加 `dispatch_viable` 守卫 + `_fb_ready_to_build()` 资金保护。
+2. `ares-bot/flows.yml`：carrier `auto_expand.first_expand_at` 210 → 150。
+3. 同步更新 `tests/test_flow_config.py` 的 shipped 断言。
+
+### 验证
+
+- `poetry run python -m unittest discover -s tests`：待运行。
+- 下一组 bench：O198 headless 双车道 `o198-vh-zerg-timing-headless` + `o198-vh-zerg-rush-headless`。
+
+
+## 2026-08-05 O198 双车道 bench 结果 vs Zerg VeryHard（headless，提前终止）
+
+### 战绩
+
+O198 跑完部分局后提前终止（Timing 已 0-3，数学上不可能达到 3/5）。
+
+| Lane | 局 | 结果 | 时长 | 地图 | 终局状态 |
+|---|---|---|---|---|---|
+| Timing | game_01 | Defeat | 499.8s | PaladinoTerminalLE | 0 基地 / 3 农 |
+| Timing | game_02 | Defeat | 429.6s | PaladinoTerminalLE | 0 基地 / 6 农 |
+| Timing | game_03 | Defeat | 417.0s | PaladinoTerminalLE | 0 基地 / 4 农 |
+| Timing | game_04 | 进行中（终止时 ~313s）| — | — | — |
+| Rush | game_01 | Defeat | 1095.3s | ProximaStationLE | 0 基地 / 2 农 |
+| Rush | game_02 | 刚开始（终止时）| — | — | — |
+
+### 关键数据
+
+- **Timing 0-3 全在 PaladinoTerminalLE**：随机连摇 3 次同图，该局 400-500s 被 Roach/Zergling 一波推平，终局 0 兵力。
+- **Timing 终局结构**：2 Gateway / 1 Stargate / 2 Cybercore / 1 Forge / 0 PhotonCannon（game_03）。F2 自动塔链事件里大量 `首塔派工=not_viable` / `taken`，实际一座炮塔都没立起来。
+- **Rush game_01 宏观大幅改善**：3 基地 / 56 农 / 5 Stargate / FleetBeacon 已建 / 13 光子炮，对比 O197 的 1 基地 11 农 0 FB 是质变。
+- **Rush game_01 舰队产能异常**：800s 时 5 星门 + FB + 895 矿 / 784 气，但场上只有 2 Tempest + 1 Oracle。星门群在 transition 后期似乎没有满负荷产舰队。
+- **Idle worker 下降**：Rush game_01 全程 idle_builder 数量级明显低于 O197；Timing 仍有 cannon/gateway 干等，但较 O197 减少。
+
+### 失败局尸检（≥3 改进点）
+
+1. **Timing 局炮塔链完全失效，基地裸奔被一波穿**
+   - game_03 终局 0 PhotonCannon，但日志显示 F2 反复尝试派工造首塔 → `not_viable` / `taken`，实际没有塔落地。
+   - 根因：CarrierOpenerZergTiming build order 只写 1 座 photoncannon（28 supply），且位置/时机对 PaladinoTerminalLE 的 Roach 波次（400s 前后到脸）太晚；F2 自动补塔在 mineral 紧张 + 出兵竞争下被无限后延。
+   - **O199 改法**：build order 里直接加入 2-3 座 photoncannon 且提前到 22-26 supply；`expansion_cannons.min` 3→4，确保 transition 期即便 F2 动态也至少 4 塔保底。
+
+2. **Rush 转舰队后舰队产能严重不匹配星门数量**
+   - 5 星门就绪、FB 就绪、资源充足，但 100s+ 只产出 2 Tempest。说明 `_effective_spawn` 在 `_rush_active` + `fleet_transitioned` 混合期的 freeflow 优先级/资源分配有问题，或者星门实际未全部就绪/被占用。
+   - **O199 改法**：在 mixed 模式（`rush_spawn_fleet_escape`）把 Tempest 优先级提到与 Zealot 同档或更高，避免 100 矿 Zealot 把 250 矿 Tempest 的 mineral 窗永远吃掉；同时检查 `freeflow` 在多星门时是否因 p0 Zealot 持续可负担而饿死 p1 Tempest。
+
+3. **随机地图连续命中 PaladinoTerminalLE 放大样本偏差**
+   - 3 局 Timing 全同图，无法判断是 build order 问题还是地图问题。
+   - **O199 改法**：bench 用 `--map random` 但连续同图会误导迭代；后续 bench 至少固定一 lane 在 AbyssalReefLE（baseline 图）做对照，避免单图偏差。
+
+### O199 已落地/计划改动
+
+1. `ares-bot/protoss_builds.yml`：`CarrierOpenerZergTiming` 提前并增加 photoncannon 数量（28 supply 1 座 → 24/26 supply 2 座）。
+2. `ares-bot/flows.yml`：carrier `expansion_cannons.min` 3 → 4。
+3. `ares-bot/bot/managers/production_manager.py`：调整 `rush_spawn_fleet_escape` 混合模式下舰队兵种优先级，避免 Zealot 持续吞 mineral 窗。
+4. 同步更新 `tests/test_flow_config.py` 的 shipped 断言。
+
+### 验证
+
+- `poetry run python -m unittest discover -s tests`：待运行。
+- 下一组 bench：O199 headless 双车道，Timing lane 固定 AbyssalReefLE 做对照 + Rush lane random。
+
+
+## 2026-08-05 O199b 双车道 bench 完整结果 vs Zerg VeryHard（headless, disable_timeout）
+
+### 战绩
+
+| Lane | 局 | 结果 | 时长 | 地图 | 终局状态 |
+|---|---|---|---|---|---|
+| Timing @AbyssalReefLE | game_01 | **Victory** | 1015.5s | AbyssalReefLE | 4 基地 / 67 农 / 200/200 supply |
+| Timing @AbyssalReefLE | game_02 | **Victory** | 940.5s | AbyssalReefLE | 2 基地 / 43 农 / 144/154 supply |
+| Timing @AbyssalReefLE | game_03 | **Victory** | 1089.0s | AbyssalReefLE | 3 基地 / 64 农 / 199/200 supply |
+| Timing @AbyssalReefLE | game_04 | Defeat | 430.7s | AbyssalReefLE | 0 基地 / 7 农 |
+| Timing @AbyssalReefLE | game_05 | Defeat | 472.9s | AbyssalReefLE | 0 基地 / 9 农 |
+| Rush @random | game_01 | Defeat | 1145.0s | AbyssalReefLE | 0 基地 / 2 农 |
+| Rush @random | game_02 | **Victory** | 956.6s | BelShirVestigeLE | 4 基地 / 63 农 / 186/200 supply |
+| Rush @random | game_03 | **Victory** | 1264.7s | NewkirkPrecinctTE | 4 基地 / 67 农 / 199/200 supply |
+| Rush @random | game_04 | Defeat | 910.8s | NewkirkPrecinctTE | 0 基地 / 1 农 |
+| Rush @random | game_05 | Defeat | 278.7s | PaladinoTerminalLE | 0 基地 / 3 农 |
+
+- **Timing @AbyssalReefLE：3-2，达成 3/5 目标。**
+- **Rush @random：2-3，未达成 3/5。**
+
+### 关键数据
+
+- Timing 均值终局编成：TEMPEST×16.7, CARRIER×3.7, STALKER×6.7, ZEALOT×4.0, ORACLE×1.0。
+- Rush 均值终局编成：TEMPEST×18.5, CARRIER×3.5, STALKER×4.5, ZEALOT×2.5, VOIDRAY×2.0。
+- Rush 输掉的两局：game_05 PaladinoTerminalLE 278s 被快攻滚平（0 兵力）；game_04 NewkirkPrecinctTE 910s 终局只有 2 虚空（舰队未成型/被推家）。
+- 复盘高频问题：idle_builder×5, one_base×2, overrun×2, trickle×2。
+
+### 尸检与 O200 改进点
+
+1. **Rush 在 PaladinoTerminalLE 278s 被裸奔滚平，早期防御不足**
+   - `CarrierOpenerZergRush` 虽有 forge/首塔/双叉，但在短 rush 距离图仍不够快。
+   - **O200 改法**：build order 再加 1 座 photoncannon（17/19 supply 双塔），并把 cybercore/stargate 再后挪 1-2 supply，确保首波前 2 塔+双叉到位。
+
+2. **Rush 中盘被慢性磨穿（game_04 910s 仅 2 虚空）**
+   - 经济/科技齐但舰队没续出来，可能 transition 后资源分配或 combat 回撤过度导致舰队送完。
+   - **O200 改法**：检查 `_effective_spawn` mixed 模式，降低 Zealot 持续吞矿的优先级，让 Tempest 在资源足够时优先产出；同时提高 combat 航母/暴风的 engage 积极性，避免被逐步蚕食。
+
+3. **Timing 3-2 刚达标，仍有 2 局 430-470s 早崩**
+   - 同样是 AbyssalReefLE，说明早期防御稳定性不够，不是地图问题。
+   - **O200 改法**：同步把 `CarrierOpenerZergTiming` 也加一座 early cannon；`expansion_cannons.min=4` 已生效，但 build order 阶段仍需更硬的塔底。
+
+### 下一步
+
+O200 主攻 Rush 早期防御 + 中盘舰队稳定性，Timing 顺带加固；单测通过后重启 headless 双车道 bench。
+
+
+## 2026-08-05 O200 双车道 bench 完整结果 vs Zerg VeryHard Rush（headless）
+
+### 战绩
+
+| Lane | 局 | 结果 | 时长 | 地图 | 终局状态 |
+|---|---|---|---|---|---|
+| PaladinoTerminalLE | game_01 | Defeat | 1095.7s | PaladinoTerminalLE | 1 基地 / 8 农 |
+| PaladinoTerminalLE | game_02 | Defeat | 540.6s | PaladinoTerminalLE | 1 基地 / 3 农 |
+| PaladinoTerminalLE | game_03 | Defeat | 341.6s | PaladinoTerminalLE | 1 基地 / 5 农 |
+| PaladinoTerminalLE | game_04 | Defeat | 405.4s | PaladinoTerminalLE | 1 基地 / 2 农 |
+| PaladinoTerminalLE | game_05 | **Victory** | 1074.2s | PaladinoTerminalLE | 1 基地 / 42 农 |
+| random | game_01 | Defeat | 560.5s | AbyssalReefLE | 0 基地 / 3 农 |
+| random | game_02 | Defeat | 1095.3s | ProximaStationLE | 0 基地 / 2 农 |
+| random | game_03 | **Victory** | 719.0s | AbyssalReefLE | 4 基地 / 67 农 |
+| random | game_04 | Defeat | 300.2s | NewkirkPrecinctTE | 0 基地 / 1 农 |
+| random | game_05 | **Victory** | 377.4s | NewkirkPrecinctTE | 4 基地 / 63 农 |
+
+- **PaladinoTerminalLE：1-4，未达成 3/5。**
+- **random：2-3，未达成 3/5。**
+- **O200 合计：3-7。**
+
+### 关键数据
+
+- **Lane1 (PaladinoTerminalLE) issue_counts**：one_base×5、idle_builder×5、overrun×3、trickle×1。
+- **Lane2 (random) issue_counts**：idle_builder×5、overrun×2、supply_block×2、trickle×2、bank×1、one_base×1。
+- **Lane1 失败局首塔/第二塔/星门时间**：game_01 3:10/—/5:30；game_02 2:37/3:42/5:09；game_03 4:29/5:43/7:34；game_04 3:33/4:19/5:52。
+- **Lane1 胜利局 game_05 时间**：2:33/3:10/4:43 —— 首塔早 1-2 分钟直接决定胜负。
+- **Lane1 5/5 one_base**：Rush 局二矿永远开不出，单矿经济被滚雪球。
+- **Lane2 game_05 胜利**：终局 4 基地 / 63 农，说明一旦二矿开出、fleet 成型就能赢。
+
+### 失败局尸检（≥3 改进点）
+
+1. **Rush build order 早期防御 timing 极不稳定，首塔波动 2:33-4:29**
+   - Lane1 四局失败中三局首塔 ≥3:10，game_03 甚至 4:29 才首塔，此时 Zergling 已在家扫了 1 分多钟。
+   - 胜利的 game_05 首塔 2:33、第二塔 3:10、星门 4:43；失败局平均星门 6:00+，fleet 成型晚 90-150s。
+   - 根因：build order 的 photoncannon 步骤前插了过多 worker/pylon，且 supply 触发受 8 农民开局/农民波动影响；某些局 forge 后 probe 被抽走或等钱，导致塔链断裂。
+   - **O201 改法**：`CarrierOpenerZergRush` 简化早期步骤，forge 后紧跟 2 座 photoncannon，中间最多插 1 个 worker，确保首塔 ≤2:30、第二塔 ≤3:15；同时把 cybercore/stargate 再后挪，让防御链先硬起来。
+
+2. **Rush 局 transition 退出太晚，fleet 转型被拖到 450s 后**
+   - production_manager.py 把 Zerg Rush 的 `fleet_at` 强制提到 450s，且 `fleet_exit_allowed` 默认要求地面 ≥14 supply + 星门已拍。
+   - 结果是 transition 期纯地面硬顶 7-8 分钟，单矿经济养不起足够地面，也没有舰队输出；敌方 remax 波次把地面磨光后直接穿家。
+   - Lane1 game_05 胜利局虽然也是 one_base，但 fleet 在 8:44 已开始升级，说明 fleet 早成型是翻盘关键。
+   - **O201 改法**：Zerg Rush 的 `fleet_at` 强制上限从 450 降到 360；`fleet_exit_allowed` 对 Rush 局降低地面门槛（12 supply 或防御评分 ≥25），让星门/舰队航标更早解冻。
+
+3. **二矿在 Rush 局几乎永远开不出**
+   - Lane1 5/5 one_base；Lane2 失败局中至少两局也是 0-1 基地到终局。
+   - `_want_dynamic_expand` 的兜底条件要求 t≥240、minerals≥200，但 rush 期 mineral 被塔/兵营/气矿持续抽干，400 矿 Nexus 永远攒不够；transition 期虽然有 t≥210 定时开矿，但需 `transition_active` 已进入，且 F2 塔链在 `_expand_holding` 期间仍可能抽干资金。
+   - **O201 改法**：Rush/transition 期强制二矿门槛降到 t≥210、minerals≥150；`_expand_holding` 期间 F2 塔目标严格压到 `ec.min`（1-2 座保命塔），其余全部让位给 Nexus 资金。
+
+4. **idle_builder 仍然是失败局最大标签（Lane1×5、Lane2×5）**
+   - 农民被派去造 photoncannon/pylon/gateway 后等钱，等钱期间不采矿。game_01 idle worker time 1145s，game_02 798s。
+   - 根因：build order 阶段同时启动多座建筑，100-150 矿的支出把 mineral 拆碎；ProtossStaticDefence 的 `dispatch_viable` 守卫挡不住「派工后钱被抽干」的情况。
+   - **O201 改法**：简化 build order 减少并行建筑；PSD 注册点加更严格的「当前 mineral ≥ 造价 + 50 buffer」硬 guard，避免农民等钱。
+
+### O201 已落地/计划改动
+
+1. `ares-bot/protoss_builds.yml`：`CarrierOpenerZergRush` 简化早期防御链，forge 后紧跟 2 座 photoncannon，cybercore/stargate 后挪，减少并行建筑数量。
+2. `ares-bot/bot/managers/production_manager.py`：
+   - Zerg Rush `fleet_at` 强制上限 450 → 360。
+   - `fleet_exit_allowed` 对 Rush 局降低地面门槛，让舰队更早解冻。
+   - Rush/transition 强制开二矿门槛 t≥240 → 210、minerals≥200 → 150。
+   - `_expand_holding` 期间 F2 塔目标严格压到 `ec.min`。
+3. `ares-bot/bot/production_plans.py`：同步调整 `transition_expand_at_210` 默认 at=210 → 180（或改调用方传参）。
+4. 同步更新 `tests/test_flow_config.py` 的 shipped 断言（如 flows.yml 有改动）。
+
+### 验证
+
+- `poetry run python -m unittest discover -s tests`：待运行。
+- 下一组 bench：O201 headless 双车道，Lane1 PaladinoTerminalLE + Lane2 random。
+
+## 2026-08-05 O201 headless 双车道 bench（超时终止，部分结果）
+
+> 运行命令超时 600s，两条 lane 均未完成 5 局；SC2 残留已清理。已完成局数据足够说明 O201 未解决核心问题。
+
+### 部分战绩
+
+| Lane | 局 | 结果 | 时长 | 地图 | 终局状态 |
+|---|---|---|---|---|---|
+| PaladinoTerminalLE | game_01 | Defeat | 189s | PaladinoTerminalLE | 0 基地 / 4 农 |
+| PaladinoTerminalLE | game_02 | Defeat | 251s (实际 984s) | PaladinoTerminalLE | 0 基地 / 0 农 / 6 Tempest |
+| PaladinoTerminalLE | game_03 | 超时中断 | ~687s | PaladinoTerminalLE | 1 基地 / 9 农 / 5 Zealot+1 Voidray |
+| random | game_01 | Defeat | 256s | ProximaStationLE | 0 基地 / 0 农 |
+| random | game_02 | 超时中断 | ~1170s | PaladinoTerminalLE | 0 基地 / 0 农 |
+
+- **已完成局：0 胜 4 败（含 2 局超时中断）。**
+- **关键信号**：idle worker time 仍 550-752s；game_03 首塔 2:54、二塔 5:21，比 O200 部分局更差。
+
+### 失败局尸检（≥3 改进点）
+
+1. **build order 里 forge→双塔之间仍插 worker，二塔 timing 极不稳定**
+   - O201 意图是“forge 后紧跟 2 座 photoncannon，中间最多 1 个 worker”，但实际 `CarrierOpenerZergRush.OpeningBuildOrder` 写的是 `14 forge`、`14 worker`、`15 photoncannon`、`16 worker`、`17 photoncannon`。
+   - 这导致首塔被 14-supply worker 延迟，二塔被 16-supply worker 延迟；game_03 首塔 2:54、二塔 5:21，Rush 中段已穿家。
+   - **O202 改法**：把 forge 后的 worker 全移除，改为 `14 forge`、`15 photoncannon`、`16 photoncannon`、`17 supply`，双塔紧挨 forge；supply 和 worker 全部后移到二塔之后。
+
+2. **idle worker time 仍是最大杀手（550-752s）**
+   - 已完成局中农民大量时间不在采矿。根因是 build order 阶段并行建筑太多（pylon/gateway/forge/photoncannon/worker 交错），农民被反复派去等钱建筑；PSD 在 build order 期间还会额外注册炮塔/水晶，加剧钉点。
+   - **O202 改法**：① 简化 Rush opener，把非防御建筑（cybercore/stargate）全部推到 23+ supply 之后，前期只留 pylon/gateway/forge/双塔/双叉；② 在 build order 完成前（或至少二塔落地前）限制 PSD 注册，避免与 build order 抢工人和 mineral。
+
+3. **二矿/舰队转型仍无经济支撑**
+   - game_02 两条 lane 都打到中后期（984s / 1170s），但终局 0 工人、0 基地，说明中期守住了却无法恢复经济；fleet 转型门槛降到 360s 并未改变“rush 期 mineral 被防御抽干 → 无农民 → 无二矿 → 舰队没经济”的链条。
+   - **O202 改法**：rush 确认后，在二塔/双叉到位前暂停 zealot 持续生产和 PSD 额外塔，把 mineral 优先留给 Nexus；`first_expand_at` 对 Rush 进一步降到 150s 或按“二塔就绪 + 敌首波退”事件触发，而不是等固定时间。
+
+4. **Bash 600s 超时导致 bench 没跑完**
+   - 5 局 headless bench 在部分局长局下需要 >10 分钟，当前 `timeout_ms=600000` 会把整组 bench 杀死，造成数据不完整和 SC2 孤儿进程。
+   - **O202 改法**：后续 bench 用无超时或 3600s 超时启动，避免 runner 被系统杀掉。
+
+### O202 已落地/计划改动
+
+1. `ares-bot/protoss_builds.yml`：`CarrierOpenerZergRush` 简化 opener，forge 后连下双塔，worker/tech 后移。
+2. `ares-bot/bot/managers/production_manager.py`：在二塔落地前抑制 PSD 额外注册，防止与 build order 抢资源。
+3. 后续 bench 启动改为 `--timeout 900` + runner 级 3600s / 无超时，确保 5 局能跑完。
+4. 单测：`poetry run python -m unittest discover -s tests` 待运行。
+5. 下一组 bench：O202 headless 双车道，Lane1 PaladinoTerminalLE + Lane2 random。
+
+
+## 2026-08-05 O202 headless 双车道 bench 完整结果 vs Zerg VeryHard Rush（提前终止）
+
+> 两条 lane 实际完成 5 局（Lane1 3 局 + Lane2 2 局），全部为 Defeat；game_03 后耗时过长，为加速迭代提前终止 bench。已完成 5 局数据已足够暴露 O202 核心瓶颈。
+
+### 战绩
+
+| Lane | 局 | 结果 | 游戏时间 | 地图 | 终局状态 |
+|---|---|---|---|---|---|
+| PaladinoTerminalLE | game_01 | Defeat | 1046.5s | PaladinoTerminalLE | 0 基地 / 1 农 / 2 Tempest |
+| PaladinoTerminalLE | game_02 | Defeat | 759.8s | PaladinoTerminalLE | 0 基地 / 1 农 / 1 Voidray |
+| PaladinoTerminalLE | game_03 | Defeat | 1227.8s | PaladinoTerminalLE | 0 基地 / 3 农 / 5 Voidray |
+| random | game_01 | Defeat | 965.0s | PaladinoTerminalLE | 0 基地 / 2 农 / 无军队 |
+| random | game_02 | Defeat | 997.0s | PaladinoTerminalLE | 0 基地 / 1 农 / 2 Voidray+1 Oracle+1 Tempest |
+
+- **PaladinoTerminalLE：0-3**
+- **random：0-2（随机图连摇两次 PaladinoTerminalLE）**
+- **O202 合计：0-5**
+
+### 关键数据
+
+- **早期防御 timing 已稳定**：forge 01:30-01:31、首塔 02:02-02:03、二塔 02:10-02:33，较 O200/O201 大幅提前。
+- **二矿首次建成时间**：405.8s / 474.1s / 494.2s / 546.4s（均在 7-9 分钟才开出）。
+- **农民峰值 → 终局**：28→1、40→1、26→3、41→2、37→1。农民在 7-10 分钟内几乎全部死光且未补回。
+- **终局资源**：minerals 15-215（枯竭），vespene 742-1546（烂银行）。气体严重过剩，矿物枯竭。
+- **终局舰队**：除 game_03 有 5 Voidray 外，其余 0-2 艘舰队单位。星门/FleetBeacon 多数局已就绪，但无矿持续产。
+- **issue 标签高频**：idle_builder（每局 5-10 次）、O145 农民停滞（每局 3-8 次）、E6 基地被抄（每局 1-3 次）、E9 敌压境（每局 1-3 次）。
+
+### 失败局尸检（≥3 改进点）
+
+1. **`_rush_active` 一旦置位几乎永不解除，经济被锁死到终局**
+   - 所有已完局的后期事件里 `rush=True` 持续存在（game_03 直到 1220s 仍 rush=True）。
+   - `_update_rush_state` 解除条件要求「家 40 格内无敌作战单位持续 60s」；Zerg Rush/持续骚扰局总有零星狗/蟑螂在家附近，60s 清净窗永不满足。
+   - rush_active 掐死：probe 生产（`not self._rush_active`）、动态扩张（`expansion_blocked` 读 rush_active）、`_rush_economy_response` 停气/取消建筑。
+   - 结果：农民死光不补、二矿开出后守不住、气体烂银行。
+   - **O203 改法**：舰队已转型成功（`_fleet_transitioned=True`）且防御评分≥15（或 10 叉/5 塔级）时，强制解除 `_rush_active`，恢复 probe 生产和扩张。rush 响应包只服务于「尚未转型」的急性窗，舰队成型后应切回运营。
+
+2. **农民生产被多重刹车家族长期压制**
+   - `_build_probes` 的主路径在 `_rush_active` 期间完全停止（除非 `_probe_floor` 或 `_rush_hold`）。
+   - `probe_floor_needed` 只在 `t≤350s` 生效，且要求非急性窗；中后期农民掉到 1-3 也不触发。
+   - `transition_probe_yield`、`fleet_rebuild_window`、`forge_first_probe_yield` 等叠加，把农民长期压在 12-16，而赢局时代退出时 15-20 农。
+   - **O203 改法**：新增「经济崩溃底线」——当 `supply_workers < min(16, 22 * townhalls.amount)` 时，无论 rush/transition/重建窗，优先补农民（probe 生产凌驾于 zealot/塔/科技预留）。没有农民就没有矿，没有矿就没有舰队。
+
+3. **舰队转型后仍被 zealot 消耗 mineral，gas 烂银行**
+   - `_effective_spawn` 在 `_rush_active` 且 zealots < `rush_zealots` 时，要么纯叉要么 0.3 叉 0.7 舰队混编。
+   - 舰队单位（Voidray 150/150、Tempest 250/175、Carrier 350/250）都需要矿；zealot 持续吞矿导致星门空转、gas 囤积 1000+。
+   - 终局 0-2 艘舰队 vs 1000+ gas 反复出现。
+   - **O203 改法**：`_fleet_transitioned=True` 后，`_effective_spawn` 不再走 rush_zealots 分支，直接返回纯舰队配方（save_up 正常作用）；仅当敌可见空军威胁 ≥ trigger 时才混入 anti_air。把 mineral 从 zealot 黑洞里释放出来。
+
+4. **二矿/分矿无即时防御，开出即被抄**
+   - 新 Nexus 建成后 events  rarely 出现 F2 注册防御；多数局二矿刚落成就遭遇 E6「基地被抄」，农民撤离后分矿直接丢。
+   - ProtossStaticDefence 的目标按基地数均摊，新基地没有「落地即 2-3 塔」的硬保底。
+   - **O203 改法**：Nexus 建成后 15s 内，若该基地 12 格内就绪塔 <2，强制追加 2 座 photoncannon（走带 can_afford 守卫的 `_build_core_structure`，不抢 build order）。二矿塔先落位再谈经济。
+
+5. **随机地图连续命中 PaladinoTerminalLE，样本单一**
+   - Lane2 `--map random` 两局都是 PaladinoTerminalLE，无法判断是 build 问题还是地图特化。
+   - **O203 改法**：bench 至少固定一 lane 在 AbyssalReefLE（对照 baseline），或显式排除已过度验证的图；本次先以 PaladinoTerminalLE 为压力图继续迭代，后续补 random 多样本。
+
+### O203 已落地/计划改动
+
+1. `ares-bot/bot/managers/production_manager.py`：
+   - `_update_rush_state`：`_fleet_transitioned=True` 且 `_defense_score() >= 15` 时，强制把 `_rush_active` 置 False，打破 rush 经济锁。
+   - `_build_probes` 前置逻辑：新增「经济崩溃底线」，`supply_workers < min(16, 22 * townhalls.amount)` 时绕过 rush/transition/重建窗刹车，强制补农民。
+   - `_effective_spawn`：`_fleet_transitioned=True` 后不再走 `rush_zealots` 分支，直接返回舰队配方，避免 zealot 持续吞矿。
+   - `_handle_new_base_defense`（新增）：Nexus 落成后 15s 内为该基地补 2 座 photoncannon。
+2. `ares-bot/bot/production_plans.py`：
+   - 新增/调整 helper：`fleet_transitioned_clears_rush`、`probe_economy_floor`。
+3. 同步更新相关单测。
+
+### 验证
+
+- `poetry run python -m unittest discover -s tests`：待运行。
+- 下一组 bench：O203 headless 双车道，Lane1 PaladinoTerminalLE + Lane2 AbyssalReefLE（对照）。
+
+
+## 2026-08-06 O203 headless 双车道 bench 完整结果 vs Zerg VeryHard Rush
+
+> 运行模式：**headless（`REALTIME=False`）+ 双车道并行**，Lane1=PaladinoTerminalLE，Lane2=AbyssalReefLE。两条 lane 均为 5 局完成，无 runner 超时、无残留 SC2 进程。
+
+### 战绩
+
+| Lane | 局 | 结果 | 游戏时间 | 地图 | 终局状态 |
+|---|---|---|---|---|---|
+| PaladinoTerminalLE | game_01 | **Victory** | 1625.4s | PaladinoTerminalLE | 1 基地 / 31 农 / 6 Carrier + 4 Tempest + 2 Voidray |
+| PaladinoTerminalLE | game_02 | Defeat | 1559.6s | PaladinoTerminalLE | 1 基地 / 4 农 / 2 Tempest + 2 Voidray |
+| PaladinoTerminalLE | game_03 | Defeat | 1196.6s | PaladinoTerminalLE | 1 基地 / 3 农 / 8 Stalker + 5 Voidray + 1 Carrier |
+| PaladinoTerminalLE | game_04 | Defeat | 967.2s | PaladinoTerminalLE | 0 基地 / 2 农 / 2 Tempest + 1 Carrier |
+| PaladinoTerminalLE | game_05 | Defeat | 434.6s | PaladinoTerminalLE | 0 基地 / 1 农 / 无军队 |
+| AbyssalReefLE | game_01 | Defeat | 1187.0s | AbyssalReefLE | 0 基地 / 1 农 / 2 Tempest + 2 Voidray |
+| AbyssalReefLE | game_02 | Defeat | 1083.7s | AbyssalReefLE | 1 基地 / 1 农 / 1 Tempest + 2 Voidray |
+| AbyssalReefLE | game_03 | Defeat | 1192.0s | AbyssalReefLE | 1 基地 / 3 农 / 2 Tempest + 2 Voidray |
+| AbyssalReefLE | game_04 | Defeat | 1080.7s | AbyssalReefLE | 1 基地 / 2 农 / 2 Tempest + 3 Voidray |
+| AbyssalReefLE | game_05 | Defeat | 898.7s | AbyssalReefLE | 0 基地 / 0 农 / 1 Tempest + 1 Voidray |
+
+- **PaladinoTerminalLE：1-4，未达成 3/5。**
+- **AbyssalReefLE：0-5，未达成 3/5。**
+- **O203 合计：1-9。**
+
+### 关键数据
+
+| 指标 | PaladinoTerminalLE | AbyssalReefLE |
+|---|---|---|
+| 平均时长 | 1193.6s | 1088.4s |
+| 最高银行 | 580 minerals | 1090 minerals |
+| Carrier 首次出现平均 | 1146.4s | 972.3s |
+| Interceptor 首次出现平均 | 1309.8s | 1008.5s |
+| 终局平均编成 | ZEALOT×2, VOIDRAY×5, CARRIER×1, ORACLE×1, TEMPEST×3.7, **STALKER×8** | TEMPEST×2, ORACLE×1, ZEALOT×1, VOIDRAY×2 |
+| issue_counts | one_base×5, idle_builder×5, overrun×4, trickle×1 | one_base×3, idle_builder×5, overrun×5, trickle×2 |
+
+- **Paladino 唯一胜局 game_01**：1 矿硬守 534s 才开二矿，靠 Voidray→Tempest→Carrier late-game 推掉。
+- **Abyssal 终局舰队只剩 2 Tempest/2 Voidray**：max_bank 1090 说明**有钱花不出去**——不是收入问题，是产能/科技链被锁死。
+- **Paladino 终局平均 8 Stalkers**：气体被地面单位（主要是追猎）吃掉，fleet 上不了量。
+
+### 失败局尸检（≥3 改进点）
+
+1. **transition 退出太晚，fleet 转型平均拖到 970-1150s**
+   - 当前 `flows.yml` carrier.transition.fleet_at=320，代码对 Zerg Rush 强制 `max(fleet_at, 360)`。
+   - 但实际 Carrier 首次出现均值 Paladino 1146s / Abyssal 972s，说明即使过了 360s 的“时间闸”，`fleet_exit_allowed` 的经济/地面/星门叠加门 + `fleet_transition_strong_exit` 的清净 30s/领先敌情 10 supply 仍把退出锁死到 8-12 分钟。
+   - 败局中 `_transition_active` / `_rush_active` 长期不解冻，星门/FleetBeacon 被冻结，农民停滞（O145）、首塔派工 not_viable/tech_not_ready、基地 2→1→0。
+   - **O204 改法**：
+     - Zerg Rush 强制 `fleet_at` 从 360 降到 **280**；Timing 保持 320。
+     - `fleet_transition_strong_exit` 的 `min_defense` 从 25 降到 **20**，`clear_needed` 从 30s 降到 **20s**（Zerg Rush 骚扰密度高，30s 清净窗太奢侈）。
+     - `fleet_exit_allowed` 的 deadline 从 540s 提前到 **480s**，Rush 局 `min_ground` 从 10 降到 **6**（足够 3 叉/3 追猎即可，不强求地面大军）。
+
+2. **地面配方吃气过多，fleet 产能被 stalker 挤占**
+   - transition 的 `ground_spawn` 是 STALKER:ZEALOT = 0.4:0.6，STALKER p0 优先；Paladino 终局平均 8 Stalkers，每追猎 125/50 持续抽血抽气。
+   - 过渡地面本应是“矿耗肉盾”，结果气被追猎吃掉，FB 就绪后没气出 Voidray/Carrier。
+   - **O204 改法**：
+     - transition ground_spawn 改为 **STALKER:ZEALOT = 0.2:0.8**，或彻底关闭 stalker（0:1），只靠 zealot + 塔守窗。
+     - 同步把 `gateway_cap` 从 2 降到 **1**（少一座兵营抢 150 矿），让 FB/二矿资金窗更早出现。
+
+3. **二矿仍然开得太晚/开不出，单矿经济被滚雪球**
+   - Paladino 5/5 one_base；Abyssal 3/5 one_base。`first_expand_at=150` 已写入 flows，但 rush_active 期间 `should_expand_dynamic` 直接返回 False，transition 期二矿需 `transition_expand_ready`（塔≥2、地面≥4、清净≥8s），门槛仍高。
+   - `_expand_holding` 期间塔链/地面仍可能把 Nexus 资金吃光。
+   - **O204 改法**：
+     - Rush/transition 期引入**强制二矿触发器**：当时间 ≥180s、已有≥2 座就绪 photoncannon、且家 40 格无敌 ≥3 时，无视 `rush_active` 直接触发 `_want_expand`。
+     - `_expand_holding` 期间，非 rush/threat 急性窗时把塔目标严格压到 `ec.min`（1-2 座），剩余 mineral 全部让给 Nexus。
+     - `transition_expand_ready` 的 `min_ground` 从 4 降到 **2**，`clear_needed` 从 8s 降到 **5s**。
+
+4. **`rush_active` 在舰队成型后再触发就解不开，经济二次锁死**
+   - O203 只在 `_fleet_transitioned` 且评分≥15 时强制解 rush，但败局中 rush 在 transition 期/转舰队后被重新置位（敌后续压家）就再也解不开。
+   - 一旦重新置位，probe 生产、动态扩张、`_rush_economy_response` 停气全部恢复锁死。
+   - **O204 改法**：
+     - 新增**硬解冻条件**：当 `time > 480s`、已有就绪星门 + FleetBeacon、且 `_fleet_transitioned=True` 时，无论家附近有没有敌兵，都把 `_rush_active` 置 False；若敌真压家，`_update_rush_state` 下帧会重新置位，不影响守家响应。
+     - 该解冻只执行一次（latch），避免反复横跳。
+
+5. **idle_builder 仍是 10/10 标签，前期农民干等造建筑**
+   - 司令观察：仍有农民前期干等着造建筑，没有采矿最大化。
+   - 根因：PSD 首塔/气矿/pylon 反复 not_viable，probe 被钉在建造点；build order 完成后 `ProtossStaticDefence` 与 `AutoSupply`/`pylon buffer` 并行注册，多座建筑同时派工等钱。
+   - **O204 改法**：
+     - 前期（`time < 120s`）`ProtossStaticDefence` 注册前加硬 guard：`minerals ≥ 目标建筑矿价 + 75 buffer`，不够就不注册，避免农民等钱。
+     - `BuildStructure` 派工点 fallback：当首选 placement 连续 2s not_viable 时，换到主矿其他空闲槽位（`closest_to` 改 `fallback_to_base_center`），避免探机被钉在无效点。
+     - `_handle_idle_workers` 的 `early_age` 前期从 1.5s 降到 **1.0s**，矿缺口 3s 收入补不上立即撤回。
+
+### O204 已落地/计划改动
+
+1. `ares-bot/flows.yml`：
+   - carrier.transition.fleet_at：Zerg Rush 强制上限 360 → **280**。
+   - carrier.transition.ground_spawn：STALKER 比例 0.4 → **0.2**（或 0），ZEALOT 0.6 → **0.8**（或 1.0）。
+   - carrier.transition.gateway_cap：2 → **1**。
+   - carrier.auto_expand.first_expand_at：Rush/transition 期引入 180s 强制二矿触发器，不依赖 `rush_active` 解锁。
+
+2. `ares-bot/bot/managers/production_manager.py`：
+   - `_update_transition_state`：Rush 局 `fleet_at` 降到 280；strong_exit 评分门 25→20、清净窗 30s→20s。
+   - `_update_rush_state`：新增 `time > 480s + SG/FB 就绪 + _fleet_transitioned` 硬解冻，只执行一次。
+   - `_want_dynamic_expand` / `_expand_holding`：Rush/transition 期 180s 后若防御站稳强制开二矿；holding 期间非急性窗塔目标压到 ec.min。
+   - F2/PSD 注册点：前期加 mineral buffer guard，防止农民等钱；placement not_viable 时 fallback 到基地中心附近。
+
+3. `ares-bot/bot/production_plans.py`：
+   - `fleet_transition_strong_exit`：允许调用方传 `min_defense`/`clear_needed`（默认不变，Rush 局传 20/20）。
+   - `fleet_exit_allowed`：Rush 局 deadline 540→480、`min_ground` 10→6。
+   - `transition_expand_ready`：`min_ground` 4→2、`clear_needed` 8→5。
+   - 新增 `forced_expand_during_transition` 判据（180s/2 塔/清净 5s/矿≥200）。
+
+4. 同步更新相关单测（`tests/test_production_plans.py`、`tests/test_flow_config.py` 如受影响）。
+
+### 验证
+
+- `poetry run python -m unittest discover -s tests`：待运行。
+- 下一组 bench：O204 headless 双车道，Lane1 PaladinoTerminalLE + Lane2 AbyssalReefLE（继续压力图对照）。
+
+## 2026-08-05 O204 carrier vs Zerg VeryHard/Rush headless 双车道 bench
+
+### O204 验证结果
+
+- **Lane1 PaladinoTerminalLE**: 2 胜 3 负 → 未达 3/5
+  - 胜：game 01 (548s), game 02 (751s)
+  - 负：game 03 (825s), game 04 (713s), game 05 (175s)
+- **Lane2 AbyssalReefLE**: 3 胜 2 负 → **达成 3/5**
+  - 胜：game 01 (610s), game 04 (769s), game 05 (797s)
+  - 负：game 02 (449s), game 03 (434s)
+
+按项目规则（任一 lane 3/5 即算该组合通过），**Zerg Rush 组合通过**。但 Paladino 2/3 败局暴露系统性问题，必须做尸检并落地 O205 后再进下一组合。
+
+### O204 败局尸检（ Paladino 3 负 + Abyssal 2 负，合并模式）
+
+**共同根因 1：二矿/分矿防御交付失败，自然基地常 0 炮塔即被攻陷**
+- Abyssal game_02/game_03：自然基地被攻时 `F2:...,(70,118,0,3)`，0 光子炮、3 水晶。
+- Paladino game_05：343s 判定“防御达标”转舰队，实际仅 3 炮/2 电池，399s 被 14 狗+5 蟑螂+5 刺蛇一波穿掉二矿。
+- 根因：`expansion_cannons.min` 未在自然落地前/落地后短期内兑现；`ProtossStaticDefence` 的 placement 在压力期 not_viable，fallback 不足。
+
+**共同根因 2：舰队不在被攻基地，地面部队贴脸时空军在外**
+- Paladino game_03/game_04：Tempest/Voidray 前锋在外，主基地/二矿被地面流冲入；终局编成里 Tempest 平均 15.5 艘，但关键防守时不在场。
+- Abyssal game_02：第一次丢自然后复矿，第二次被抄时空军仍未回防。
+- 根因：`carrier_offensive` / 进攻锚点把主力拉离基地；没有“基地被攻 → 强制召回/就近防守”的兜底。
+
+**共同根因 3：舰队转型太慢，前期/中期仍大量地面兵占气占矿**
+- Abyssal game_03：Stargate 直到 5:25 才下，舰队成型前已被 Roach/Hydra 压垮。
+- Paladino game_05：转舰队过早判定达标，但 Fleet Beacon 卡钱 >45s，航母科技上不来。
+- 根因：transition 期 `ground_spawn` 仍在产 Stalker/Zealot，气体被地面兵吃掉；Stargate/Fleet Beacon 建造优先级被防御/产能插队。
+
+**共同根因 4：rush_active 反复横跳，经济二次锁死**
+- Paladino game_03/game_04：`O203 rush-lock` 在 536s/674s/693s/1299s 多次切换，worker 生产在恢复窗口被冻结，终局 worker 从 40+ 跌到 0。
+- 根因：硬解冻 latch 只执行一次，但 `_update_rush_state` 仍会根据敌兵重新置位，导致 transition 后经济反复冻结。
+
+**共同根因 5：idle_builder 死锁，农民等钱造炮/水晶不释放**
+- 两 lane 复盘标签均含 `idle_builder×5`；终局前常见 `O118/116 首塔派工=not_viable` 循环，probe 被钉点 3s+ 不采矿。
+- 根因：多座防御建筑同时派工， mineral 被瞬间抽干；没有“派工后 5s 内开不了工就释放工人”的熔断。
+
+### O205 改进计划（≥3 条，落地后验证）
+
+1. **自然基地防御强制前置：二矿 Nexus 落成前必须先有 2 炮 + 1 电池在铺/就绪**
+   - 改 `production_manager._should_build_defense`：当 `bases_including_pending ≥ 2` 或 `nexus_in_progress` 时，把 natural 的 cannon 目标提到 `ec.min + 2`，且优先在 natural 位置注册 `ProtossStaticDefence`。
+   - 新增 placement fallback：PSD 首选 not_viable 超过 2s 时，fallback 到 natural/Nexus 中心 5 格内任意可建点。
+
+2. **基地被攻时召回空军 / 设置 defensive rally**
+   - 改 `combat_manager`：当任一 Nexus 15 格内有 ≥6 敌地面单位时，把 `ATTACKING` 的 Tempest/Voidray/Carrier/Oracle 临时切换 `MoveTarget` 回最近受威胁基地（保留 10s 滞回），不让他们继续前锋在外。
+   - 与现有 `E6` 工人撤离联动：触发 E6 的基地同时触发空军召回。
+
+3. **Rush 局舰队转型再提速 + ground_spawn 矿耗化**
+   - `flows.yml`：Zerg Rush 下 `carrier.transition.ground_spawn` 去掉 STALKER（`{ZEALOT:1.0}`），让气体全部留给 Stargate/Fleet Beacon/Tempest/Carrier。
+   - `production_manager`：transition 期保证 Stargate 不晚于 240s 开建；Fleet Beacon 在首个 Stargate 就绪后 30s 内强下（气体预留）。
+
+4. **rush_active 解冻后加 60s 死区 / 经济保护**
+   - 硬解冻 latch 触发后，60s 内不再因敌兵重新进入 full rush-lock；期间保留 `threat_response_active` 用于塔/兵响应，但不停 worker、不停 expansion、不停 Fleet Beacon。
+
+5. **idle_builder 熔断：派工后 5s 无法开工则释放工人**
+   - 在 `main._handle_idle_workers` 或 production_manager 层：跟踪 `BuildStructure` 派工时间戳，超过 5s 且建筑未开始（progress=0）则 `release_from_build_tracker` 并让工人回矿。
+
+### 验证
+
+- `poetry run python -m unittest discover -s tests`
+- 下一组 bench：O205 headless 双车道，Zerg Power @ AbyssalReefLE + PaladinoTerminalLE（继续压力图对照）。
+
+## 2026-08-05 O205 carrier vs Zerg VeryHard/Power headless 双车道 bench
+
+### O205 验证结果
+
+- **Lane1 AbyssalReefLE**: 2 胜 1 负 1 异常 → 未达 3/5（game 03 败于 1377.9s，base wipe）
+  - 胜：game 01 (501s), game 02 (429s)
+  - 负：game 03 (1377.9s)
+- **Lane2 PaladinoTerminalLE**: 3 胜 1 负 1 异常 → **达成 3/5**
+  - 胜：game 01 (311s), game 02 (510s), game 04 (959.8s)
+  - 负：game 03 (1302.6s)
+
+按项目规则（任一 lane 3/5 即算该组合通过），**Zerg Power 组合通过**。
+
+两 lane 复盘共同标签：**idle_builder**（Paladino×4 / Abyssal×3）、**trickle**（×3/×2）、**overrun**（各×1）。
+
+### O205 败局尸检（Abyssal game_03 + Paladino game_03）
+
+**根因 1：idle_builder 规模爆炸，前期农民长期干等造建筑，采矿未最大化（司令重点指出）**
+- Paladino game_03：
+  - FORGE 工人 `@28,92` 从 **188s 干等到 393s**（≈3.5 分钟）。
+  - PHOTONCANNON 工人 `@33,74` 从 **683s 干等到 960s**（≈4.5 分钟）。
+  - NEXUS 工人 `@24,72` 从 **409s 干等到 474s**。
+- Abyssal game_03：
+  - NEXUS 工人 `@70,118` 从 **184s 干等到 405s**（≈3.7 分钟）。
+- 根因：
+  - `_presumed_defense_chain` 对 FORGE/PHOTONCANNON/GATEWAY 走 `critical_dispatch_exempt` 豁免，绕过 `dispatch_viable` 与重派冷却；在 Power/Macro 局里 `_presumed_rush`（探机失联/unknown verdict）持续触发，工人被反复派到工地等钱。
+  - `ExpansionController` 的 Nexus 预走位 buffer 仅 25 矿，乐观估计「到位时钱够」，但途中被 probe/pylon/塔抽干，工人钉在扩张点。
+  - `_handle_idle_workers` 对 TOWNHALL 类型 grace=30s，Nexus 工人等不起时撤回极慢，且释放后下一帧又被重新派去。
+
+**根因 2：对局被拖到 20+ 分钟，Zerg Power 宏宏观碾压**
+- 两局均在 1300s 左右基地全失：Abyssal 终局 0 基地/19 农/3 Tempest；Paladino 终局 0 基地/2 农/1 Oracle+1 Zealot。
+- Paladino 终局仍有 **vespene=957、minerals=13**——气富余、矿崩盘，说明经济/部队结构失衡。
+- 根因：前期 idle_builder 拖累经济；fleet 成型后没有主动推进/换家终结比赛，让 Zerg 攒出 Ultralisk/Corruptor/Infestor/Ravager 混合大兵团，最终被多线 overwhelm。
+
+**根因 3：trickle——舰队/守军未集中，被多波逐步消耗**
+- 复盘 trickle 标签反复出现；终局 army 数量少且分散，关键防守时刻不在场。
+- 根因：空军进攻锚点把主力拉离基地，回防阈值/滞后在 Power 局长消耗战中不够灵敏。
+
+### O206 改进计划（≥3 条，落地后验证）
+
+1. **Presumed 防御链关键件只在地 rush_confirmed 时才豁免资金守卫**
+   - `production_manager._presumed_defense_chain`：FORGE/PHOTONCANNON/GATEWAY 的 `critical=True` 仅当 `self._rush_confirmed` 为真；plain `_presumed_rush` 走正常 `dispatch_viable` + 重派冷却。
+   - 保留真实 rush 的 forge 准点机制，但避免 Power/Macro 局因探机失联把农民长期钉在工地。
+
+2. **F2 PSD 紧急 bypass 去掉 `_presumed_rush`**
+   - 原条件 `self._rush_confirmed or self._transition_active or _presumed_rush` 改为 `self._rush_confirmed or self._transition_active`。
+   - 真实 rush / transition 仍保留紧急注册，疑似 rush 不再绕过资金预估守卫。
+
+3. **Nexus 预走位收紧 + TOWNHALL grace 缩短**
+   - `ExpansionController` 的 `_preposition` buffer 从 25 矿提到 **75 矿**，并仅当 `dispatch_viable` 真正成立时才 `prioritize=True`；减少工人过早出发、在扩张点空转。
+   - `main.py` TOWNHALL/FleetBeacon 的 O11 grace 从 30s 降到 **15s**，超过 15s 仍买不起 Nexus 即释放工人回矿，避免单农民被钉 3 分钟以上。
+
+4. **Fleet 成型后主动终结比赛，避免拖入 Zerg 大后期**
+   - 当 fleet_total ≥ 8 且经济≥3 矿时，若敌方主基可见且 60s 内无重大战损，提升进攻积极性（attack_target 不再轻易因小波次回防），优先换家/推主矿，不给 Zerg 攒 Ultralisk/Corruptor 时间。
+
+### 验证
+
+- `poetry run python -m py_compile ares-bot/bench.py`
+- `poetry run python -m unittest discover -s ares-bot/tests`
+- 下一组 bench：O206 headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE。
+
+
+## 2026-08-06 O206c carrier vs Zerg VeryHard/Timing headless 双车道 bench
+
+### O206c 验证结果
+
+- **Lane1 PaladinoTerminalLE**: 0 胜 5 负 → 未达 3/5
+  - 负：game 01 (464s), game 02 (535s), game 03 (584s), game 04 (555s), game 05 (580s)
+- **Lane2 AbyssalReefLE**: 2 胜 3 负 → 未达 3/5
+  - 胜：game 02 (708s), game 03 (804s)
+  - 负：game 01 (746s), game 04 (745s), game 05 (459s)
+
+**Zerg Timing 组合未通过**，必须做尸检并落地 O207 改进后再开下一组。
+
+### 共同根因
+
+1. **`_early_core_missing` 把早期防御链关到 cybercore 排队之后，Zerg Timing 裸接 timing 波**
+   - `_early_core_missing` 在 carrier、单矿、cybercore/stargate 未排队前为真，会整段关闭 F2 注册、`_presumed_defense_chain`、冲刺总闸。
+   - vs Zerg Timing 时，cybercore 排队 ≈80-90s，forge 再被拖到更晚，首塔 200s 后才落地；而 timing 第一波 160-200s 已到脸（Paladino 5/5 overrun、Abyssal game_01 420s 仍单矿）。
+   - 结果是「有防御代码但早期没执行」，农民被波次直接冲进矿区。
+
+2. **F2 / PSD 一次派多工人等钱，`idle_builder` 未根治**
+   - Abyssal 5 局全带 `idle_builder` 标签，game_05 单局 14 次。
+   - `dispatch_viable` 只按单座 PhotonCannon（150 矿）估算，但 PSD 的 `to_count_per_base=cannons` + `max_on_route=mor` 会同时派多个工人； mineral 被瞬间抽干后多人钉点。
+   - `_expand_holding` / `_fb_waiting` 期间塔目标虽被压到 `_ec_min`，但 mor 仍为 2，继续把 Nexus/FB 资金窗抽干。
+
+3. **Zerg Timing 被 `rush_active` 长锁 60s，二矿永远开不出**
+   - `_update_rush_state` 一旦触发（≥2 敌兵进家 40 格），保持 60s 才解除；timing 波次间隔往往 <60s，导致 `rush_active` 长期为真。
+   - `rush_active` 直接阻塞 `should_expand_dynamic`；Paladino `one_base×4`，Abyssal game_01 420s 仍单矿。单矿经济在 500s 后被滚雪球碾压。
+
+4. **FleetBeacon 被摧毁后重建优先级不足，舰队断档**
+   - 多局中局 FB 实体丢失（`FB_DIAG: truly_missing=True`），但 `tech_yields_to_threat` 在威胁期把 FB 新建让位给塔链。
+   - 没有 FB 就没有舰队主 C，农民在 700s 左右被抄光，基地从 3→1→0。
+
+### O207 改进计划（≥3 条，已落地）
+
+1. **vs Zerg Rush/Timing 时，`_early_core_missing` 不再阻塞早期防御链**
+   - F2 注册闸、`_presumed_defense_chain`、防御冲刺总闸增加 `or self._is_zerg_rush_timing()` 放行。
+   - 让 forge+首塔在 cybercore 排队前就能启动，赶上 timing 波 273-289s。
+
+2. **F2 建造槽动态压到 1，阻断多工人同时等钱**
+   - 非 rush/威胁/timing 冲刺期，`max_on_route=1`；rush_hold 才给 4 槽，rush/threat/timing_sprint 给 2 槽。
+   - `_expand_holding` 或 `_fb_waiting` 时进一步压到 1，确保 Nexus/FB 资金窗不被塔工人抽干。
+
+3. **Zerg Timing 的 `rush_active` 敏感度下调、自动解除缩短**
+   - `_near_threshold` 从 2 提到 3，只有成规模波次才置 rush latch。
+   - `_clear_timeout` 从 60s 降到 25s，波间隙允许开二矿/恢复经济。
+
+4. **Zerg Timing 启用 `unknown_verdict_defense` 与 `transition_timing_sprint`**
+   - verdict 仍是 unknown 时，t≥200s 按 presumed 同级拉 2 塔防御。
+   - t≥240s 起启用 timing 冲刺，塔目标保底 3、GW 让位闸旁路，避免波到脸时防御不足。
+
+5. **FleetBeacon 丢失后重建优先于 threat 让位**
+   - `_build_flow_structures` 中 FB 建造：当已转舰队且 `_fb_truly_missing` 时，绕过 `tech_yields_to_threat`，确保威胁期也能重建 FB。
+
+6. **Zerg Timing 二矿启动提前到 240s**
+   - `_want_dynamic_expand` 中 Timing 的 `first_expand_at` 下限从 300s 降到 240s（Rush 仍保持 300s），配合 rush 锁缩短，避免 one_base 滚雪球。
+
+### 验证
+
+- `poetry run python -m py_compile ares-bot/bot/managers/production_manager.py ares-bot/bot/production_plans.py`
+- `poetry run python -m unittest discover -s ares-bot/tests`：649 例通过
+- 下一组 bench：O207 headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE。
+
+
+## 2026-08-06 O207 carrier vs Zerg VeryHard/Timing headless 双车道 bench
+
+### O207 验证结果
+
+ bench 在 Lane1 game_03 / Lane2 game_03 启动前因 0-4 全败被中断。
+
+- **Lane1 PaladinoTerminalLE**: 0 胜 2 负（已观测）
+  - 负：game_01 (768s), game_02 (1583s)
+- **Lane2 AbyssalReefLE**: 0 胜 2 负（已观测）
+  - 负：game_01 (866s, 首局崩溃重试), game_02 (726s)
+
+**Zerg Timing 组合仍未通过**，必须做尸检并落地 O208。
+
+### 共同根因
+
+1. **Zerg Timing 未进入 transition，中期无地面海**
+   - O207 仅把 Rush 强制拉进 transition；Timing 仍走非 transition 的 carrier 配方。
+   - 非 transition 路径下 FleetBeacon 在 578s(Paladino game_01)/650s(Abyssal game_01) 才落成，舰队成型过晚。
+   - 中期只靠 pre_fleet 几个 ZEALOT/STALKER 顶 Roach+Ravager+Hydra 混合波次，被直接滚平。
+
+2. **经济被锁在 2 基地，carrier 后期规模上不去**
+   - `_want_dynamic_expand` 把 Zerg Timing 的 max_bases 锁到 2（O186 遗留下来的 Rush 逻辑）。
+   - Paladino game_02 打到 1583s，2 基地 39-44 工人， army 长期只有 6-10 艘 TEMPEST；130 supply cap 只用了 75-79。
+   - 2 基地 mineral 收入支撑不了 4 STARGATE 持续暴兵 + 大量炮台/电池，最终 gas 1452 堆积但 mineral 枯竭，部队越打越少。
+
+3. **纯 Zealot transition ground_spawn 无法应对 Roach/Ravager**
+   - 虽然 O207 没让 Timing 进 transition，但 Rush 的 transition ground_spawn 是纯 Zealot（O205）。
+   - 即便 Timing 进入 transition，纯 Zealot 对 Roach/Ravager 也是劣势，需要 Stalker/Zealot 混编。
+
+4. **农民被屠杀后恢复极慢**
+   - 败局时 workers 经常掉到 0-4，没有快速补农机制；基地被推后经济直接归零。
+
+### O208 改进计划（≥3 条，已落地）
+
+1. **Zerg Timing 强制进入 transition**
+   - `production_manager.__init__` 把 `_ai_build == "timing"` 也加入强制 transition 条件，与 Rush 同待遇。
+   - 让 Timing 也能用 ground_spawn 地面海 + 舰队解冻框架。
+
+2. **Timing 使用更晚/更稳的舰队退出点**
+   - `_update_transition_state` 中 Timing 的 `_fleet_at` 设为 `max(flow.fleet_at, 380s)`（Rush 280s，默认 320s）。
+   - strong_exit / exit_allowed 阈值取 Rush 与默认之间的中间值（min_defense=22, clear_needed=25, min_ground=10, deadline=520, strong_exit_score=22）。
+
+3. **Timing transition 期间使用 Stalker/Zealot 混编地面配方**
+   - `_effective_spawn` 中，当 `_transition_active` 且 Zerg Timing 时返回 `{STALKER 0.4 p0, ZEALOT 0.6 p1}`。
+   - 追猎吃气先行、叉子矿耗补位，比纯 Zealot 更能打 Roach/Ravager。
+
+4. **Zerg Timing 允许 3 基地经济**
+   - `_want_dynamic_expand` 中仅 Rush 锁 2 基地，Timing 保持 flows.yml 的 max_bases=3，支撑 carrier 后期舰队规模。
+
+5. **Timing 过渡期 gateway_cap 提到 2**
+   - `_build_extra_production`、`_spend_bank`、`_want_dynamic_expand`、`tower_yields_gateway_chain` 等处的 transition gateway_cap 对 Timing 统一用 2（Rush 仍走 flows.yml 的 1）。
+   - 保证混编地面的产能，不让兵营成为瓶颈。
+
+### 验证
+
+- `poetry run python -m py_compile ares-bot/bot/managers/production_manager.py ares-bot/bot/production_plans.py ares-bot/bench.py`
+- `poetry run python -m unittest discover -s ares-bot/tests`：649 例通过
+- 下一组 bench：O208 headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE。
+
+
+## 2026-08-06 O208 carrier vs Zerg VeryHard/Timing headless 双车道 bench
+
+### O208 验证结果
+
+- **Lane1 PaladinoTerminalLE**: 1 胜 4 负 → 未达 3/5
+  - 胜：game_01 (356s)
+  - 负：game_02 (774.9s), game_03 (723.9s), game_04 (756.9s), game_05 (???)
+- **Lane2 AbyssalReefLE**: 2 胜 3 负 → 未达 3/5
+  - 胜：game_02 (1215.7s), game_05 (595s)
+  - 负：game_01, game_03 (1007.0s), game_04 (874.3s)
+
+**Zerg Timing 组合仍未通过**，但相比 O207 的 0-4 已有改善（Abyssal 拿到 2 胜）。
+
+### 共同根因
+
+1. **transition 退出不一致，FleetBeacon 落成时间方差大**
+   - Abyssal 胜局 game_02：3 基地 + FB 498s + Tempest 627s，最终 20 Tempest / 4 Carrier / 196 supply 碾压。
+   - Paladino 败局 game_03/04：FB 拖到 554s 或根本不建，地面部队打光后无舰队翻盘。
+   - Paladino 平均 Tempest 首次出现 795s，Carrier 1036s；Abyssal 627s/882s。说明地图/压力差异导致退出点离散。
+
+2. **炮塔过度建设吃掉舰队资金**
+   - Abyssal game_03 在 964s 有 20 门 PhotonCannon（3 基地理论 max=12）。
+   - `expansion_cannons.max=4` + `main_siege`  threat 分支拉满，导致中局把矿物全部砸进塔，FleetBeacon/星门/舰队产能被饿死。
+
+3. **idle_builder 仍普遍**
+   - Paladino 5/5 带 idle_builder，Abyssal 5/5 带 idle_builder。
+   - PSD 多工人同时派工等钱的问题未根治，尤其在 transition 期兵营/塔/科技并行时。
+
+4. **one_base 仍在**
+   - Paladino 3/5 one_base，Abyssal 2/5 one_base。
+   - 单矿经济撑不起混编地面 + 舰队双轨，transition 中后期被滚雪球。
+
+### O209 改进计划（≥3 条，已落地）
+
+1. **Zerg Timing transition 退出进一步提前/放宽**
+   - `_update_transition_state`：Timing 的 `_fleet_at` 从 380s 降到 340s。
+   - strong_exit / exit_allowed 阈值同步放宽：min_defense=18, clear_needed=20, min_ground=8, deadline=480, strong_exit_score=18。
+
+2. **Zerg Timing transition 内强制启动 FleetBeacon**
+   - `_build_flow_structures`：Timing transition 中星门已就绪且 t≥360s 时，即使 threat_active 也允许建 FB，避免 FB 被 threat 让位永久卡住。
+
+3. **Zerg Timing 炮塔封顶 3/基地**
+   - F2 塔目标计算中，Timing 局把 `ec.max` 压到 3，杜绝 20+ 炮塔吃光舰队资金的极端情况。
+
+4. **继续保留 O208 的混编地面 / 3 基地 / gateway_cap=2**
+   - 这些改动在 Abyssal 胜局中已证明有效，仅对退出时机和炮塔上限做收敛。
+
+### 验证
+
+- `poetry run python -m py_compile ares-bot/bot/managers/production_manager.py ares-bot/bot/production_plans.py ares-bot/bench.py`
+- `poetry run python -m unittest discover -s ares-bot/tests`：649 例通过
+- 下一组 bench：O209 headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE。
+
+
+## 2026-08-06 O209 carrier vs Zerg VeryHard/Timing headless 双车道 bench
+
+### O209 验证结果
+
+- **Lane1 PaladinoTerminalLE**: 1 胜 4 负 → 未达 3/5
+  - 胜：game_04 (893s)
+  - 负：game_01 (???), game_02 (???), game_03 (???), game_05 (1226.2s)
+- **Lane2 AbyssalReefLE**: 3 胜 2 负 → **通过 3/5**
+  - 胜：game_01 (913s 前), game_03 (913s), game_05 (1356.1s)
+  - 负：game_02 (975s 后), game_04 (443s)
+
+**Zerg Timing 组合已通过**（AbyssalReefLE 3-2），PaladinoTerminalLE 仍 1-4 惨败。
+
+### 共同根因
+
+1. **idle_builder 仍是最大头，PhotonCannon 占绝对多数**
+   - 两 lane 共 10 局全部带 idle_builder；Paladino 5/5、Abyssal 5/5。
+   - 败局中 PhotonCannon 等钱事件占 96.7%，Nexus/Pylon 已大幅减少。
+   - 根因：`dispatch_viable` 按「到位时预计有钱」放行，途中被 warp-in/产兵/另一座塔抽干，农民钉点。
+
+2. **O189 强制开二矿未真正落地**
+   - Abyssal game_04：t≥210 反复触发 `O189:Zerg rush/timing 单矿太久,强制开二矿`，但 `ExpansionController.prioritize` 由 `dispatch_viable(..., buffer=75)` 决定，150≤矿<475 时仍不派工预走位；其间塔/兵继续吃矿，443s 出局时仍 1 基地、0 舰队。
+
+3. **transition/timing 冲刺期地面兵折跃到前线被分批吃光**
+   - spawn_target 只在 `_rush_active` 时走 `_rush_spawn_target()`，transition/timing_sprint 仍走 `_front_point()`；小股 Zealot/Stalker 一落地就进虫群，造成 trickle。
+   - Paladino 败局终局 supply 多次崩落（game_03 0/56、game_05 1/56 等）。
+
+4. **Paladino  overrun 集中**
+   - Paladino issue_counts：overrun×4，trickle×3，one_base×1，supply_block×1。
+   - 地图开口/分矿位置导致 timing 波更容易压家，塔阵未成规模即被穿。
+
+### O210 改进计划（≥3 条，已落地）
+
+1. **PhotonCannon 非紧急状态强制 can_afford 才派工**
+   - `bot/managers/production_manager.py` F2 段：计算完 `cannons` 后，非 rush/威胁/timing 冲刺/rush 持有期/presumed 时，若 `not can_afford(PHOTONCANNON)` 则把 `cannons` 压到 0，不注册新塔。
+   - 根治 dispatch_viable 预测可用、途中被抽干导致的 idle_builder。
+
+2. **O189 强制开矿立即预走位**
+   - `bot/managers/production_manager.py`：O189 触发时置 `_o189_forced_expand=True`；`ExpansionController` 注册改用 `prioritize=_preposition or self._o189_forced_expand`，让农民在 150 矿时就走位等 400，不等 dispatch_viable 凑够 475。
+
+3. **transition/timing 冲刺期地面兵改防守集结点**
+   - `bot/managers/production_manager.py` SpawnController 的 `spawn_target`：`_rush_active or _transition_active or _timing_sprint` 时统一走 `_rush_spawn_target()`，避免碎兵到前线送死。
+
+### 验证
+
+- `poetry run python -m unittest discover -s ares-bot/tests`：649 例通过
+- 下一组 bench：O210 headless 双车道，Zerg Rush @ AbyssalReefLE + PaladinoTerminalLE（或 Zerg Power，视司令指示）。
+
+---
+
+## O210: carrier vs Zerg VeryHard Rush（2026-08-06）
+
+### 战绩
+
+headless 双车道并行：
+- Lane1 AbyssalReefLE: **1 胜 4 负**
+- Lane2 PaladinoTerminalLE: **2 胜 3 负**
+- **Zerg Rush 未打穿**（需 5 局 3 胜）。
+
+retro 标签：
+- Lane1: `idle_builder×5`, `overrun×4`, `trickle×1`
+- Lane2: `idle_builder×5`, `one_base×3`, `overrun×2`
+
+### 尸检发现（scripts/o210_autopsy.py）
+
+- **idle_builder 是系统性问题**：每局 137–787 次，多数从 t≈100s 开始，理由是“未开工造 PHOTONCANNON”。
+- ** forge→首塔→二塔连续派工**：build order `14 forge, 15 photoncannon, 16 photoncannon` 中，塔工比 forge 早到 15–20s，工人钉在塔点等 forge 完工。
+- **expansion_cannons min=4 在经济紧张期过度铺塔**：quiet 期仍按 4 塔/基地派工，塔工等钱，舰队成型资金被抽干。
+- **二矿普遍晚**：base2_time 305–863s，Paladino game_05 甚至 863s 才开二矿。
+- **败局终局几乎都是 0 基地 + 气烂银行**：vespene 400–2000，minerals 贴 0，基地丢失后未重建。
+
+### 3 个改进点（已落地 O211）
+
+1. **build order 插入 worker，错开 forge 与双塔派工**
+   - 文件：`ares-bot/protoss_builds.yml` `CarrierOpenerZergRush.OpeningBuildOrder`
+   - 改法：`14 forge, 15 worker, 16 photoncannon, 17 worker, 18 photoncannon`，让 forge 基本就绪再派塔工，避免“未开工”干等。
+
+2. **降低 carrier expansion_cannons baseline，减少 quiet 期铺塔吸血**
+   - 文件：`ares-bot/flows.yml` + `ares-bot/tests/test_flow_config.py`
+   - 改法：`expansion_cannons: {min: 2, max: 4}`（原 min:4 max:4）。quiet 期只铺 2 塔/基地，敌兵≥8 时动态回到 4；省矿给二矿/舰队。
+
+3. **非首塔 PHOTONCANNON 走 5s 熔断，释放等钱工人回矿**
+   - 文件：`ares-bot/bot/main.py` `_idle_builder_fuse_release`
+   - 改法：首塔（0 座就绪炮塔）仍豁免；已有就绪炮塔时，后续塔工若 5s 未开工即释放回矿采矿，避免 PSD 一次注册多塔导致批量 idle。
+
+### 验证
+
+- `poetry run python -m unittest discover -s ares-bot/tests`：**649 例通过**（skipped=1）。
+- 下一组 bench：**O211 headless 双车道，Zerg Rush @ AbyssalReefLE + PaladinoTerminalLE**。
+
+---
+
+## O211: carrier vs Zerg VeryHard Rush（2026-08-06）
+
+### 战绩
+
+headless 双车道并行（REALTIME=False）：
+- Lane1 AbyssalReefLE: **3 胜 2 负**，胜率 0.6
+- Lane2 PaladinoTerminalLE: **3 胜 2 负**，胜率 0.6
+- **Zerg Rush 组合打穿**（5 局 3 胜阈值达成）。
+
+retro 标签：
+- Lane1: `idle_builder×5`, `overrun×2`, `trickle×3`, `one_base×2`, `supply_block×1`
+- Lane2: `idle_builder×5`, `overrun×2`, `trickle×2`, `one_base×1`
+
+### 尸检发现
+
+**idle_builder 仍是系统性问题**：两 lane 每局都出现，累计 10/10 局。失败局尤为严重：
+- Abyssal game_02 Defeat: `supply_block` 205s、`one_base` 420s、`idle_builder×2`、`overrun`
+- Abyssal game_03 Defeat: `idle_builder×13`、`overrun`
+- Paladino game_02 Defeat: `one_base`、`idle_builder×3`、`overrun`
+- Paladino game_04 Defeat: `idle_builder×6`、`overrun`
+
+**关键现象（state 快照回放）**：
+- Abyssal game_02: 农民在 PhotonCannon 位从 t≈116.5 干等到 t≈526.3（约 410s）；t≈329 起第二个农民开始等 FleetBeacon。
+- Abyssal game_03: t=112-297 农民等 PhotonCannon；t=168-350 农民等 Gateway；t=297-482 农民等 Nexus；t=466-760 两个农民等 FleetBeacon。
+
+**根因**：O205 落地的 `_idle_builder_fuse_release` 把 GATEWAY/NEXUS/FLEETBEACON 与 FORGE/首塔一起放在 blanket 豁免名单里，5s 熔断对它们不生效；而 O11 watchdog 在 `rush_active`/`defense_urgent` 期间对「一切建造钉点」整段豁免。结果：
+1. FleetBeacon、后续 Gateway、后续 Nexus 的工人在资金窗口紧时被钉点，无法回矿。
+2. rush/防御紧急期，即使这些非防御结构（Nexus/FB/后续 GW）也不被释放，长期吸血。
+3. 30s 以内没有硬顶，个别工人被钉 3-7 分钟。
+
+### 3 个改进点（已落地 O212）
+
+1. **收窄 idle_builder 5s 熔断豁免范围**
+   - 文件：`ares-bot/bot/main.py` `_idle_builder_fuse_release`
+   - 改法：仅 FORGE、首座 PHOTONCANNON、首座 GATEWAY、首次扩张 NEXUS 豁免；FLEETBEACON 与后续 Gateway/Nexus 走 5s 熔断，未开工即释放回矿。
+
+2. **增加 30s 硬顶，防止 pathological 长期钉点**
+   - 文件：`ares-bot/bot/main.py` `_idle_builder_fuse_release`
+   - 改法：无论是否关键建筑、无论 rush/防御状态，工人等超过 30s 仍未开工强制释放。
+
+3. **rush/防御紧急期仍释放非关键建筑工人**
+   - 文件：`ares-bot/bot/main.py` `_handle_idle_workers` + 新增 `_is_rush_critical_structure`
+   - 改法：rush/防御紧急期间不再「一切建造钉点豁免」，只对 FORGE/首塔/首 GW/首次扩张 Nexus 保留豁免；Nexus/FleetBeacon/后续 Gateway 等仍走 O11 释放，避免被长期钉点吸血。
+
+### 验证
+
+- `poetry run python -m unittest discover -s ares-bot/tests`：**649 例通过**（skipped=1）。
+- 下一组 bench：**O212 headless 双车道，Zerg Power @ AbyssalReefLE + PaladinoTerminalLE**。
+
+> **O212 启动后热修复（2026-08-06）**：`_handle_idle_workers` 中 `_is_rush_critical_structure(sid)` 引用 `sid` 早于赋值，导致首局 `UnboundLocalError` 崩溃；已将 `sid = info[TRACKER_ID]` 前移到 `_rush_exempt` 判据之前。单测复验 649 例通过，O212 双车道已重启。
+
+---
+
+## O212: carrier vs Zerg VeryHard Power（2026-08-06）
+
+### 战绩
+
+headless 双车道并行（REALTIME=False）：
+- Lane1 AbyssalReefLE: **4 胜 1 负**，胜率 0.8
+- Lane2 PaladinoTerminalLE: **5 胜 0 负**，胜率 1.0
+- **Zerg Power 组合打穿**（5 局 3 胜阈值达成）。
+
+retro 标签：
+- Lane1: `idle_builder×5`, `trickle×4`, `one_base×1`, `overrun×1`
+- Lane2: `trickle×5`, `idle_builder×5`, `stall×1`
+
+### 尸检发现
+
+**唯一败局 Lane1 game_03（Defeat）**：
+- state 回放显示首座 Nexus 直到 **466s** 才落成；而 250-321s 期间 FleetBeacon 已抢先派工/pending。
+- FB 抢走二矿的 300 矿窗口，导致经济长期单基地，最终被滚雪球推平。
+- 终局状态：0 基地 / 32 农民 / 1 oracle，符合 one_base + overrun 标签。
+
+**系统性问题（两 lane 共同）**：
+- **trickle 突出**：两 lane 累计 9 次 trickle，小股部队未攒够即压上送死。
+- **idle_builder 仍高频**：10/10 局出现，多因「派工后资金被抽干、农民钉点等钱」。
+- **Lane2 game_03 误判 SC2 异常退出**：实际 log 显示 Victory，但 bench 未找到 game_*.json 而重试，浪费一局。
+
+### 3 个改进点（已落地 O213）
+
+1. **宏观对局单基地时 FleetBeacon 让位 Nexus**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_build_core_structures` FB 分支
+   - 改法：当 `_ai_build in ("power", "macro")`、当前基地数==1、且无 Nexus pending/在建时，跳过 FB 建造，优先二矿。O212 败局实证：FB 抢先派工吸走 300 矿，首矿拖到 466s。
+
+2. **提高 carrier 集结阈值，降低 trickle**
+   - 文件：`ares-bot/flows.yml` carrier 块 + `ares-bot/tests/test_flow_config.py`
+   - 改法：`rally_min_army: 16`（之前 carrier 未设，默认 0）。兵力 <16 且司令未下 stance 时守家攒兵，减少小股部队分批送死。
+
+3. **压缩非关键建筑 idle_builder 硬顶**
+   - 文件：`ares-bot/bot/main.py` `_idle_builder_fuse_release`
+   - 改法：30s 硬顶对非 TOWNHALL/FORGE 结构降到 20s。FORGE/TOWNHALL 保留 30s（攒钱预走位语义），FB/后续 Gateway/科技建筑等更快释放回矿。
+
+### 验证
+
+- `poetry run python -m unittest discover -s ares-bot/tests`：**649 例通过**（skipped=1）。
+- 下一组 bench：**O213 headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE**。
+
+---
+
+---
+
+## O213: carrier vs Zerg VeryHard Timing（2026-08-06）
+
+### 战绩
+
+headless 双车道并行（REALTIME=False）：
+- Lane1 AbyssalReefLE: **0 胜 5 负**，胜率 0.0
+- Lane2 PaladinoTerminalLE: **1 胜 4 负**，胜率 0.2
+- **Zerg Timing 组合未打穿**（需 5 局 3 胜）。
+
+retro 标签：
+- Lane1: `idle_builder×5`, `overrun×5`, `one_base×4`, `trickle×2`, `supply_block×1`
+- Lane2: `idle_builder×5`, `overrun×4`, `one_base×2`, `trickle×1`
+
+### 尸检发现
+
+**one_base 是核心死因**：Lane1 4/5 局、Lane2 2/5 局在 420s 仍单矿。二矿落成时间普遍在 430-470s（Abyssal game_01 474s、Paladino game_04 454s、Paladino game_05 385s），而 Zerg Timing 首波/持续压力在 200-350s 即到位，单矿经济撑不到 fleet 临界质量。
+
+**二矿资金被防御抽干**：
+- `scripts/autopsy_events.py` 显示 O189 强制开二矿在 180-260s 已反复触发，但 Nexus 工人因「等钱」idle_builder 长期钉点。
+- O131 预留死锁保险丝在 60s/矿<150 时熔断，取消扩张预留后 F2 防御/炮塔注册立即把 400 矿 Nexus 窗口吃光，导致二矿永远拍不下。
+- Paladino game_05 终局气体 1594、矿物 28，典型「气烂银行、矿 starvation」—— 钱都变成炮塔，舰队只有 5-6 艘 tempest。
+
+**fleet 成型过晚/过小**：
+- Lane1 终局平均 tempest×3.2；Lane2 终局平均 tempest×6.0、carrier×3.0（主要来自唯一胜局）。
+- tempest 首次出现平均 593-604s，carrier 859-908s，远晚于 Zerg Timing 连续波次。
+
+**唯一胜局 Paladino game_04 的关键差异**：
+- 二矿 454s 落成后守住，static defence 堆到 17 门炮塔，fleet 滚到 11 tempest + 3 carrier + 20 interceptor，44 农民满采。
+- 说明 **二矿能活 → 经济能滚 → 炮塔+fleet 能守**。核心瓶颈是「二矿拍不下/活不到」。
+
+### 3 个改进点（已落地 O214）
+
+1. **Zerg Timing 强制二矿更早触发**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_want_dynamic_expand`
+   - 改法：O189 兜底对 Zerg Timing 从 `t≥210 / 矿≥150` 降到 `t≥180 / 矿≥100`，Rush 保持 210/150。让二矿资金窗在首波前就开始攒。
+
+2. **延长 Zerg Timing 扩张预留的 O131 保险丝**
+   - 文件：`ares-bot/bot/managers/production_manager.py` update 头部 O131 调用
+   - 改法：当扩张预留（`_transition_reserve`/`_expand_holding`）激活且 vs Zerg Timing 时，保险丝 timeout 从 60s 延到 120s，min_price 从 300 提到 400（打断线从 150 提到 200），避免防御过早抽干 Nexus 资金。
+
+3. **二矿资金窗期间提高炮塔注册 buffer**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_should_build_defense`
+   - 改法：F2 防御注册的 `dispatch_viable` buffer，在 `_expand_holding` 且舰队 <4 时从 30 提到 75，与开局 120s 内同级，进一步保护 Nexus/首舰资金不被炮塔抢走。
+
+### 验证
+
+- `poetry run python -m unittest discover -s ares-bot/tests`：**649 例通过**（skipped=1）。
+- 下一组 bench：**O214 headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE**（继续攻坚同一组合）。
+
+---
+
+
+---
+
+## O214: carrier vs Zerg VeryHard Timing（2026-08-06）
+
+### 战绩
+
+headless 双车道并行（REALTIME=False）：
+- Lane1 AbyssalReefLE: **0 胜 5 负**，胜率 0.0
+- Lane2 PaladinoTerminalLE: **1 胜 4 负**，胜率 0.2
+- **Zerg Timing 组合仍未打穿**（需 5 局 3 胜）。
+
+retro 标签：
+- Lane1: `idle_builder×5`, `one_base×4`, `overrun×3`, `trickle×1`
+- Lane2: `idle_builder×4`, `overrun×4`, `one_base×3`, `supply_block×1`
+
+关键指标（`summary.json`）：
+- Lane1 平均时长 916s，首艘 tempest 585s，终局平均 tempest×3.3
+- Lane2 平均时长 977s，首艘 tempest 689s，终局平均 tempest×3.0 + voidray×12
+
+### 尸检发现
+
+**二矿依然太晚，FleetBeacon 与 Nexus 互相冻结**：
+- Lane1 4/5 局、Lane2 3/5 局二矿落成在 430-470s（Abyssal game_05 450s、Paladino game_05 438s），与 O213 比没有本质提前。
+- `scripts/autopsy_summary.py` 显示：Nexus 一旦 pending，`_expand_holding` 把 `core_allowed` 置 False，FleetBeacon 建造被整体冻结；Nexus 落成后 minerals 立即被炮塔/地面兵抽干，FB 仍要再拖 50-150s 才能 pending。
+- Abyssal game_05：Nexus 450s 落成，FB 454s pending，首艘 tempest 619s；期间为了守二矿铺了 14 门炮塔，气体 597 烂在银行无矿物可转舰队。
+
+**首舰前炮塔过度投资，Nexus/FB 资金被反复吃光**：
+- 即使 `_expand_holding` 期间 buffer 已提到 75，fleet=0 时敌兵计数仍推动 `expansion_cannon_count` 目标到 3-4，150 矿/门连续建造把 400 矿 Nexus 窗啃掉。
+- Paladino game_05 是最典型案例：终局前 fleet 滚到 9 tempest，但仍因分矿反复被抄、农民撤离、经济断流而败；此前在 fleet=0-2 阶段已投资 9-15 门炮塔，矿物长期贴 0。
+
+**O214 三项补丁效果有限**：
+- O189 180/100 兜底只在部分局触发，正常 `first_expand_at` 被 O183 锁在 240s，二矿主触发器太晚。
+- O131 保险丝延长到 120s/400 矿，但防御在 120s 内就能把 Nexus 资金吃回 200 以下，保险丝无法阻止「塔吃 Nexus 窗」。
+- buffer 75 仍挡不住 fleet=0 时的动态炮塔增量。
+
+### 3 个改进点（落地 O215）
+
+1. **Zerg Timing 正常开矿触发提前（first_expand_at 240s → 180s）**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_want_dynamic_expand` 中 O183 覆盖
+   - 改法：vs Zerg Timing 时 `_first_expand_at = max(_first_expand_at, 180.0)`（Rush 维持 300，Power/Macro 维持 flows.yml 的 150）。让二矿在正常动态路径下更早触发，而不是只依赖 O189 兜底。
+
+2. **Zerg Timing 开矿持有期不冻结 FleetBeacon**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_build_flow_structures`
+   - 改法：`core_allowed=False` 早退分支里，对 Zerg Timing 增加 FleetBeacon 特例——只要星门就绪、FB 缺失、时间 ≥240s，即使 Nexus 在途也允许派工 FB。避免 Nexus 在建期间 FB 被冻 100s+，导致舰队成型系统性延迟。
+
+3. **Zerg Timing 首舰前严格限塔，保 Nexus/FB 资金**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_should_build_defense` / F2 注册段
+   - 改法：
+     - fleet_total == 0 且非 rush/threat 直接受击时，炮塔目标硬性封顶 1（忽略敌兵计数增量），避免首舰前铺 3-4 门炮塔把 400 矿 Nexus/300 矿 FB 窗吃光。
+     - `_expand_holding` 且 fleet < 4 时的 `dispatch_viable` buffer 对 Zerg Timing 提到 250，确保 Nexus/FB 资金优先落袋。
+
+### 验证
+
+- `poetry run python -m unittest discover -s ares-bot/tests`：**649 例通过**（skipped=1）。
+- `poetry run python -m py_compile ares-bot/bot/managers/production_manager.py`：通过。
+- 下一组 bench：**O215 headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE**。
+
+---
+
+
+---
+
+## O215: carrier vs Zerg VeryHard Timing（2026-08-06）
+
+### 战绩
+
+headless 双车道并行（REALTIME=False）：
+- Lane1 AbyssalReefLE: **0 胜 5 负**，胜率 0.0
+- Lane2 PaladinoTerminalLE: **1 胜 4 负**，胜率 0.2
+- **Zerg Timing 组合仍未打穿**（需 5 局 3 胜）。
+
+retro 标签：
+- Lane1: `idle_builder×5`, `one_base×5`, `overrun×5`, `bank×1`
+- Lane2: `idle_builder×5`, `overrun×4`, `one_base×1`, `trickle×1`
+
+关键指标（`summary.json`）：
+- Lane1 平均时长 907.8s，首艘 tempest 506.2s，carrier 803.6s，终局平均 tempest×4.0
+- Lane2 平均时长 993.7s，首艘 tempest 748.7s，carrier 1020.5s，终局平均 tempest×3.7
+
+### 尸检发现
+
+**二矿仍然开得太晚**：
+- Lane1 5/5 局 one_base，game_01 始终单矿到 1045s 才败；其余局二矿 425-630s 落成。
+- Lane2 唯一胜局 game_03 二矿 293s（特例），失败局二矿 373-450s。
+- `transition_expand_at_210` 默认 at=210，O189 兜底 180/100 触发条件仍被 `saw_wave`、`enemy_near==0`、gateway_cap 等三重门卡住。
+
+**fleet 成型仍过晚**：
+- Lane2 tempest 平均首次出现 748.7s，carrier 1020.5s；多数失败局 fleet 未成型或仅 1-3 艘即被推平。
+- FleetBeacon 资金窗仍被 Nexus/塔/兵营反复占用；即使 O215 增加了 `_is_zerg_timing_fb_exempt`，效果有限。
+
+**分矿防御薄弱**：
+- 二矿落时塔数经常 0-2，没有按司令指示的 3 光子炮 + gateway 堵口。
+- `expansion_cannon_min_dynamic` fleet=0 时 zero_fleet_cap=1，二矿一落基本无塔，被 4 地面单位反复抄家（E6 频繁触发）。
+
+**idle_builder / 农民停滞**：
+- 农民被派去造 NEXUS/PHOTONCANNON 但等钱，中后期 O145 农民停滞反复出现，经济崩盘。
+
+### 3 个改进点（落地 O216）
+
+1. **Zerg Timing 二矿再提速（first_expand_at 180s → 150s，强开线 210s → 150s）**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_want_dynamic_expand`
+   - 改法：
+     - `_first_expand_at` 对 Zerg Timing 从 180 降到 150。
+     - `transition_expand_at_210` 调用传入 `at=150`，且 saw_wave 条件放宽为「首波已清 或 时间到 180s」。
+     - O189 兜底对 Zerg Timing 从 `t≥180 / 矿≥100` 降到 `t≥150 / 矿≥100`。
+     - 取消 `transition_expand_blocked` 对 Zerg Timing 的阻塞，二矿不再等 2 兵营 cap 凑齐。
+
+2. **fleet 成型提速（flows.yml fleet_at 320 → 280，FB 门限提前）**
+   - 文件：`ares-bot/flows.yml` carrier transition；`ares-bot/bot/managers/production_manager.py` `_is_zerg_timing_fb_exempt`、`_build_flow_structures` `_timing_fb_gate`
+   - 改法：
+     - `fleet_at` 从 320 降到 280，transition 更早转舰队。
+     - `_is_zerg_timing_fb_exempt` 时间从 240 降到 180，Nexus 在途更早放行 FB。
+     - `_timing_fb_gate` 时间从 360 降到 280，与 flows.yml 对齐。
+
+3. **分矿防御模型落地（zero_fleet_cap 1 → 2 + gateway 堵口）**
+   - 文件：`ares-bot/bot/production_plans.py` `expansion_cannon_min_dynamic`；`ares-bot/bot/managers/production_manager.py` `_ensure_expansion_wall_gateway`
+   - 改法：
+     - `expansion_cannon_min_dynamic` 的 `zero_fleet_cap` 从 1 提到 2，fleet=0 时也至少 2 座保命塔。
+     - 新增 `_ensure_expansion_wall_gateway`：Zerg Timing 下，分矿 Nexus 在建或就绪后，在其迎敌侧建一座 gateway 堵口，配合后方光子塔密集防守。
+
+### 验证
+
+- `poetry run python -m unittest discover -s ares-bot/tests`：**649 例通过**（skipped=1）。
+- `poetry run python -m py_compile ares-bot/bot/managers/production_manager.py ares-bot/bot/production_plans.py`：通过。
+- 下一组 bench：**O216 headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE**。
+
+---
+
+## O216c: carrier vs Zerg VeryHard Timing（2026-08-06）
+
+### O216b 双车道 game_01 尸检
+
+O216b 启动后两条 lane 的 game_01 均告负，数据揭示 O216b 的 `spawn_pause_reason` 阈值仍太保守：
+
+**Lane1 AbyssalReefLE**：
+- 结果 Defeat，游戏时间 987.9s，终局基地=0、军队空。
+- 二矿 522.3s 才落成；192.9s / 307.5s / 669.6s 反复出现 `idle_builder` 等钱造 Nexus。
+- 192-518s 存款长期在 200-500 波动，ground_spawn zealot（100 矿/个）+ 塔/星门持续抽矿，Nexus 基金永远凑不齐 400。
+
+**Lane2 PaladinoTerminalLE**：
+- 结果 Defeat，游戏时间 891.3s。
+- 二矿较早（184.8s），但fleet 始终 0；星门直到 450s 才出现，终局无航母/风暴。
+- 128.6s / 248.6s / 766.1s 仍有 `idle_builder` 等钱造光子炮，中后期 O145 农民停滞反复出现。
+
+### 3 个改进点（落地 O216c）
+
+1. **Nexus 未开工前暂停 zealot 产兵（O216c）**
+   - 文件：`ares-bot/bot/production_plans.py` `spawn_pause_reason`；`ares-bot/bot/managers/production_manager.py` 调用点
+   - 改法：
+     - 新增 `nexus_unstarted` 参数，仅当 Nexus 已派工但**尚未开工**、且存款 < 400 时才暂停 SpawnController。
+     - 阈值从 `nexus_price - 100` 收紧到 `nexus_price`（400 矿）。
+     - Nexus 一旦开工（已付 400 矿）或存款已够，立即恢复产兵，避免 O216b 的 300-400 矿缓冲被 zealot 反复吃回 200 以下。
+
+2. **分矿 gateway 堵口让位 Nexus 基金（O216c）**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_ensure_expansion_wall_gateway`
+   - 改法：
+     - 若存在未开工的 Nexus 且存款 < 400 + 150，则跳过 gateway 堵口，优先保证二矿落地。
+     - gateway 是防御投资，但 Nexus 落不了地时 150 矿会把基金从 400+ 吃回 250+，继续拖延二矿。
+
+3. **fleet 成型后把余矿/余气转成舰队而非继续堆塔（待 O216c 验证后细化）**
+   - 文件：待定（`production_manager.py` `_should_build_defense` / `_build_extra_production` / `_spend_bank`）
+   - 方向：
+     - Lane2 game_01 二矿虽早落，但星门 450s 才出现、fleet 始终 0，说明 Nexus 后的资源被塔/电池/地面兵持续吃掉。
+     - 若 O216c 后仍 fleet=0 频发，将加 FleetBeacon/星门资金窗硬帽：Nexus 落地后 `cannon_target_capped` 进一步限流，或在 `_spend_bank` 中优先把银行存款投入 stargate/FB。
+
+### 验证
+
+- `poetry run python -m unittest discover -s ares-bot/tests`：**650 例通过**（skipped=1）。
+- `python3 -m py_compile ares-bot/bot/managers/production_manager.py ares-bot/bot/production_plans.py`：通过。
+- 已停止 O216b 双车道 bench，按 `headless + 双车道` 重启 **O216c**：
+  - Lane1: `o216c-vh-zerg-timing-abyssal` @ AbyssalReefLE
+  - Lane2: `o216c-vh-zerg-timing-paladino` @ PaladinoTerminalLE
+
+---
+
+### O216c bench 验证结果
+
+headless 双车道并行（REALTIME=False）：
+- **Lane1 AbyssalReefLE**: 1 胜 4 负，胜率 0.2
+- **Lane2 PaladinoTerminalLE**: 0 胜 5 负，胜率 0.0
+- **Zerg Timing 组合未打穿**（需 5 局 3 胜）。
+
+retro 标签：
+- Lane1: `idle_builder×5`, `overrun×4`, `trickle×2`, `one_base×1`
+- Lane2: `idle_builder×5`, `overrun×4`, `one_base×2`, `trickle×1`
+
+**关键数据（Lane1）**：
+- 主力首次出现：tempest@627.8s、carrier@803.5s， fleet 成型过晚。
+- 平均时长 1138.4s，存款峰值 1855，气体长期富余但矿物枯竭。
+- g05 典型：二矿 642.9s 才落成，气体 751 烂银行，终局 fleet=0。
+
+### 尸检发现（Lane1 game_02-05 + Lane2 汇总）
+
+**FleetBeacon 资金窗被追加星门反复吃掉，舰队管线空转**：
+- game_02：首座星门 394s 就绪，但 450s→506s→788s 连续追加到 4 星门，FB 直到 ~750s 才拍下；气体 1662 烂银行，终局 fleet=3 tempest。
+- game_05：首座星门后连拍 3 星门，FB 655s pending 但终局无 fleet，气体 713 未用。
+- `_build_extra_production` 与 `stargate_double_opener` 只看「有钱/有气」和气体闸门，未保护「已有就绪星门但 FB 未建」的 300/200 资金窗。
+
+**FleetBeacon 拍下后仍被塔/扩张抽干，首舰出不来**：
+- game_03：FB 之前塔/星门把矿吃光，fleet 首次出现 675s；之后敌 69 supply 压境，基地连丢。
+- game_04：fleet 爬到 7 艘，但 cannon 堆到 20 座，矿物持续贴 0，最终 3 基地全丢。
+
+**二矿仍偏晚/不稳定**：
+- game_05 二矿 642.9s；game_02 204.9s 虽早，但 Nexus 后资金立刻被塔/星门抽回单矿状态。
+
+### 3 个改进点（落地 O216d）
+
+1. **FleetBeacon 资金窗前禁止追加星门**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_build_extra_production`
+   - 改法：当 `_fb_ready_to_build()`（已有就绪星门、FB 未建/未派工）成立且要追加的是 STARGATE 时，直接 return。避免 2-4 星门抢在 FB 前面空转。
+
+2. **FleetBeacon 资金窗前禁止星门双开**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `stargate_double_opener` 调用点
+   - 改法：`stargate_double_opener` 返回真后，再判断 `not self._fb_ready_to_build()` 才执行。重建窗的第二座星门必须在 FB 拍下后再拍。
+
+3. **FleetBeacon 资金窗前把塔目标压回保命下限**
+   - 文件：`ares-bot/bot/managers/production_manager.py` F2 塔目标计算分支
+   - 改法：`_fb_ready_to_build()` 成立、舰队未成规模（<3）、且非过渡期时，`cannons = min(cannons, _ec_min)`。避免动态塔目标扩容反复抽干 300 矿 FB 资金窗。
+
+### 验证
+
+- `poetry run python -m unittest discover -s ares-bot/tests`：**650 例通过**（skipped=1）。
+- `python3 -m py_compile ares-bot/bot/managers/production_manager.py`：通过。
+- 下一组 bench：**O216d headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE**。
+
+---
+
+
+### O216e bench 验证结果
+
+headless 双车道并行（REALTIME=False）：
+- **Lane1 AbyssalReefLE**: game_01 重试局 Defeat（484.9s），SC2 崩溃 1 次后重试
+- **Lane2 PaladinoTerminalLE**: game_01 Defeat（957.4s）
+- 两局均 **fleet 严重滞后**，O216e 补丁（追加 SG 等首舰 + exit_ground 6）未能解决根因。
+
+**关键数据（Lane2 Paladino game_01）**：
+- 主力首次出现：tempest@731.1s，终局仅 3 tempest + 1 oracle，fleet 未成规模。
+- FleetBeacon 589.7s 才 pending，首座星门 ~450s 才就绪。
+- 气体 final=1133 烂银行，说明有气但舰队科技链/产能没建出来。
+- 二矿 349.6s 才落（first_expand_at=150 但资金被塔/地面兵抽干）。
+- idle_builder 多次：等钱造 NEXUS、等钱造 PHOTONCANNON。
+
+**关键数据（Lane1 Abyssal game_01 重试局）**：
+- 二矿虽早（184.8s），但 **星门始终 0，fleet 始终 0**，484s 被推平。
+- 气体 final=432 未用，舰队科技链完全没建。
+- 塔最多 1 座，地面部队也极少，transition 资源全空转。
+
+### 尸检发现（O216e 双车道）
+
+**transition 期的 defense sprint 把核心科技链冻结 200s+**：
+- 55s presumed 启动 → sprint 期间 `_build_flow_structures` 被整体跳过。
+- sprint 直到首塔/首叉就绪才解除（Lane2 ~270s，Lane1 ~237s）。
+- 在这 200s+ 内，CYBERNETICCORE→STARGATE→FLEETBEACON 完全不能排队。
+- sprint 结束后才建 cybercore → 50s → stargate → 43s → FB，首舰出场被推到 450-730s。
+- `_build_flow_structures` 内部已有 O186 对 Zerg Rush/Timing 不冻结 STARGATE/FB，但 sprint 在外部把整个函数跳过了。
+
+**Zerg Timing 不该按 Rush 强度冲刺**：
+- Timing 波次 240-300s 才来，不是 150-180s 的 rush。
+- 120s 全链冲刺把经济锁死在 forge/首塔/首叉，科技链归零，transition 退出后无舰队可转。
+
+**FB 时间门 280s 仍偏晚**：
+- 即使星门提前就绪，`_timing_fb_gate` 要求 t≥280，FB 常被拖到 500s+。
+
+### 3 个改进点（落地 O216f）
+
+1. **Zerg Timing 的 sprint 期间仍执行 `_build_flow_structures`**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_build_flow_structures` 调用点
+   - 改法：`_sprint_freeze_tech = _sprint and not (zerg+timing)`；Zerg Timing 时即使 sprint 也调用 `_build_flow_structures`。
+   - 同时 Zerg Timing sprint 期间强开 `core_allowed=True`，确保 cybercore/stargate/FB 都能排队。
+
+2. **缩短 Zerg Timing 的 sprint 最大持续时间（120s → 60s）**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_sprint` 计算处
+   - 改法：对 Zerg Timing 传入 `max_age=60.0`，让 F2 防御和科技链更快并行，避免经济被锁死在 forge/首塔。
+
+3. **Zerg Timing 的 FB 特例门限从 280s 提前到 200s**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_timing_fb_gate`
+   - 改法：`_timing_fb_gate` 时间门从 `280.0` 降到 `200.0`，匹配 sprint 放行后星门/FB 的新窗口。
+
+### 验证
+
+- `poetry run python -m unittest discover -s ares-bot/tests`：**650 例通过**（skipped=1）。
+- `python3 -m py_compile ares-bot/bot/managers/production_manager.py`：通过。
+- 下一组 bench：**O216f headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE**。
+
+---
+## O216g — Zerg Timing 饱和不开矿 + idle_builder 钉点治理（o216f 尸检落地）
+
+**日期**：2026-08-06（o216f-vh-zerg-timing 双车道：AbyssalReefLE + PaladinoTerminalLE，VeryHard，headless）
+
+### 结果
+
+- Lane1（Abyssal）：game_01 Defeat(215s)、game_02 中止迭代（已跑 382s 趋势同败）
+- Lane2（Paladino）：game_01 Defeat(188s)、game_02 Defeat(68s)、game_03 Defeat(270s)、game_04 中止迭代
+- 结论：O216f 提前了 SG/FB，但经济天花板（单矿/晚二矿）+ NEXUS 钉点循环未解，确认未打穿，中止迭代。
+
+### 尸检发现
+
+1. **矿线饱和却不开矿（司令观察确认）**：o216f-vh-zerg-timing-paladino/game_03 农民峰值 45、基地仅 2（主基满载 + 分矿 16 满载仍有 ~13 农民浪费人口）；二矿 683s 才落、三矿至死未开。根因：`should_expand_dynamic` 的 O160 门（bases≥2 需 fleet≥3 **且** minerals≥500）在塔链持续抽干银行的局里永假——饱和触发也被矿门拦死。
+2. **idle_builder NEXUS 钉点 42-166 次/局**：O189 强制开二矿矿门 100/150 即派工，农民钉点等 400 矿需 15s+，期间塔/兵持续抽干银行 → 「派→等→撤→再派」循环；且 O189 事件每帧 append 刷屏。各局分布：FORGE 44-103、GATEWAY 11-74、NEXUS 42-166、PHOTONCANNON 19-130（autopsy 统计）。
+3. **max_bases=3 封顶太低**：司令要求饱和时主动开 3/4/5/6 矿；flows.yml carrier auto_expand max_bases 仅 3，舰队成型后经济无法滚动放大。
+4. **transition 退出仍偏晚**：Lane2 game_01 首舰 562s、FB pending 706s，单矿舰队产能被 Zerg 中局波次磨光（终局 TEMPEST×4 补给 19/80）。
+
+### 3 个改进点（落地 O216g）
+
+1. **饱和触发旁路扩张矿门**
+   - 文件：`ares-bot/bot/production_plans.py` `should_expand_dynamic`
+   - 改法：saturated 判定提前；bases≥2 时矿门（minerals<500）在**矿线饱和**时旁路（fleet≥3 舰队门保留防裸奔）。
+   - 单测同步更新（`test_fleet_and_mineral_gate_blocks_late_expand`）。
+
+2. **carrier max_bases 3→6**
+   - 文件：`ares-bot/flows.yml` carrier `auto_expand`
+   - 改法：max_bases 3→6，饱和后主动开 3/4/5/6 矿；Zerg Rush 仍在 production_manager O186 代码层锁 2，不受影响。
+
+3. **O189 强开二矿矿门 100/150→300 + 事件去重**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_want_dynamic_expand`
+   - 改法：`_o189_minerals` 提到 300（到位等 ≤5s，消除 15s+ 钉点循环）；新增 `_o189_logged` latch，事件只记一次。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py bot/production_plans.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**650 例通过**（skipped=1），含 flows.yml max_bases=6 断言更新。
+- 下一组 bench：**O216g headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE**。
+
+---
+## O216h — O189 矿门回调 + Nexus 钉点期间塔链让位（o216g 首局实证）
+
+**日期**：2026-08-06（o216g-vh-zerg-timing 双车道首局即暴露回归）
+
+### 结果
+
+- Lane2（Paladino）game_01 Defeat(437s)：单矿到死，舰队 0，E9 威胁 221/253s 到脸后被 timing 波滚平。
+- 结果行未落 bench 日志（game_01 中途异常重试，目录内 state 混入两个 attempt，以 `game_*.json` 的 result 为准）。
+
+### 尸检发现
+
+1. **O216g 的 O189 矿门 300 是回归**：威胁期塔链持续抽干银行（矿恒 5-255），300 矿门整局不触发 → 二矿永远不开，单矿 24-26 农民饱和被滚雪球。
+2. **Nexus 钉点期银行被塔链抽干是 NEXUS idle_builder 的根因**：O189/饱和触发派工后，E9 威胁期 F2 炮塔照注册（threat 豁免 expand_holding），银行攒不到 400 → 工人钉 15s+ 进「派→等→撤→再派」循环。
+3. **饱和旁路（O216g ①）未生效场景**：舰队门 fleet≥3 保留后，本局舰队 0 → 不触发；二矿仍依赖 O189 强开通道，故 O189 必须真正落地。
+
+### 3 个改进点（落地 O216h）
+
+1. **O189 矿门 300→150 回调**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_want_dynamic_expand`
+   - 改法：`_o189_minerals` rush/timing 均回 150，保证强开通道真实触发；`_o189_logged` 事件去重保留。
+
+2. **Nexus 钉点未开工期间塔链让位（≥2 塔保底）**
+   - 文件：`ares-bot/bot/managers/production_manager.py` F2 注册闸
+   - 改法：新增 `not_started_but_in_building_tracker(NEXUS)>0 且 _cannons_ready_peak>=2 且非 rush_active` → F2 整段不注册，银行 ~12s 攒到 400，钉点有界、二矿落地。
+
+3. **验证流程修正**
+   - 双车道启动后核对两条 lane 的 bench.py 进程与日志文件均存活（上轮 lane2 后台启动被任务清理杀掉，已补起）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**650 例通过**（skipped=1）。
+- 下一组 bench：**O216h headless 双车道，Zerg Timing @ AbyssalReefLE + PaladinoTerminalLE**。
+
+---
+## O216i — Zerg Timing 防御优先门：首塔前不开矿、2 塔前不拍 SG/FB（o216h 尸检落地）
+
+**日期**：2026-08-06（o216h-vh-zerg-timing 双车道：Lane2 0-3 连败实证）
+
+### 结果
+
+- Lane2（Paladino）：game_01 Defeat(444s)、game_02 Defeat、game_03 Defeat(397s)，三局同一死法。
+- Lane1（Abyssal）game_01 长跑 484s+ 未完赛（观察中）。
+
+### 尸检发现（三局同型）
+
+1. **0 塔窗口拍 STARGATE**：星门 ~210-225s 落成时炮塔 0；首塔拖到 ~281-338s，306s E9 波（18 supply vs 12）到脸时 0-1 塔被推平。SG 的 150 矿正是首塔/二塔的钱。
+2. **0 塔窗口派 Nexus**：196s（first_due/O216h 通道）Nexus 工人钉点，银行被塔链+科技双向抽干，「派→等→撤→再派」（game_03 于 196/303/333s 三度钉 NEXUS），二矿至死未落。
+3. **O216f 的 sprint 放行科技链需要防御下限**：放行是对的（SG 提前），但缺「塔先到 2」的优先级约束，科技钱与保命钱在同一窗口竞争。
+
+### 3 个改进点（落地 O216i）
+
+1. **Zerg Timing 首塔未就绪不开矿**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_want_dynamic_expand`
+   - 改法：`_cannons_ready_peak < 1` 时整段返回 False（含 O189 强开/first_due 所有通道）。
+
+2. **Zerg Timing 前期 2 塔未就绪不拍 STARGATE/FLEETBEACON**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_build_core_structure`
+   - 改法：`time<300 且 _cannons_ready_peak<2 且未转舰队` 时 SG/FB 直接 return，塔链先把 150 矿用对地方。
+
+3. **迭代节奏修正：不重开 bench**
+   - bench.py 每局新起 run.py 子进程，新局自动加载最新代码；o216h 标签的 game_04+ 即为 O216i 行为，避免打断 Lane1 长跑局。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**650 例通过**（skipped=1）。
+- 观察点：o216h 标签后续局（=O216i 代码）首塔时点应 ≤240s、NEXUS idle_builder 计数应显著下降。
+
+---
+## O216j — 分矿保底塔不走「买不起即归零」（o216h game_04 尸检落地）
+
+**日期**：2026-08-06（o216h-vh-zerg-timing 双车道，O216i 代码局）
+
+### 结果
+
+- Lane2（Paladino）game_04 Defeat(848s)：O216i 生效——首塔 132s（原 281-338s）、SG 217s、FB 369s、二矿 446s 落成、舰队 7 艘（6 暴风+1 航母）；但二矿 ~620s 被抄丢、848s 被 78-supply 波滚平。
+- Lane1（Abyssal）game_01 Defeat(962s，旧 O216h 代码)：首塔 413s，慢性失血。
+- Lane2 累计 0-4，game_05 进行中；本 lane 大概率需重开 N=5。
+
+### 尸检发现（game_04）
+
+1. **新分矿 88s 塔目标恒 0**：二矿 446s 落成后，O210「非紧急且买不起 → cannons=0」在矿 30-135 振荡期每帧归零；534s E6「敌 4 地面，无塔」抄家，12 农民+基地全丢。分矿 BuildStructure 无 can_afford 守卫，但外层 F2 dispatch_viable 守卫已管钉点，归零是过度防御。
+2. **O216i 两道门生效**：首塔 132s、SG 217s（2 塔已就绪才放行）、FB 369s、首舰 506s——科技/防御顺序已正。
+3. **后期仍输绝对兵力**：舰队 7 艘 vs 敌 78 supply 中局波，地面全灭后农民 31→2；单矿+单波次补给跟不上 Zerg 连续波。
+
+### 3 个改进点（落地 O216j）
+
+1. **分矿保底塔不走 O210 归零**
+   - 文件：`ares-bot/bot/managers/production_manager.py` F2 分矿 BuildStructure
+   - 改法：新增 `_cannons_expansion = cannons if cannons > 0 else min(_ec_min, 2)`，分矿 `to_count_per_base` 用它；主基 PSD 路径保持 O210 原样。
+
+2. **保留 O216i 两道防御优先门**（本局验证有效，不回滚）。
+
+3. **流程：lane2 0-4 后将重开 Paladino N=5**（O216j 代码），Abyssal lane 继续观察 game_02+。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**650 例通过**（skipped=1）。
+- 观察点：新局分矿落成后 60s 内应有 ≥1 塔；E6「无塔」事件应消失。
+
+---
+## O217 — 基地残敌清剿（司令观察：大战后小股滞留拆建筑无人管）
+
+**日期**：2026-08-06（暂停验收期间司令直接观察指令）
+
+### 问题
+
+大战打完后，敌只留一个小狗/小股（1-5 个）在我方基地内拆建筑时，我方存活战斗部队不去清剿：
+- O205 空军召回（`_air_fleet_recall_target`）与 `_hot_base_anchor` 阈值均 **≥6**，1-5 个残敌不触发任何回防；
+- 守军锚点（坡口卡位/两矿中点/最暴露分矿）不指向残敌位置，部队干站看它拆。
+
+### 改法（`ares-bot/bot/managers/combat_manager.py`）
+
+1. 新增 `_base_intruder_target()`：敌作战单位（`is_combat_type`，排除王虫/侦查/运输/工人）在任一就绪基地 **15 格内 1-5 个** → 返回离基地最近的残敌位置；≥6 仍走原大波回防通道；`rush_active` 急性窗不清剿（坡口墙不能为一条狗离位），transition 期照常。
+2. `update()` 在 combat_sim 刹车之后接入：残敌存在 → `attack_target` 改为残敌位置（空地全军同清），清除后自动恢复原目标；事件去抖只在激活边沿记一条 `O217:基地残敌清剿`。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/combat_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**650 例通过**（skipped=1）。
+
+---
+## O218 — 气烂银行追加星门（o217 双 lane game_01 尸检落地）
+
+**日期**：2026-08-06（o217-vh-zerg-timing 双车道进行中）
+
+### 结果
+
+- Lane1（Abyssal）game_01 Defeat(846s)：二矿 405s，终局 5 暴风；星门全程恒 1。
+- Lane2（Paladino）game_01 Defeat(799s)：二矿 470s，终局 2 暴风；星门全程恒 1。
+- 两局同型：转舰队后气烂 400-736，舰队 300s 只涨 1-4 艘，被 36-57 supply 连续波滚平。
+
+### 尸检发现
+
+1. **星门恒 1 是新瓶颈**：`extra_production` 被 `tech_yields_to_threat`/`_fleet_starved_capacity`/`_expand_holding` 常年闸住；O105-③a 双开又只限首舰前（`not first_fleet_seen`）。首舰后没有任何通道补 SG。
+2. **气矿大量闲置**：气体 532-736 烂银行，SG 的 150 气完全付得起；舰队产能不足不是资源问题，是产能建筑数量问题。
+3. **O217 残敌清剿未触发**：两局 E6 都是「敌 10/14 地面」的大波（>5 上限），属正常波次防御问题而非残敌；O217 通道本身无需调整。
+
+### 3 个改进点（落地 O218）
+
+1. **首舰后气烂银行直接补星门**
+   - 文件：`ares-bot/bot/managers/production_manager.py`（O105-③a 块后）
+   - 改法：`fleet_transitioned + FB 实体 + 首舰已出 + SG 数 < min(8, 1+就绪基地) + 气 ≥400（留 250 产舰）+ can_afford + 非 rush_active` → `_build_core_structure(STARGATE)`，记事件 `O218:气烂银行追加星门`。
+
+2. **O217 通道保持不变**：本轮 E6 均为 ≥10 大波，不是 1-5 残敌场景，无调整依据。
+
+3. **节奏**：o217 tag 的 game_02+ 自动热加载 O218；若双 lane 仍不过半，下一轮重开 o218 tag N=5。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**650 例通过**（skipped=1）。
+- 观察点：新局转舰队后 SG 应升到 2-3 座、气体不再烂 400+、舰队 700s 前应 ≥6 艘。
+
+---
+## O219 — 敌主力压境全军协防（司令观察：大波打二矿只有 2 空军参战）
+
+**日期**：2026-08-06（o217 双车道运行中，司令直接观察指令）
+
+### 问题
+
+敌方大部队来袭二矿时，二矿堵口塔压缩了敌方参战兵力，但我方只有 2 个空军单位回防（O205 空军召回通道），主基地的追猎/叉子全部蹲家未参战 → 空军孤立阵亡、二矿被推平。
+
+根因：combat_manager `update()` 各分支锚点各自为政——集结期/对空攒兵/蹲守 → 主基或最暴露分矿；transition → 坡口/两矿中点；`_hot_base_anchor` 只在 carrier 蹲守分支和 transition（min 3）内被引用，集结分支（army<rally → defend_anchor）等根本不查热点。
+
+### 改法（`ares-bot/bot/managers/combat_manager.py`）
+
+- `update()` 在 combat_sim 刹车和 O217 残敌清剿**之后**追加最终覆盖：
+  `_hot_base_anchor(min_threat=6)` 非空 → `attack_target` 强制改为热点基地，对全编制（地面+空军）生效；骚扰编制（oracle 由 OracleManager 管）不在本分派内，天然除外。
+- 阈值 6 = 主力级（与 O205 空军召回同口径）；1-5 残敌仍走 O217 清剿，优先级低于主力协防。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/combat_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**650 例通过**（skipped=1）。
+- 观察点：后续局 E6/E9 大波到分矿时，地面守军应与空军同步出现在被攻基地。
+
+---
+## O220 — 无防基地强制注册 F2（o217-lane2 game_02 尸检落地）
+
+**日期**：2026-08-06（o217 双车道：lane1 0-5 收官；lane2 game_02 Defeat 1027s）
+
+### 结果
+
+- Lane1（Abyssal）0-5 收官，复盘 `idle_builder×5 overrun×5 one_base×2`。
+- Lane2 game_02 Defeat(1027s)：**O218 生效**（星门升到 3 座），但二矿 558s 落成后 100s 零塔，660s 被 4 地面抄家，之后单矿慢性失血；气烂 1734 vs 矿贴 0。
+
+### 尸检发现
+
+1. **新矿 100s 零塔**：F2 外层 `dispatch_viable` 资金守卫在矿 20-70 振荡期永假（矿 40+收入×5 ≈ 140 < 150），O216j 的 `_cannons_expansion` 保底值根本到不了注册环节；`f2_dispatch_guard_bypassed` 只数主基 25 格内的塔，分矿无防不豁免。
+2. **O218 验证通过**：SG 1→3 座；但舰队产能被矿物短缺卡死（暴风 250 矿/艘），气 1734 烂银行——矿物经济（二矿存活）仍是一号瓶颈。
+3. **O217 未在 660s 触发待核**：E6「敌 4 地面」属 1-5 残敌口径，尸检事件列表未见 `O217:基地残敌清剿`；下轮重点核对（可能事件在 autopsy 截取窗口外，或 `_rush_active` 急性窗抑制）。
+
+### 3 个改进点（落地 O220）
+
+1. **无防基地豁免 F2 资金守卫**
+   - 文件：`ares-bot/bot/managers/production_manager.py` F2 注册闸
+   - 改法：新增 `_defenseless_base`（任一就绪基地 12 格内 0 就绪塔）；挂进 F2 首段条件（强制注册）与 `f2_dispatch_guard_bypassed` 并列豁免 `dispatch_viable` 守卫。
+
+2. **O218 保留不回滚**：SG 已按预期升到 3；矿瓶颈靠二矿存活解决，不靠砍产能。
+
+3. **下轮核对 O217 触发条件**：若 660s 类场景仍无清剿事件，检查 `_rush_active` 抑制窗口是否过宽。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**650 例通过**（skipped=1）。
+- 观察点：新局二矿落成后首塔应 ≤60s 内开工；E6「无塔」事件应消失。
+
+---
+## O221 — 无防基地豁免 F2 全部让位闸（o220-lane1 game_01 尸检落地）
+
+**日期**：2026-08-06（o220-vh-zerg-timing-abyssal game_01 Defeat 1166s）
+
+### 结果
+
+- o220 lane1 game_01 Defeat(1166s)：二矿 385s 落成，F2 注册防御 442s 才发生（迟 52s），501s 敌 4 地面到脸时水晶/塔刚开工（塔链=水晶 25s+塔 29s），546s 敌 17 地面平推二矿。
+
+### 尸检发现
+
+1. **O220 只豁免了资金守卫，没豁免让位闸**：`_defenseless_base` 让 F2 过了 `dispatch_viable`，但 `_transition_reserve`/`_fleet_reserve`/FB 等待闸（`_fb_truly_missing`/`_fb_waiting`）继续把 F2 整段拦到 442s（FB pending 才放行）。
+2. **塔链物理周期 54s+**：新矿落成（385s）到敌到脸（501s）只有 116s，注册晚 52s = 塔来不及成型。
+3. **O219 协防未见事件**：E6 时「6 地面兵力就近协防」是 E6 自带机制；主力协防是否触发需下轮从事件流核对。
+
+### 3 个改进点（落地 O221）
+
+1. **无防基地豁免 reserve 双闸**
+   - `_transition_reserve`/`_fleet_reserve` 让位条款各加 `or _defenseless_base`。
+
+2. **无防基地豁免 FB 等待闸**
+   - FB 闸（`_fb_truly_missing`/`_fb_waiting`）加 `or _defenseless_base`：新矿保命塔 > FB 资金窗。
+
+3. **验证指标**：新局二矿落成后 F2 注册应 ≤10s 内发生；E6「无塔」应消失（允许「塔 1-2 座压不住」）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**650 例通过**（skipped=1）。
+
+---
+## O222 — 硬饱和全门旁路开矿（o217-lane2 game_05 尸检落地）
+
+**日期**：2026-08-06（o217 lane2 0-5 收官后重开 o222 tag）
+
+### 结果
+
+- o217 lane2（Paladino）0-5 收官，复盘 `idle_builder×5 overrun×4 one_base×3 trickle×1`。
+- game_05 Defeat(1191s)：**O218/O220 生效**——二矿 494s 落成后守了 600s（无 E6 早抄），SG 2-4 座、双矿 44 农、6 塔；但敌 E9 波 97/89/74 supply vs 我 47-63，绝对兵力 2 倍滚平。
+
+### 尸检发现
+
+1. **敌我运营速度差是终局死因**：Zerg 无骚扰自由运营到 97 supply（3-4 矿）；我方 2 矿 44 农硬饱和（≥32 后 ~12 农零产出）却因 fleet<3 舰队门开不出三矿。
+2. **O220 验证通过**：game_05 二矿落成后 600s 未被抄（对比前作 60-100s 丢矿）；O221 让位闸豁免于本局尾声才热加载，待下轮验证。
+3. **舰队矿物瓶颈**：暴风 250 矿/艘，双矿收入被塔重建/农民/地面持续抽血，舰队终局仅 3 艘；解法仍是矿基数（三矿）而非砍产能。
+
+### 3 个改进点（落地 O222）
+
+1. **硬饱和舰队门/矿门全旁路**
+   - 文件：`ares-bot/bot/production_plans.py` `should_expand_dynamic`
+   - 改法：新增 `hard_saturated = supply_workers >= workers_per_base × bases + 8`；硬饱和时 O160 双门全旁路直接开矿（软饱和仍保舰队门）。新增单测 `test_hard_saturation_bypasses_all_gates`。
+
+2. **lane2 重开 `o222-vh-zerg-timing-paladino` N=5**（全量 O218-O222 代码）。
+
+3. **观察指标**：三矿时点（目标 ≤700s）、敌我 supply 比（目标不被拉超 1.5×）、二矿 F2 注册 ≤10s（O221）。
+
+### 验证
+
+- `python3 -m py_compile bot/production_plans.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**651 例通过**（skipped=1）。
+
+---
+## O223 — FB 饥饿期主基 siege 塔不开火（o220-lane1 game_03 尸检落地）
+
+**日期**：2026-08-06（o220 lane1 game_03 Defeat 839s；O222 三矿 622s 已验证）
+
+### 结果
+
+- o220 lane1 game_03 Defeat(839s)：**O222 生效**（三矿 622s），但星门 506s、FB 再晚、首舰 ~620s+ 未成型，塔 9 座（主基 siege 6 + 分矿 3）、气烂 1142，E6「敌 15 地面」平推三矿。
+
+### 尸检发现
+
+1. **主基 siege 6 塔吃掉 FB/首舰资金**：`main_siege`（敌 ≥2 压主基 → 6 塔）在 FB 未落成期开火，900 矿塔 vs FB 300 矿资金窗，舰队 0 到 619s。
+2. **O222 验证通过**：三矿 622s（硬饱和旁路触发，fleet=0 也开）；三矿裸奔被抄是 O221 之前的代码窗（本局 retry 启动早于 O221 热加载），下轮复核。
+3. **舰队时间线仍晚 ~150s**：SG 506 → FB ~560 → 首舰 620+，Zerg 同期 60-90 supply；上游是早期农民 14-21 低水位（FORGE/GATEWAY idle  stall）拖累全链。
+
+### 3 个改进点（落地 O223）
+
+1. **FB 饥饿期 siege 不加强**
+   - 文件：`ares-bot/bot/managers/production_manager.py` siege 分支
+   - 改法：`siege and _fb_entities_now==0 and _fleet_total_now<3 and not rush_active` → `siege=False`，走原 cannons 目标（分矿保底塔不受影响）。
+
+2. **O222 保留**：三矿时点 622s 达标（目标 ≤700s）。
+
+3. **下轮观察**：FB 落成时点（目标 ≤540s）、siege 开火时舰队是否 ≥3、早期农民水位（GATEWAY/FORGE idle 是否再现）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**651 例通过**（skipped=1）。
+
+---
+## O224 — Zerg Timing transition 期 SG/FB 攒钱停产（o220 game_04 / o222 game_01 尸检落地）
+
+**日期**：2026-08-06（双 lane 持续连败中的根因定位）
+
+### 结果
+
+- o220 lane1 game_04 Defeat(766s)：三矿 590s（O222 持续生效），但舰队 0 到 619s+，气烂 550-1000。
+- o222 lane2 game_01 Defeat(605s)：SG ~450s、首舰未出即被推。
+
+### 尸检发现
+
+1. **SG/FB 资金窗被 zealot 持续吃掉**：O186 早已让 transition 不冻结 SG/FB，O216i 门（2 塔）也在 ~280s 打开；但 `_build_core_structure` 的 `can_afford` 守卫在矿 70-230 振荡期永假——ground_spawn 纯 zealot（100 矿/个）每帧抢钱，SG 的 150 矿 200s+ 攒不出。
+2. **时间线定量**：SG ~490 → FB ~550 → 首舰 620+，Zerg Timing 波 43 supply 于 608s 到脸，舰队永远晚一个波次。
+3. **O216c 同款解法**：Nexus 基金保护（`zerg_timing_expand_reserve`）已验证有效，科技基金同构处理。
+
+### 3 个改进点（落地 O224）
+
+1. **`spawn_pause_reason` 新增 `zerg_timing_tech_reserve`**
+   - 文件：`ares-bot/bot/production_plans.py`
+   - 改法：`tech_saving=True 且 minerals < tech_price` → 暂停产兵攒钱（SG 段 150、FB 段 300，两段接力）；买得起即恢复（自校正）。新增单测。
+
+2. **调用方接防御前置**
+   - 文件：`ares-bot/bot/managers/production_manager.py`
+   - 改法：`tech_saving = zerg+timing+transition_active+t≥240+塔≥2+(SG 或 FB 缺失)`——防御未立不攒（保命优先）。
+
+3. **观察指标**：SG 落成 ≤340s（原 ~490s）、首舰 ≤520s（原 620s+）、`O126:产兵暂停=zerg_timing_tech_reserve` 事件出现。
+
+### 验证
+
+- `python3 -m py_compile bot/production_plans.py bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O224 中期验证 + o220 lane1 收官（舰队时间线已修复，剩消耗战）
+
+**日期**：2026-08-06（o220 lane1 0-5 收官；o222 lane2 game_03 崩溃重试中）
+
+### 结果
+
+- o220 lane1（Abyssal）0-5 收官，但 game_05（O223 代码）是迄今最佳局：SG 321s、FB 362s、**SG 3 座 @506s、舰队 6 艘 @844s**（此前同期 fleet 0-2）。
+- o222 lane2 game_03（O224 代码，崩溃前 attempt）：**O217 首次触发 @382s**、SG 382→FB 462→fleet 4 @699s。
+
+### 尸检发现
+
+1. **舰队时间线已修复**：SG ≤340s、FB ≤460s、首舰 ≤520s 全部达标（O218+O222+O223+O224 叠加生效）。
+2. **新瓶颈=消耗战**：舰队 6 @844 后被 Zerg 连续波磨到 4，终局败亡；气烂 931-1107 而矿恒 10-90——舰队补充被矿物卡死（塔重建+46 农民+地面 floor 持续抽血）。
+3. **基地仍被大波抄**：E6「敌 11-17 地面」级波次双矿轮流丢，农民 45→3，经济崩于舰队成型前夜。
+
+### 3 个改进点（本轮先落地观察，代码改动见下一轮）
+
+1. **lane1 重开 `o224-vh-zerg-timing-abyssal` N=5**（全量 O224 代码首发）。
+2. **候选方向 A（矿物优先级）**：fleet≥1 后探机上限 22→18/基地、zealot floor 再降，把矿让给舰队补充。
+3. **候选方向 B（舰队生存）**：核对 tempest 交战微操（射程 10 是否被 hydra/corruptor 贴脸），必要时调 carrier_offensive/tempest_offensive 后撤线。
+
+### 验证
+
+- game_05 数据已核实（SG/FB/舰队曲线）；O224 单测 652 通过（前轮已记）。
+
+---
+## O225 — FB 饥饿期暂停探机（o222-lane2 game_03 尸检落地）
+
+**日期**：2026-08-06（o222 lane2 game_03 Defeat 805s，O224 首局完赛）
+
+### 结果
+
+- o222 lane2 game_03 Defeat(805s)：O100 转舰队 334s（评分 24）、O224 tech_reserve 271-331s 触发，但 **FB 至死未落成**、fleet 0 到 800s，气烂 852。
+
+### 尸检发现
+
+1. **FB 停滞自救 60 次全 no_money**：O110 自救链（清 tracker/主基派工/贴槽水晶/分矿试建）从 460s 跑到 506s+ 全部失败，原因清一色 `no_money`；636s 仍有 `idle_builder 等钱造FLEETBEACON`。
+2. **资金去向定位**：619s 矿 570 昙花一现，其余时间被探机（35→42 连续训练，50 矿/个）+ timing_sprint 期 6 塔 + zealot 吃光；FB 的 300 矿窗 300s+ 攒不出。
+3. **O224 部分生效**：SG 提前到 ~370s、transition 334s 退出（评分 24）；但 FB 段（300 矿）攒钱停产只停 SpawnController，探机/塔不在管辖内。
+
+### 3 个改进点（落地 O225）
+
+1. **FB 饥饿期暂停探机**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_build_probes`
+   - 改法：zerg+timing + `_fb_entities_now==0` + 首舰未出 + 农民 ≥28 + 有就绪 SG → 不训探机（28+ 已超双矿饱和线 87%）。
+
+2. **O224 保留**：SG 段（150）已验证提前；FB 段靠 O225 补齐资金链。
+
+3. **观察指标**：FB 落成 ≤560s、O110 自救 `no_money` 次数应归零、首舰 ≤600s。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O226 — O217 清剿 3s 滞回 + O224 攒钱门 塔2→塔1（o222-lane2 game_04 尸检落地）
+
+**日期**：2026-08-06（o222 lane2 game_04 Defeat 950s）
+
+### 结果
+
+- game_04 Defeat(950s)：O100 转舰队 293s、O189 强开 181s、二矿 606s，但 FB 又未落成、fleet 0 到 900s。
+
+### 尸检发现
+
+1. **O217 激活 218 次 yo-yo**：残敌进出 15 格/目标死亡让 `attack_target` 每帧翻转，全军在清剿与其他锚点间反复横跳，事件刷屏且部队空跑。
+2. **O224 塔≥2 门太严**：本局首塔 169s、二塔 281s，`tech_saving` 直到 281s 才生效；SG 资金在 240-281s 窗口被 zealot 吃光，O110 SG 自救 no_money 连发（338-382s）。
+3. **FB 资金窗仍被多重分食**：450-506s 矿 780-805 昙花一现后被 Nexus+探机+塔吃光。
+
+### 3 个改进点（落地 O226）
+
+1. **O217 清剿 3s 收尾滞回**
+   - 文件：`ares-bot/bot/managers/combat_manager.py` `_base_intruder_target`
+   - 改法：激活期每帧重算最近残敌（位置新鲜）；残敌消失后 3s 内保持最后目标收尾，超时才退出——消除每帧翻转。
+
+2. **O224 tech_saving 塔门 2→1**
+   - 文件：`ares-bot/bot/managers/production_manager.py`
+   - 改法：`_cannons_ready_peak >= 1`（240s 起），与 O216i 的 SG 门（300s/塔2）错峰——门开时 150 矿已攒好。
+
+3. **O225 保留**：game_04 二矿 606s、探机暂停待 O225 局验证。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/combat_manager.py bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+- 观察点：O217 事件次数应降到个位数；O110 SG 自救 no_money 应消失。
+
+---
+## O227 — Zerg Timing 推进临界 8→6（o224-lane1 game_01 尸检落地）
+
+**日期**：2026-08-06（o222 lane2 0-5 收官，重开 o227 tag；o224 lane1 game_01 Defeat 959s）
+
+### 结果
+
+- o224 lane1 game_01 Defeat(959s)：fleet 1 @562、3 基地 @791、O218 追加 SG 事件连发——但 SG2 至死未落成（矿恒 <70），气烂 1806，舰队顶点 3-6 艘，被 66-97 supply 波滚平。
+- o222 lane2 0-5 收官，复盘 `idle_builder×5 overrun×4 one_base×3`。
+
+### 尸检发现
+
+1. **推进闸永不触发**：`_force_push`/`margin=0` 的舰队临界线 ≥8，Zerg Timing 局舰队顶点只有 6（气烂 1806、矿恒 <70，8 艘永远到不了）→ 全程蹲守，Zerg 无压力运营到 2 倍兵力。
+2. **O217 flap 减半但仍在**（218→76 次，本局无 O226 滞回）。
+3. **O218 事件连发但 SG2 不落成**：`can_afford` 帧判定后矿被抽血，工人反复钉点/被拆——追加产能需要更持久的矿物保障，暂由 O224/O225 攒钱体系覆盖观察。
+
+### 3 个改进点（落地 O227）
+
+1. **Zerg Timing 推进临界 8→6**
+   - 文件：`ares-bot/bot/managers/combat_manager.py` `attack_target`
+   - 改法：`_push_fleet_need = 6 if zerg+timing else 8`；`_force_push` 与 `margin=0` 临界线同改。舰队 6 + t>540 → 强制推进，均势即打，断敌运营。
+
+2. **lane2 重开 `o227-vh-zerg-timing-paladino`**（全量 O224-O227 代码）。
+
+3. **观察指标**：舰队 6 后是否出门（`attack_target` 推敌基地）、O217 flap ≤10、SG2 落成率。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/combat_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O228 — Zerg Timing FB 关键件钉点派工（o224-lane1 game_02 尸检落地）
+
+**日期**：2026-08-06（o224 lane1 game_02 Defeat 1010s）
+
+### 结果
+
+- game_02 Defeat(1010s)：SG ~370s、二矿 458s，但 FB 至死未落成（O110 自救 95 次全 `no_money`）、fleet 0 到 675s+、气烂 1754。
+
+### 尸检发现
+
+1. **FB 资金被同帧抢单**：`can_afford` 派工在矿到 300 的同一帧被 zealot（O126 反暂停语义=产线永动）+ 探机 + 塔抢走；O110 自救 95 次全 `no_money`，FB 排队永远排第二。
+2. **post-transition 无科技攒钱闸**：O224 tech_saving 只限 transition 期；O106 `fleet_tech_reserve` 在 O110 停滞确认后自解除（tech_stalled），FB 资金窗裸奔。
+3. **O225 未触发**：农民峰值 22-24 < 28 门（单矿期 FB 已在排队），探机暂停帮不上这一段。
+
+### 3 个改进点（落地 O228）
+
+1. **FB 走关键件钉点派工**
+   - 文件：`ares-bot/bot/managers/production_manager.py` 重建窗 FB 分支
+   - 改法：zerg+timing 时改 `_dispatch_structure(FLEETBEACON, critical=True)`（同 O147 forge 机制：驻点等钱=钱到立刻开工，FB 进资金第一顺位）；其余流派维持 `can_afford` 守卫不变。
+
+2. **验证指标**：FB 落成 ≤560s、O110 FB `no_money` 自救归零、`idle_builder FLEETBEACON` 有界（≤10s/次）。
+
+3. **方向备忘**：O218 SG2 反复派工不落成（矿 <150）仍待解——若 O228 后 FB/首舰提前，SG2 资金窗应自然出现，下轮复核。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O229 — 追加星门同走钉点派工（o227-lane2 game_01 尸检落地）
+
+**日期**：2026-08-06（o227 lane2 game_01 Defeat 1407s，迄今最健康局）
+
+### 结果
+
+- game_01 Defeat(1407s)：FB 462s、二矿 402s、**5 基地/71 农民峰值/舰队 5-6**、撑到 1407s；终局被 82-101 supply（1.5×）连续波滚平。
+
+### 尸检发现
+
+1. **O218 追加星门 58+ 次全空转**：与 FB 同型——`can_afford` 帧判后矿被 zealot/探机/塔同帧抢走，SG2 至死未落成，舰队产能卡在 1-2 座星门。
+2. **经济链已跑通**：O222 硬饱和开矿链达成 5 基地；败因转为产能/补充速度（暴风 250 矿/艘 vs Zerg 即时补员）。
+3. **配比问题**：freeflow 下 p0 暴风恒优先，航母（0.15/p1）全程 0 艘——气烂 1288 时航母未被混编，拦截机肉盾缺席。
+
+### 3 个改进点（落地 O229）
+
+1. **追加星门改关键件钉点派工**
+   - 文件：`ares-bot/bot/managers/production_manager.py` O218 块
+   - 改法：zerg+timing 时 `_dispatch_structure(STARGATE, critical=True)`；其余流派维持 `can_afford`。
+
+2. **验证指标**：SG ≥3 座 @700s、O218 事件次数 ↓（一次派工一次落成）、舰队 ≥8 @900s。
+
+3. **方向备忘（下轮）**：气烂 ≥800 时混编航母（p1 不被 p0 永久截断的配比出口），以及暴风 vs 飞蛇/腐化的交战后撤线核查。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## 首胜！o224-lane1 game_05 Victory(994s) — Zerg Timing 零的突破
+
+**日期**：2026-08-06（o224 lane1 收官 1-4；o227 lane2 0-2 进行中）
+
+### 胜局数据
+
+- **Victory(994s)**：终局 4 基地、63 农民、**supply 159/159**、军队 25 追猎 + 5 暴风 + 3 虚空 + 4 叉；SG 4 座 @844s、舰队 5 @900s。
+- 开矿链：二矿 393s → 三矿 630s → 四矿 968s（O222 硬饱和全链跑通）。
+
+### 有效成分（与败局对比）
+
+1. **O229 钉点派工生效**：SG 1→4 座全部落成（此前 O218 空转 58 次 SG2 不出）；舰队产能打开。
+2. **满人口团战**：159/159 vs 此前败局顶点 60-80——4 基地经济 + 产线不卡钱（O224/O225/O228 资金链修复）。
+3. **混编地面**：25 追猎提供对空 DPS（vs 腐化/飞蛇），暴风不再孤立。
+
+### 待解问题
+
+- lane1 仍 1-4：game_01-04 的 FB/SG 钉点派工（O228/O229）是 game_05 才吃到的代码，前 4 局属旧代码窗——**重开 `o229-vh-zerg-timing-abyssal` N=5 全代码验证**（已启动）。
+- lane2（o227 tag）game_03+ 热加载 O229 继续观察。
+
+### 验证
+
+- 胜局数据已核实（state 快照曲线 + 终局编制）。
+
+---
+## O230 — Zerg Timing 追猎防守核 cap2 2→8（胜负局对照落地）
+
+**日期**：2026-08-06（o229 lane1 game_01 Defeat 1107s；o227 lane2 0-4）
+
+### 对照分析
+
+- **胜局**（o224 game_05 Victory）：25 追猎 + 5 暴风 + 3 虚空，159 满人口——pivot 反空军触发混出追猎海，对空对地双用，基地守住了。
+- **败局**（o229 game_01）：舰队 6 @788 达标、SG 3 座，但敌纯地面时追猎 cap2=2、叉 3 个，27 地面波滚平三矿；气烂 1321 没人用。
+
+### 3 个改进点（落地 O230）
+
+1. **Zerg Timing 追猎 cap2 2→8**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_apply_floor`
+   - 改法：zerg+timing 时 `_cap2 = max(pf.cap2, 8)`——用烂在银行的气（常态 1000+）养 8 追猎防守核，不吃舰队矿，对空对地双用。
+
+2. **保留 O229 方向**：SG 3 座/舰队 6 @788 已成常态，产能不再是一号瓶颈。
+
+3. **观察指标**：中期（700-1000s）追猎数应 ≥6、基地被 27 地面波平推的场景应减少、E6 农民撤离次数下降。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O231 — Zerg Timing 塔封顶 3→2/基地（o229-lane1 game_02 尸检落地）
+
+**日期**：2026-08-06（o227 lane2 0-5 收官，重开 o230 tag；o229 lane1 game_02 Defeat 1099s）
+
+### 结果
+
+- o229 lane1 game_02 Defeat(1099s)：二矿 293s、三矿 554s，但塔 10 座（≈1350 矿）在 FB/舰队资金窗持续抽血，星门恒 1、舰队 675s 才 1 艘、气烂 1663。
+
+### 3 个改进点（落地 O231）
+
+1. **Zerg Timing `_ec_max` 3→2/基地**
+   - 文件：`ares-bot/bot/managers/production_manager.py` F2 塔目标
+   - 改法：O230 追猎防守核（气耗、8 只）上岗后，静态塔可再降；2/基地×3 基地=6 塔省 ~600 矿给舰队产能。
+
+2. **lane2 重开 `o230-vh-zerg-timing-paladino`**（全量 O228-O230 代码；O231 热加载跟进）。
+
+3. **观察指标**：塔总数 ≤2×基地、舰队 ≥4 @650s、气烂时追猎 ≥6。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O231b — 追猎 cap2=8 推迟到首舰后（o230-lane2 game_01 尸检落地）
+
+**日期**：2026-08-06（o230 lane2 game_01 Defeat 980s）
+
+### 结果
+
+- game_01 Defeat(980s)：SG 停滞自救 no_placement→no_money（325-418s）、FB 钉点派工 21 次 no_money，fleet 0 到 930s，终局 73-supply 波滚平。
+
+### 尸检发现
+
+1. **O230 的 8 追猎反噬 FB 资金窗**：追猎 125 矿/只 × 8 = 1000 矿需求与 FB(300)/暴风(250) 正面冲突——首舰出场前追猎海是纯矿耗，与「防守核」设计意图（吃烂气）矛盾。
+2. **胜局追猎海的真实来源**：o224 胜局的 25 追猎是**舰队成型后**经 pivot 反空军混出来的，不是首舰前堆的。
+
+### 改法（O231b）
+
+- `ares-bot/bot/managers/production_manager.py` `_apply_floor`：cap2=8 仅在 `_first_fleet_seen()` 后生效；首舰前回到 pf.cap2=2（原语义）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## 第二胜！o229-lane1 game_03 Victory(1132s) — 14 暴风+4 航母压制局
+
+**日期**：2026-08-06（o229 lane1 目前 1-2，game_04/05 决定能否 3-2 打穿）
+
+### 胜局数据
+
+- **Victory(1132s)**：终局 5 基地、63 农民、**supply 199/200**、军队 **14 暴风 + 4 航母** + 21 追猎 + 1 叉；SG 5 座；矿 1405 富余。
+- 开矿链：二矿 333s → 三矿 538s → 四矿 831s → 五矿（O222 全链）。
+
+### 有效成分（累计）
+
+1. **资金链修复四件套**（O224 tech_reserve / O225 停探机 / O228 FB 钉点 / O229 SG 钉点）：SG 5 座全落成，舰队 14+4。
+2. **航母首次混编**（4 艘）：气矿富余时 p1 航母终于出场，拦截机肉盾+暴风输出体系成型。
+3. **O230 追猎核**：21 追猎（首舰后 cap2=8 + pivot 反空军叠加）。
+
+### 当前战绩
+
+- o229 lane1（Abyssal）：1-2（game_01/02 Defeat 属旧代码窗，game_03 Victory 全代码）
+- o230 lane2（Paladino）：0-2（game_03 进行中）
+
+---
+## O232 — Zerg Timing 强推加劣势闸（o229-lane1 game_04 尸检落地）
+
+**日期**：2026-08-06（o229 lane1 目前 1-3，game_05 收官局进行中）
+
+### 结果
+
+- game_04 Defeat(970s)：舰队 6 @731、SG 3 座达标，但 900-956s 间舰队 6→0 全灭（O227 舰队 6 硬推撞上 65-supply 敌群），随后基地被滚平。
+
+### 对照
+
+- game_03 Victory：舰队 14+4 航母、199 supply 才进入决战——推的时机是对的。
+- game_04 Defeat：舰队 6（我方 ~43 supply vs 敌 65）硬推 = 送。
+
+### 改法（O232）
+
+- `ares-bot/bot/managers/combat_manager.py` `attack_target`：Zerg Timing 的 `_force_push` 追加劣势闸——`own_army_supply >= 敌可见 × 0.8` 才推，劣势继续蹲（margin 判据不受影响）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/combat_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## o232 lane1 game_01 全代码基线尸检（Defeat 980s）
+
+**日期**：2026-08-06
+
+### 结果
+
+- o232 lane1（Abyssal 全代码首发）game_01 Defeat(980s)：二矿 437s、SG ~430s、FB ~620s、首舰 675s，但**舰队卡在 1 艘 280s**、星门恒 1，被慢性磨死。
+
+### 尸检发现
+
+1. **舰队 1→1 停滞**：FB 后气 384-992 持续富余、矿 60-390 间歇达标，但舰队 280s 零增长——1 座星门 + 追猎 cap2=8（首舰后激活，125 矿/只）与暴风（250 矿/艘）在矿稀缺期正面竞争，rush latch 高频期 O218 SG 追加被 `not rush_active` 闸住。
+2. **rush latch 长期化**是 O218 SG2 出不来的主因之一（本局 rush=True 片段极多）。
+
+### 候选改进点（待更多局确认后再落地，防 thrash）
+
+1. O218 的 `not rush_active` 放宽为「rush_active 但家 40 格无敌 ≥4」也可追加 SG（波间隙窗口）。
+2. 追猎 cap2=8 加「舰队 ≥3 或气 ≥600」前置，避免与暴风抢矿。
+
+### 验证
+
+- 尸检数据已核实；暂不改代码，等 o232 双 lane 更多局确认趋势。
+
+---
+## O233 — O218 急性 rush 闸 + 追猎 cap2=8 后置舰队≥3（o232 双 lane 尸检落地）
+
+**日期**：2026-08-06（o232 lane1 0-2、lane2 game_01 Defeat 1259s）
+
+### 结果
+
+- o232 lane2 game_01 Defeat(1259s)：SG 3 @788、舰队 6-7、三矿 968s——全代码局明显改善，终局被慢性磨死。
+- o232 lane1 game_01/02 Defeat：舰队卡 1 艘 280s（rush latch 闸 O218 + 追猎 cap2=8 与暴风抢矿）。
+
+### 3 个改进点（落地 O233）
+
+1. **O218 追加 SG 的 rush 闸放宽为急性口径**
+   - `not _rush_active` → `not (_rush_active and 家 40 格敌作战单位 ≥4)`；波间隙 latch 不再挡产能。
+
+2. **追猎 cap2=8 后置到舰队 ≥3**
+   - `_apply_floor`：`_first_fleet_seen()` 前置改为 TEMPEST+CARRIER ≥3，避免首舰刚出时 8 追猎（1000 矿）与暴风（250 矿/艘）抢矿。
+
+3. **验证指标**：舰队 1→3 耗时 ≤120s、O218 事件后 SG 落成率、中期追猎 6-8 只在舰队 ≥4 后才出现。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O234 — 回滚 O231（塔封顶回 3/基地）：o232 双 lane 0-8 回归分析
+
+**日期**：2026-08-06（o232 lane1 0-4、lane2 0-3，全部 O233 代码局）
+
+### 回归分析
+
+- o229 lane1（1-4 含 Victory）与 o232 双 lane（0-8）的代码差：O231（塔 3→2/基地）+ O231b/O233（追猎核后置到舰队≥3）。
+- 后果：中期（500-700s）二矿防御 = 2 塔 + 零追猎（追猎核要等舰队≥3 才上岗），被 10-20 地面波连丢二矿，经济封顶 1-2 基地，舰队永远到不了 6+。
+- 胜局的打开方式（4-5 基地 + SG 4-5 + 追猎海后期）没变，变的是中期塔少了 1/3。
+
+### 改法（O234）
+
+- `ares-bot/bot/managers/production_manager.py`：Zerg Timing `_ec_max` 回滚 2→3/基地；追猎核（cap2=8、舰队≥3 后）作为**增量**保留，不再替代塔。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O235 — FB 被拆重建同走钉点派工（o234-lane1 game_01 尸检落地）
+
+**日期**：2026-08-06（o232 双 lane 各 0-5 收官，o234 双 lane 重开进行中）
+
+### 结果
+
+- o234 lane1 game_01 Defeat(1663s 局)：3 基地、47 农民、SG 5 座，但 FB 被拆后 **FB=0 持续 300s+**（重建走 O83 `can_afford` 老路被同帧抢单），气烂 2400、舰队停产僵死，终局败亡。
+
+### 3 个改进点（落地 O235）
+
+1. **O83 FB 饥饿重建改钉点派工**
+   - 文件：`ares-bot/bot/managers/production_manager.py` `_fleet_starved` 分支
+   - 改法：zerg+timing 时 `_dispatch_structure(FLEETBEACON, critical=True)`（同 O228 机制）；其余流派不变。
+
+2. **覆盖关系明确**：O228（首 FB/重建窗）+ O235（中后局 FB 被拆重建）= FB 全生命周期钉点派工。
+
+3. **观察指标**：FB 被拆后重建 ≤60s、气烂 ≥1500 且 FB=0 的僵局不再出现。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O236 — Nexus 钉点期停探机+追猎 floor 归零（胜负局二矿时点对照落地）
+
+**日期**：2026-08-06（o234 双 lane 各 0-5 收官；o235 双 lane 进行中）
+
+### 对照发现
+
+- 近 10 局胜负关键变量：**二矿时点 ≤400s=胜**（o229 game_03 二矿 333s 胜）、**≥500s=负**（o234 game_02 二矿 598s 负）。
+- Nexus 钉点期间的抽血源：探机（50 矿/个，最大）+ 追猎 floor（125 矿/只）+ 塔 + zealot；前两者可暂停，后两者保命不动。
+
+### 3 个改进点（落地 O236）
+
+1. **Nexus 钉点期暂停探机**
+   - `_build_probes`：zerg+timing + Nexus 未开工 + 农民 ≥18 → 不训探机（18+ 够当前矿线，解除自恢复）。
+
+2. **Nexus 钉点期追猎 floor 归零**
+   - `_apply_floor`：zerg+timing + Nexus 未开工 → `_cap2 = 0`（优先级高于舰队≥3 的 cap2=8 分支）。
+
+3. **归因纪律**：o235 双 lane 仅 game_01 为 pre-O236 代码，game_02+ 全为 O236，样本归因清晰。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+- 观察指标：二矿时点 ≤400s 的局占比（目标 ≥60%）。
+
+---
+## O237 — 敌地面重型提前激活追猎核（败局共性落地）
+
+**日期**：2026-08-06（o235 lane2 0-5 收官，重开 o236 tag；o235 lane1 进行中）
+
+### 胜负对照（决定性）
+
+- **胜局共性**：21-25 追猎——由 pivot 反空军（敌空军 ≥3 → 0.3 配比）触发；Zerg 出腐化/飞龙**反而**送给我们追猎海，对空对地双用守住基地。
+- **败局共性**：敌纯地面（roach/ravager/hydra）→ pivot 不触发 → 追猎零产（cap2=8 又要等舰队 ≥3）→ 27 地面波滚平基地。
+
+### 3 个改进点（落地 O237）
+
+1. **敌可见地面 ≥8 即激活追猎核**
+   - `_apply_floor`：zerg+timing 时 cap2=8 的激活条件从「舰队 ≥3」放宽为「舰队 ≥3 或敌可见地面 ≥8」，Nexus 钉点期仍为 0（O236 优先）。
+
+2. **o235 lane2 复盘**：`idle_builder×5 overrun×4 one_base×2 trickle×1 supply_block×1`；game_04 二矿 362s（O236 达标）仍败于中期地面防御真空。
+
+3. **观察指标**：敌地面 ≥8 时追猎应在 60s 内 ≥4；E6 农民撤离次数下降。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O238 — O236 钉点暂停只限首扩（o237-lane1 game_01 尸检落地）
+
+**日期**：2026-08-06（o236 lane2 0-5 收官 one_base×5；o237 lane1 game_01 Defeat 1267s）
+
+### 结果
+
+- o237 lane1 game_01 Defeat(1267s)：**二矿 405s（O236 达标）**、舰队 7 @844、SG 3，但舰队 5-7 平台期 400s、气烂 2004、矿恒 25-70，农民峰值仅 44（胜局 63-71），被慢性磨死。
+
+### 尸检发现
+
+1. **O236 探机暂停累计反噬**：钉点在二矿/三矿/四矿反复发生，每次都停探机 = 农民峰值被掐在 44——矿收入平台化，舰队 250 矿/艘补不上消耗。
+2. **胜局农民水位 63-71 vs 败局 36-46**：农民规模是比二矿时点更深层的胜负变量（收入决定舰队补充速度）。
+
+### 3 个改进点（落地 O238）
+
+1. **O236 探机暂停只限首扩钉点**（`townhalls<2`）：三矿以上钉点照产探机。
+2. **O236 追猎 floor 归零同样只限首扩钉点**：三矿以上钉点追猎核照产（防守优先）。
+3. **观察指标**：农民峰值 ≥55、舰队平台期（卡 N 艘 >120s）消失。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O239 — 气烂银行直接点航母（o237 多局尸检落地）
+
+**日期**：2026-08-06（o237 lane1 0-4、lane2 0-3 进行中）
+
+### 尸检发现
+
+- 败局共性：气烂 1300-2000 而矿恒 <100——暴风（250 矿/艘）产不动，舰队 6-9 艘打不赢 60-90 supply 地面波；暴风 vs 刺蛇集火生存性差。
+- 胜局共性：3-4 航母混编（o224/o229 两胜都有）——拦截机吸火 + 本体远程，vs 无对空地面是质变。
+- o237 lane1 game_02 是近年最好败局：农民 63、舰队 9、三矿 658s，仍被多点抄家磨死——缺的最后一环就是舰队质量（纯暴风）而非数量。
+
+### 3 个改进点（落地 O239）
+
+1. **气烂 ≥700 且 FB 在 → 空闲就绪星门直接点航母**
+   - `ares-bot/bot/managers/production_manager.py`（stall watchdog 后）
+   - 改法：zerg+timing + `vespene≥700` + `_fb_entities_now>0` + `can_afford(CARRIER)` → 每帧最多 1 座空闲 SG `train(CARRIER)`，记事件。
+
+2. **配比说明**：freeflow 下 p0 暴风恒优先，航母配比 0.15 永不触发——O239 绕过配比直接下指令，只在气烂时生效，不扰动正常配比。
+
+3. **观察指标**：航母 ≥2 @900s、O239 事件出现、舰队存活时间（平台期长度）上升。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+
+---
+## O240 — 航母攒钱预留（o237 双 lane game_05 实证：O239 被 can_afford 封印）
+
+**日期**：2026-08-06（o237 双 lane 各 0-5 收官）
+
+### 结果
+
+- o237 双 lane 各 0-5；两局 game_05（O239 代码）事件核查：**O239 零触发**、O218 36/208 次——`can_afford(CARRIER)` 要求 350 矿，矿恒 <100 的经济里永远为假。
+
+### 3 个改进点（落地 O240）
+
+1. **`spawn_pause_reason` 新增 `zerg_timing_carrier_reserve`**
+   - 触发：zerg+timing + 非 transition + 气 ≥800 + FB 在 + 航母配比落后（航母+在产 < 暴风/6）且矿 <350 → 暂停产线攒钱，攒够自恢复（O239 同帧点舰）。
+
+2. **航母攒钱期探机同让位**
+   - `_build_probes`：同口径条件 → 不训探机（50 矿/个是攒钱期最大抽血源）。
+
+3. **双 lane 重开 `o240` tag**（全量 O239+O240 代码首发）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py bot/production_plans.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+- 观察指标：O239 事件首次触发、航母 ≥1 @900s、`O126:产兵暂停=zerg_timing_carrier_reserve` 事件。
+
+---
+## O241 — 回归排查：回滚 O232 劣势闸 + 恢复 O230 无条件追猎核（0-30 区间分析）
+
+**日期**：2026-08-06（o230-o240 区间 10 lane 0-30，此前 o224/o229 两胜）
+
+### 区间分析
+
+- **胜局代码状态**（o224 game_05 / o229 game_03）：O229 SG 钉点 + **O230 无条件 cap2=8** + 塔 3/基地 + **无 O232 劣势闸**。
+- **0-30 区间新增**：O231b/O233（cap2 后置）、O232（劣势不推）、O236-O240。全部 0 胜。
+- 最可疑两项：O232 让 bot 全程被动挨打（zerg 自由运营 2 倍兵力）；O233 让中期追猎零产（防守真空）。
+
+### 3 个改进点（落地 O241）
+
+1. **回滚 O232 劣势闸**：Zerg Timing `_force_push` 恢复「舰队 6 + t>540 即推」，不再要求 supply 优势。
+2. **恢复 O230 无条件 cap2=8**：去掉舰队≥3/敌≥8 前置（O236/O238 的首扩钉点归零保留）。
+3. **保留其他全部**：O235 FB 重建钉点、O236 首扩暂停、O239/O240 航母链不动——A/B 只变两项，归因清晰。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/combat_manager.py bot/managers/production_manager.py`：通过。
+- `poetry run python -m unittest discover -s tests`：**652 例通过**（skipped=1）。
+- 判读标准：o240 双 lane 收官后重开 o241，若胜率回到 ≥1 胜/lane 则确认为回归点。
+
+---
+## Zerg Timing 阶段性结论与转向（O241 A/B 后 0-5 区间实证）
+
+**日期**：2026-08-06（Zerg Timing 累计 ~70 局 bench，2 胜：o224-lane1-game_05、o229-lane1-game_03）
+
+### 阶段性结论
+
+1. **两胜的共同条件**：Zerg 出空军（腐化/飞龙）→ pivot 反空军触发追猎海（对空对地双用）+ Abyssal 图 + 5 基地 199 人口。**Zerg 纯地面（roach/hydra）时全败**——这是结构性的，不是参数问题。
+2. **O241 A/B 验证**：回滚 O232/O233 到胜局代码状态仍 0 胜 → 两胜主要由敌方兵种构成（运气）驱动，代码微调无法改变 vs 地面海的基本面。
+3. **vs roach/hydra 的正确答案**：不朽者（蟑螂是重甲，不朽加成攻击+刚毅护盾）或巨像——carrier 流（纯星门产能）当前**没有机械台/这些兵种**，这是下一个大杠杆（需新增 ROBOTICSFACILITY + 不朽者混编，估 1-2 轮迭代）。
+
+### 已固化的有效资产（全部保留）
+
+- 资金链四件套：O224 tech_reserve / O225 停探机 / O228 FB 钉点 / O229 SG 钉点（SG 4-5 座、FB ≤560s 已成常态）
+- 开矿链：O222 硬饱和（3-5 基地）+ O236/O238 首扩钉点暂停（二矿 ≤405s）
+- 防御体系：O216i 防御优先门 + O220/O221 无防基地强注册 + O217 残敌清剿 + O219 全军协防
+- 舰队链：O218 追加 SG + O239/O240 航母攒钱点舰 + O227 舰队 6 强推
+
+### 转向决策
+
+- **Zerg Timing 挂起**（2 胜，状态固化于本日志与 `docs/handoff-zerg-timing-o216j.md`），下一个大杠杆 = 机械台+不朽者混编 vs 地面海。
+- **转向 Terran Rush**（六组合之三）：zerg 专属门全部按 `opp_race` 隔离不影响；Terran 前期生物波（枪兵/掠夺）压力曲线不同，当前防御体系可能更匹配。
+
+---
+## Terran Rush 首局即胜！o241t-lane2 game_01 Victory(1119s)
+
+**日期**：2026-08-06（组合三 Terran Rush 开局 1-0）
+
+### 胜局数据
+
+- **Victory(1119s)**：终局 3 基地、51 农民、146/154 supply、**14 暴风 + 3 航母（14 拦截机）**+ 2 追猎 + 4 叉。
+- 开矿链：二矿 321s → 三矿 478s（O222/O236 链直接复用生效）。
+
+### 初步判读
+
+1. **Zerg Timing 固化的资产直接迁移**：航母+暴风体系成型（O239/O240 航母链、O218 SG 追加）。
+2. Terran Rush（枪兵/掠夺生物波）对空压力远低于 Zerg 腐化/飞蛇，暴风/航母生存性完全不同——正是 Zerg Timing 缺的那块。
+3. 待验证：Rush 前期（150-250s）守窗在 Terran 生物波下的表现（Zerg 专属门按种族隔离，走基础 rush 六连动）。
+
+### 当前战绩
+
+- Zerg Rush ✅（O211 打穿）｜ Zerg Timing 挂起 2 胜 ｜ Zerg Power 未开始
+- **Terran Rush 1-0** ｜ Terran Timing/Power 未开始
+
+---
+## Terran Rush 打穿！lane2 3-1（o241t，全代码）
+
+**日期**：2026-08-06（组合三 Terran Rush 完成）
+
+### 结果
+
+- **lane2（Paladino）3-1 打穿**：game_01 Victory(1119s)、game_02 Defeat(972s)、game_03 Victory(802s)、game_04 Victory(554s)。
+- lane1（Abyssal）1-0（game_01 Victory 2080s），余局进行中（补充样本，不影响打穿判定）。
+
+### 胜局共性
+
+- 3-6 基地、51-67 农民、146-200 supply、**14-24 暴风 + 3-4 航母**；Terran 生物波（枪兵/掠夺）对空压力低，暴风/航母体系无 counter 压力，成型即碾压。
+- Zerg Timing 固化的资产（O218 SG 追加、O228/O229 钉点、O239/O240 航母链、O222 开矿链）全部直接生效，无一处 Terran 专属修改。
+
+### 六组合进度
+
+| 组合 | 状态 |
+|---|---|
+| Zerg Rush | ✅ O211 打穿 |
+| Zerg Timing | 挂起（2 胜；下轮大杠杆=机械台+不朽者 vs 地面海） |
+| Zerg Power | ⬜ |
+| **Terran Rush** | **✅ 3-1 打穿（o241t）** |
+| Terran Timing | 下一个 |
+| Terran Power | ⬜ |
+
+---
+## Terran Rush 败局补尸检（lane2 game_05 Defeat 1196s）
+
+**日期**：2026-08-06
+
+### 结果
+
+- game_05 Defeat(1196s)：舰队 12 暴风成型，但无航母混编、双矿农民 1012s 被一波打空（37→5），经济崩后慢性死亡。
+
+### 尸检发现（3 点）
+
+1. **航母缺位**：本局 0 航母（O239/O240 未触发——气 1090 达标但矿恒 <350 的时间窗长，攒钱预留被防御重建反复打断）；胜局均有 3-4 航母吸火。
+2. **塔重建抽血**：塔 11 座峰值、反复重建，与探机/舰队争矿，舰队成型后塔仍每波被拆（trickle×3 复盘信号同源）。
+3. **舰队位置**：舰队 12 艘存活但农民被杀光——O219 协防覆盖的基地与敌实际主攻方向错位（后续 Terran Timing/Power 迭代重点核对）。
+
+### 验证
+
+- 不影响 lane2 3-2 打穿判定；改进点留作 Terran Timing/Power 迭代输入。
+
+---
+## Terran Timing 打穿！lane2 3-1（o242t）
+
+**日期**：2026-08-06（组合四完成）
+
+### 结果
+
+- **lane2（Paladino）3-1 打穿**：game_01 Victory(696s)、game_02 Victory(504s)、game_03 Victory(355s)、game_04 Defeat(175s)。
+- 与 Terran Rush 同一套代码零修改——暴风+航母体系对 Terran 各风格全面压制。
+
+### 六组合进度
+
+| 组合 | 状态 |
+|---|---|
+| Zerg Rush | ✅ O211 |
+| Zerg Timing | 挂起（2 胜；大杠杆=机械台+不朽者） |
+| Zerg Power | ⬜ |
+| Terran Rush | ✅ 3-2 |
+| **Terran Timing** | **✅ 3-1** |
+| Terran Power | 下一个 |
+
+---
+## Terran Power 打穿！lane1 3-0（o243t）
+
+**日期**：2026-08-06（组合五完成）
+
+### 结果
+
+- **lane1（Abyssal）3-0 打穿**：game_01 Victory(386s)、game_02 Victory(306s)、game_03 Victory(445s)；lane2（Paladino）0-4（补充样本）。
+- 同一套代码对 Terran 三风格（Rush/Timing/Power）合计 9 胜 3 负，零 Terran 专属修改。
+
+### 六组合进度
+
+| 组合 | 状态 |
+|---|---|
+| Zerg Rush | ✅ O211 |
+| Zerg Timing | 挂起（2 胜；大杠杆=机械台+不朽者） |
+| Zerg Power | 下一个 |
+| Terran Rush | ✅ 3-2 |
+| Terran Timing | ✅ 3-2 |
+| **Terran Power** | **✅ 3-0** |
+
+---
+## Terran Power lane1 5-0 全胜收官（o243t 补充样本）
+
+**日期**：2026-08-06
+
+- lane1（Abyssal）最终 **5-0**：game_01-05 全 Victory；Terran Power 组合以满分打穿。
+- Zerg Power（组合二）双 lane 已启动（o244z Abyssal + Paladino），game_01 首败尸检：舰队 8 @731 成型但 844-956s 被腐化/飞蛇体系团灭——与 Zerg Timing 终局同型（Zerg 对空体系是 carrier 流的真 counter），迭代重点=航母拦截机吸火+舰队后撤线。
+
+---
+## Zerg Power 打穿！lane1 3-0（o244z）
+
+**日期**：2026-08-06（组合二完成）
+
+### 结果
+
+- **lane1（Abyssal）3-0 打穿**：game_01 Victory(638s)、game_02 Victory(982s)、game_03 Victory(784s)。
+- lane2（Paladino）2-1（game_02/03 Victory），game_04 进行中。
+
+### 六组合进度
+
+| 组合 | 状态 |
+|---|---|
+| Zerg Rush | ✅ O211 |
+| Zerg Timing | **唯一剩余**（2 胜；大杠杆=机械台+不朽者） |
+| **Zerg Power** | **✅ 3-0** |
+| Terran Rush | ✅ 3-2 |
+| Terran Timing | ✅ 3-2 |
+| Terran Power | ✅ 5-0 |
+
+### 判读
+
+- 暴风+航母体系对 Zerg Power（慢成型大后期）同样成立：Power 给舰队留出了成型窗口，与 Terran 三风格同构。
+- Zerg Timing 是唯一难点：波次早 + 纯地面 roach/hydra 时 pivot 不触发，需要机械台+不朽者（或等效地面答案）。
+
+---
+## O245b — 机械台提前+落分矿（o245 双 lane game_01 实证）
+
+**日期**：2026-08-06（Zerg Timing 攻坚，唯一剩余组合）
+
+### 结果
+
+- o245 双 lane game_01 均败：O245 事件触发 8 次但 **robo 零落成**（主基被围/槽位满/工人被杀），且 `first_fleet_seen` 前置把 robo 排到 600s+，基地 500-700s 已丢。
+
+### 改法（O245b）
+
+1. **去掉 first_fleet_seen 前置**：转舰队（fleet_transitioned）即排机械台，与 FB/首舰并行。
+2. **落位优先分矿**：有其他就绪基地 → 机械台落分矿（主基被围时工人/槽位都不可靠）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+- 观察指标：robo 落成 ≤620s、不朽者 ≥2 @700s、robo 事件不再空转。
+
+---
+## O245c — 不朽者优先级 p2→p0（o245 game_02 双 lane 实证：零产出）
+
+**日期**：2026-08-06
+
+### 结果
+
+- o245 lane1/lane2 game_02 均败：机械台已落成（880s/671s），但**不朽者零产出**——freeflow 下配比不当上限只当优先序，p2 被暴风（p0）/航母（p1）恒截断（反空军追猎同 p0 才有产出的先例为证）。
+
+### 改法（O245c）
+
+- `_effective_spawn` O245 块：IMMORTAL `priority: 2 → 0`（与暴风同档）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+- 观察指标：不朽者 ≥2 @750s（robo 落成后 ~80s 内）。
+
+---
+## O245d — 机械台时间旁路（o245-lane2 game_03 实证：transition 常驻 robo 永假）
+
+**日期**：2026-08-06
+
+### 结果
+
+- lane2 game_03 Defeat(1354s)：波次连续 → transition 常驻不退出 → `_fleet_transitioned` 永假 → robo 整局未排（O245 事件 0 次）。
+
+### 改法（O245d）
+
+- O245 机械台条件加时间旁路：`_fleet_transitioned or t≥360`（敌地面 ≥6 不变）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+- 观察指标：transition 常驻局 robo 也能 ≤420s 排工。
+
+---
+## O245e — 不朽者直产+攒钱预留（o245-lane1 game_04 实证：p0 同档仍零产出）
+
+**日期**：2026-08-06
+
+### 结果
+
+- o245 lane1 game_04 Defeat(1085s)：机械台 715s 落成，但**不朽者仍零产出**——O245c 的 p0 同档在 dict 序上落后暴风，每帧暴风（250 矿）先付，不朽（275 矿）永远轮不到。
+
+### 3 个改进点（落地 O245e）
+
+1. **机械台直产通道**：敌地面 ≥6 + 不朽+在产 <4 + 买得起 → 空闲机械台 `train(IMMORTAL)`（与 O239 航母同机制，绕过 SpawnController 配比竞争），记事件。
+2. **`spawn_pause_reason` 新增 `zerg_timing_immortal_reserve`**：机械台就绪 + 敌地面 ≥6 + 不朽 <4 且矿 <275 → 停产攒钱（暴风生产暂停 ~5-8s/只），攒够自恢复。
+3. **保留 spawn 混编块**（兜底）与 O245b/d 建台链不变。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py bot/production_plans.py`：通过；`unittest` **652 例 OK**。
+- 观察指标：`O245e:机械台直产不朽` 事件、不朽者 ≥2 @800s。
+
+---
+## O245g — 不朽者改 spawn dict 首位优先序（o245e-lane1 game_02 实证）
+
+**日期**：2026-08-06
+
+### 结果
+
+- lane1 game_02：**机械台 394s 落成**（O245b/d 链路全通），但 `immortal_reserve` 停产 43 次（矿 15-60 被塔/探机照抽）275 永远攒不出、直产 0 次、地面 0 败亡。
+- lane2 game_02：建台派工 26 次零落成（Paladino 建台失败原因待 O245f 取证局，game_03+）。
+
+### 3 个改进点（落地 O245g）
+
+1. **废弃 immortal_reserve 停产**：`spawn_pause_reason` 调用方 `immortal_saving=False`（产线永动是 O135 验证过的语义，攒钱类暂停在非结构件上不成立）。
+2. **不朽者 spawn dict 首位**：`{IMMORTAL: {proportion 1.0, priority 0}, **spawn}`——275 矿可付时优先于暴风，250-274 时暴风照产，用优先序而不是停产解决。
+3. **O245e 直产块保留**（买得起时补刀，无害）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+- 观察指标：不朽者 ≥2 @800s、`immortal_reserve` 事件消失。
+
+---
+## O246 — 舰队未成时追猎核 8→12（o245e 系列 0-10 实证）
+
+**日期**：2026-08-06（Zerg Timing 攻坚）
+
+### 结果
+
+- o245e 双 lane 各 0-5；不朽者链路已全通（robo 394-667s、不朽者产出 ×1），但 650s+ 才到、数量太少，补不上 500-700s 的地面波窗口。
+- 对照胜局：守窗答案是 **21-25 追猎海**（pivot 触发时），不是不朽者。
+
+### 3 个改进点（落地 O246）
+
+1. **舰队 <8 时追猎 cap2 8→12**：`_apply_floor` zerg+timing 分支；吃烂气（常态 1000+），舰队成型（≥8）后回 8 让气给航母/暴风。
+2. **不朽者链路保留**（O245b/d/e/g 全部）作为舰队成型前的补充火力，不再承担主防守。
+3. **观察指标**：600s 追猎 ≥8、E6 农民撤离次数下降、700s 基地存活率上升。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+
+---
+## O247 — 舰队先行：首舰前不开二矿（o246 系列 0-15 实证）
+
+**日期**：2026-08-06（Zerg Timing 攻坚，build-order 级 A/B）
+
+### 结果
+
+- o246/o246b 系列 0-15：二矿 400-500s 落成即被 10-27 地面波轮抄（E6 撤离→收入崩→舰队停→再丢）——「先扩后守」在当前防御体系下不成立。
+- 已验证的替代事实：胜局全是「舰队成型后开 3-5 矿」；首舰（Tempest ~550s）前的一切扩张投资都在送。
+
+### 3 个改进点（落地 O247）
+
+1. **首舰前不开二矿**
+   - `_want_dynamic_expand`：zerg+timing + `not _first_fleet_seen()` + `t<620` → False；O189 强开在本门下游同步不触发。
+
+2. **单矿期资源集中**：矿全给塔/追猎/舰队科技（SG→FB→首舰），舰队 1-3 艘掩护下 600s 前后再扩。
+
+3. **A/B 判读标准**：二矿时点推迟到 ~600s 但**落成后存活率**（60s 内不被抄）≥60%、终局 supply 上升。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+- bench：当前 lane 新局热加载生效。
+
+---
+## O248 — Zerg Timing 不再强制 transition（o246b 双 lane 0-10 实证）
+
+**日期**：2026-08-06（Zerg Timing 攻坚，路线级 A/B）
+
+### 结果
+
+- o246b 双 lane（双 Abyssal 集中出样）各 0-5：transition 把舰队起点推迟到 exit(330-450)+130s，首舰 550-620s 恒晚于 500-700 波次窗——O207 强制 transition 的前提（基建链薄弱、无 FB/SG 资金链）已被 O224-O229/O218 全部重写，前提不再成立。
+
+### 3 个改进点（落地 O248）
+
+1. **Zerg Timing 不强制 transition**（`__init__` 只留 Rush）：直爬 cyber→SG→FB，首舰目标 ≤450s（O216i 门：2 塔后 SG ~300、FB ~360、首舰 ~420）。
+2. **保留守窗资产**：O216i 防御优先门、O220/O221 无防基地强注册、追猎核（O246 cap2=12）、O217/O219 协防——地面窗由原地面配方改为正常 pre_fleet floor + 塔。
+3. **A/B 判读标准**：首舰 ≤480s、500-700s 波次窗基地存活率、若 0 胜则回滚。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+- bench：重启 o248 双 lane（Abyssal×2）。
+
+---
+## O249 — O218 门适配无 transition 路线（o248-lane1 game_01 实证）
+
+**日期**：2026-08-06（Zerg Timing 攻坚）
+
+### 结果
+
+- **O248 首舰大幅提前**：双 lane game_01 首舰 410s/374s（原 550-620s），舰队 4 @788、三矿 703s——路线级修正生效。
+- 但仍败（1067s）：**星门恒 1**——O248 不再强制 transition 后 `_fleet_transitioned` 永假，O218 追加 SG 整局不触发，产能卡 1 座星门被慢性磨死。
+
+### 改法（O249）
+
+- O218 触发条件 `_fleet_transitioned` → `(_fleet_transitioned or _first_fleet_seen())`；O228/O235/O245 等其余 `_fleet_transitioned` 门已含时间/状态旁路或无依赖，不受影响。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+- 观察指标：SG ≥3 @700s、舰队 ≥8 @900s。
+
+---
+## O249b — Zerg Timing 禁止进入 transition（o249-lane game_01 实证）
+
+**日期**：2026-08-06
+
+### 结果
+
+- o249 lane game_01 Defeat(668s)：O248 只去掉开局强制，接触/E9 波（277s 敌 13 supply）仍在 ~300s 触发 `transition_should_enter` → 直爬路线被 ground_spawn 截胡，舰队推迟，40-supply 波滚平。
+
+### 改法（O249b）
+
+- `_update_transition_state` 进入分支：`zerg+timing` 直接 return（Rush 保留 contact/verdict 进入）。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+- 观察指标：事件流不再出现 `O92:过渡形态`（Zerg Timing 局）；首舰 ≤450s。
+
+---
+## 第三胜！o249-lane2 game_03 Victory(1316s) — 路线修正后首胜
+
+**日期**：2026-08-06（Zerg Timing 累计 3 胜）
+
+### 胜局数据
+
+- **Victory(1316s)**：4 基地、66 农民、SG 5 座、5 暴风 + 9 追猎 + 2 不朽、supply 127/172（t=880 快照）；**无 transition 事件**（O249b 生效）。
+- 路线：直爬 cyber→SG→FB（O248/O249b）+ O218/O249 追加 SG + O246 追猎核 + O245 不朽者。
+
+### 累计六组合进度
+
+| 组合 | 状态 |
+|---|---|
+| Zerg Rush | ✅ O211 |
+| Zerg Timing | 3 胜（o224/o229/o249 各 1 胜；O248 路线修正后胜率显著回升） |
+| Zerg Power | ✅ 3-0 |
+| Terran Rush | ✅ 3-2 |
+| Terran Timing | ✅ 3-2 |
+| Terran Power | ✅ 5-0 |
+
+### 判读
+
+- O248 路线修正（不强制 transition、直爬舰队）是 Zerg Timing 的正确打开方式；
+- 距打穿（单 lane 3/5）还差稳定性：lane 内胜率需 ≥60%，当前约 20-30%。
+
+---
+## O250 — _spend_bank 开矿接入舰队先行门（o249-lane game_04/05 实证）
+
+**日期**：2026-08-06
+
+### 结果
+
+- o249 lane2 1-4 收官（game_03 Victory）；game_04/05 速败尸检：二矿 249s 落成（首舰远未出），O247 被 `_spend_bank` 绕开——存款 805 早到 + SG 未就绪使 `_fb_missing_starved` 永假 + `fleet_expand_holds(False)` 恒放行。
+
+### 改法（O250）
+
+- `_spend_bank` 滚雪球开矿闸接入 O247 同款条件：zerg+timing + 未见首舰 + t<620 → 不开。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+- 观察指标：二矿时点 ≥600s 或首舰后；不再有 249s 二矿。
+
+---
+## O251 — 硬饱和钉点开矿（o250-lane1 game_02 实证）
+
+**日期**：2026-08-06
+
+### 结果
+
+- o250 lane1 game_02 Defeat(1210s)：舰队 6 @675、SG 3、气烂 1442，但 2 基地 44 农封顶——硬饱和（≥32+8）触发开矿却因矿恒 <475（dispatch_viable buffer）Nexus 永远排不出。
+
+### 改法（O251）
+
+- update 尾部新增：zerg+timing + 2≤基地<5 + `supply_workers ≥ 16×基地+8` + 无 Nexus 未开工 + 非 rush_active → 最近空闲扩张点 `_dispatch_structure(NEXUS, critical=True, needs_power=False)`（驻点等钱），事件去重。
+
+### 验证
+
+- `python3 -m py_compile bot/managers/production_manager.py`：通过；`unittest` **652 例 OK**。
+- 观察指标：三矿时点 ≤750s、`O251:硬饱和钉点开矿` 事件、终局 supply 上升。
+
+---

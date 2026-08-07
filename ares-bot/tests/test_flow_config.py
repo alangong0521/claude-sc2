@@ -195,12 +195,12 @@ class TestPivotRushCannons(unittest.TestCase):
         self.assertEqual(
             (fc.auto_expand.max_bases, fc.auto_expand.when_workers,
              fc.auto_expand.advantage_supply),
-            (4, 16, 12),  # O30:when_workers 22→16(早开 2 矿)
+            (6, 16, 12),  # O30:when_workers 22→16(早开 2 矿);O158:max_bases 4→3(防御集中);O216g(司令观察):饱和要主动开 3-6 矿,max_bases 3→6(Zerg Rush 仍代码层锁 2)
         )
-        self.assertEqual(fc.auto_expand.first_expand_at, 150.0)  # O33:首扩 t=150(早 2 矿)
+        self.assertEqual(fc.auto_expand.first_expand_at, 150.0)  # O198:o197 三局全单矿到死，first_expand_at 210 被 rush/threat 永久冻结；提前到 150s 让二矿资金窗更早出现。
         self.assertEqual(
-            (fc.expansion_cannons.min, fc.expansion_cannons.max), (4, 10)
-        )  # O52:min 3→4、max 8→10(Harder 波次实证,新经济体养得起)
+            (fc.expansion_cannons.min, fc.expansion_cannons.max), (2, 4)
+        )  # O211:o210-vh-zerg-rush 全 lane idle_builder 实证 min=4 时经济紧张期派工 4 塔/基地，大量塔工等钱，舰队成型资金被抽干。降到 min=2 保留动态扩容(max=4，敌兵≥8 时仍回到 4)，quiet 期少铺塔、多采矿。
         # O10:升级链补全到 L3,盾 L2/L3 垫底(防队列截断)
         self.assertEqual(fc.upgrades, [
             "PROTOSSAIRWEAPONSLEVEL1", "PROTOSSAIRARMORSLEVEL1",
@@ -210,14 +210,18 @@ class TestPivotRushCannons(unittest.TestCase):
             "PROTOSSSHIELDSLEVEL2", "PROTOSSSHIELDSLEVEL3",
         ])
         # E3e/E3f:舰队成型前地面保底;O47:vs Harder 波次加厚(O33 的 3/0.3/8 太薄);
-        # O48:exit_ground 8(1 航母+4 叉不退 floor,波前保 8 叉)
+        # O216e:exit_ground 8→6,首舰出生后更快退出地面 floor,省矿给舰队产能
         # O134-①(o133 局2 实证):cap 4→5 + 第二保底追猎×2(吃烂在银行的气)
+        # O197(o196-vh-zerg-rush game_01):pre_fleet.max 12→8,transition 期地面已够,
+        # 避免 15 叉把 FB/二矿资金吃光。
         self.assertEqual(
             (fc.pre_fleet.id_name, fc.pre_fleet.cap,
              fc.pre_fleet.per_enemy, fc.pre_fleet.max, fc.pre_fleet.exit_ground),
-            ("ZEALOT", 5, 0.5, 12, 8),
+            ("ZEALOT", 5, 0.5, 8, 6),
         )
         self.assertEqual((fc.pre_fleet.id2, fc.pre_fleet.cap2), ("STALKER", 2))
+        # O213:carrier 加 rally_min_army 抑制 trickle
+        self.assertEqual(fc.rally_min_army, 16)
         # stalker 旧式 auto_expand 不受影响(冻结块)
         sk = FlowConfig.load("stalker")
         self.assertEqual((sk.auto_expand.to, sk.auto_expand.max_bases), (2, 0))
@@ -320,13 +324,13 @@ class TestTransitionConfig(unittest.TestCase):
         _yaml_or_skip(self)
         tr = FlowConfig.load("carrier").transition
         self.assertIsNotNone(tr)
-        # freeflow 下优先序即一切:气耗 STALKER 必须 p0(ZEALOT p0 则追猎永不出场)
+        # O205:transition 地面彻底去气,把气全部让给舰队;纯 ZEALOT 做肉盾。
         self.assertEqual(tr.ground_spawn, {
-            "STALKER": {"proportion": 0.4, "priority": 0},
-            "ZEALOT": {"proportion": 0.6, "priority": 1},
+            "ZEALOT": {"proportion": 1.0, "priority": 0},
         })
-        self.assertEqual(tr.gateway_cap, 3)
-        self.assertEqual(tr.fleet_at, 400.0)     # O108:420→400(o107局3/5:波次413-421到脸,清净达标窗380-410)
+        # O204:gateway_cap 2→1,再少一座兵营=150 矿给 FB/二矿。
+        self.assertEqual(tr.gateway_cap, 1)
+        self.assertEqual(tr.fleet_at, 280.0)     # O177:400→320;O216:320→280,与 production_manager 中 Zerg Timing 的 _timing_fb_gate 对齐,加速舰队转型
 
     def test_other_flows_have_no_transition(self):
         """冻结:tempest/stalker/dt 不配 transition(行为零变化)。"""

@@ -7,7 +7,9 @@
 结果信号来自 bot on_end 写的 game_*.json;没有结果文件 = 崩溃/超时 → 重试一次,
 仍失败记 error(不计入胜率,单独报数)。曲线来自 STEER_RECORD 的 state_*.json 快照。
 
-串行 + 重试是刻意的:CLAUDE.md 记录本环境 headless 不稳(websocket 超时),不并行。
+本 runner 同时支持单车道串行与多实例并行；当前正式验证按 CLAUDE.md 走
+headless(REALTIME=False) + 双车道 SC2 并行。串行/重试仅作为双车道临时故障、
+headless 不稳或观战排查时的降级，不是默认模式。
 
 用法(在 ares-bot/ 下):
   poetry run python bench.py --flow tempest --diff Hard --race Terran \
@@ -42,6 +44,174 @@ _VARS_TXT = (
     Path.home()
     / "Library/Application Support/Blizzard/StarCraft II/Variables.txt"
 )
+
+
+def _cleanup_stale_sc2(max_age_seconds: float = 180.0) -> None:
+    """O206:bench 启动前清理卡死/残留的 SC2 进程。
+
+    并行车道场景下不能无差别杀所有 SC2(会误伤刚启动的另一条 lane),所以只杀
+    「存活时间 > max_age_seconds」的 SC2。这些通常是之前 bench 中断/卡死后
+    没清理干净的残留;正常对局的 SC2 才启动几秒,不会误杀。
+    同时清理没有 run.py/python 父进程的孤儿 SC2(崩溃/断链后残留)。
+    """
+    try:
+        out = subprocess.run(
+            ["ps", "-axo", "pid,ppid,etime,comm"], capture_output=True, text=True
+        ).stdout
+    except Exception:
+        return
+    parents: dict[str, str] = {}
+    lines = out.splitlines()[1:]
+    for line in lines:
+        parts = line.split(None, 3)
+        if len(parts) == 4:
+            parents[parts[0]] = parts[1]
+
+    def _has_runner_parent(pid: str) -> bool:
+        seen = set()
+        p = pid
+        while p in parents and p not in seen:
+            seen.add(p)
+            ppid = parents[p]
+            try:
+                ppid_int = int(ppid)
+            except ValueError:
+                return False
+            if ppid_int <= 1:
+                return False
+            # 父进程是 run.py 或 python/poetry = 正常有主
+            try:
+                comm = subprocess.run(
+                    ["ps", "-p", ppid, "-o", "comm="],
+                    capture_output=True, text=True,
+                ).stdout.strip()
+            except Exception:
+                comm = ""
+            if comm in ("python3", "python", "SC2") or "run.py" in comm:
+                return True
+            p = ppid
+        return False
+
+    for line in lines:
+        parts = line.split(None, 3)
+        if len(parts) != 4:
+            continue
+        pid, ppid, etime, comm = parts
+        if comm != "SC2":
+            continue
+        # etime 格式: [[dd-]hh:]mm:ss, 先转成总秒数(近似)
+        total_sec = 0
+        try:
+            if "-" in etime:
+                days, rest = etime.split("-", 1)
+                total_sec += int(days) * 86400
+                etime = rest
+            chunks = etime.split(":")
+            if len(chunks) == 3:
+                total_sec += int(chunks[0]) * 3600 + int(chunks[1]) * 60 + int(chunks[2])
+            elif len(chunks) == 2:
+                total_sec += int(chunks[0]) * 60 + int(chunks[1])
+            elif len(chunks) == 1:
+                total_sec += int(chunks[0])
+        except ValueError:
+            continue
+        orphan = not _has_runner_parent(pid)
+        if total_sec > max_age_seconds or orphan:
+            reason = "orphan" if orphan else f"stale {total_sec}s"
+            print(f"[bench] cleanup {reason} SC2 pid={pid}", flush=True)
+            try:
+                os.kill(int(pid), 9)
+            except Exception:
+                pass
+
+
+def _kill_orphan_sc2() -> None:
+    """O195:单局崩溃/超时后,run.py 已死但 SC2 可能变成孤儿进程(init 为父)。
+
+    双车道场景下不能无差别杀所有 SC2,所以只杀 PPID=1 的孤儿,
+    避免残留实例占端口/资源,导致下局启动失败或互相干扰。
+    """
+    try:
+        out = subprocess.run(
+            ["ps", "-axo", "pid,ppid,comm"], capture_output=True, text=True
+        ).stdout
+    except Exception:
+        return
+    for line in out.splitlines()[1:]:
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        pid, ppid, comm = parts
+        if comm != "SC2" or ppid != "1":
+            continue
+        try:
+            os.kill(int(pid), 9)
+        except Exception:
+            pass
+
+
+def _cleanup_blizzard_error(max_age_seconds: float = 60.0) -> None:
+    """O196:清理 SC2 崩溃后残留的 Blizzard Error 报告进程。
+
+    该进程(路径含 `Blizzard Error.app`)通常 PPID=1,不占用游戏端口但会
+    堆积;bench 启动时杀掉存活超过 max_age_seconds 的,避免崩溃报告器越积越多。
+    """
+    try:
+        out = subprocess.run(
+            ["ps", "-axo", "pid,etime,comm"], capture_output=True, text=True
+        ).stdout
+    except Exception:
+        return
+    for line in out.splitlines()[1:]:
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        pid, etime, comm = parts
+        if "Blizzard Error" not in comm:
+            continue
+        total_sec = 0
+        try:
+            if "-" in etime:
+                days, rest = etime.split("-", 1)
+                total_sec += int(days) * 86400
+                etime = rest
+            chunks = etime.split(":")
+            if len(chunks) == 3:
+                total_sec += int(chunks[0]) * 3600 + int(chunks[1]) * 60 + int(chunks[2])
+            elif len(chunks) == 2:
+                total_sec += int(chunks[0]) * 60 + int(chunks[1])
+            elif len(chunks) == 1:
+                total_sec += int(chunks[0])
+        except ValueError:
+            continue
+        if total_sec > max_age_seconds:
+            try:
+                os.kill(int(pid), 9)
+            except Exception:
+                pass
+
+
+def _reset_game_dir(game_dir: Path) -> None:
+    """O195:重试同一局前清理旧快照/结果,避免崩溃/超时局的状态污染 retro。
+
+    保留旧 run.log 为 run.log.1 供排错,删除 state_*.json / game_*.json。
+    """
+    for p in game_dir.glob("state_*.json"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    for p in game_dir.glob("game_*.json"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    log_path = game_dir / "run.log"
+    if log_path.exists():
+        try:
+            log_path.replace(game_dir / "run.log.1")
+        except OSError:
+            pass
 
 
 def _apply_graphics_settings() -> None:
@@ -99,7 +269,11 @@ def _surrender_detected(game_dir: Path) -> bool:
 
 
 def _sc2_pid_for(proc_pid: int) -> str | None:
-    """找本局 run.py 进程树下的 SC2 进程(并行车道时别点错窗口)。"""
+    """O180:找本局 run.py 进程树下的 SC2 进程(并行车道时别点错窗口)。
+
+    双车道下不能简单 `pgrep -x SC2`——那会拿到另一条 lane 的 SC2,
+    导致「对方 SC2 活着 = 我以为自己 SC2 活着」的误判。
+    """
     out = subprocess.run(["ps", "-axo", "pid,ppid,comm"],
                          capture_output=True, text=True).stdout
     parent: dict[str, tuple[str, str]] = {}
@@ -222,19 +396,105 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
         t0 = time.time()
         hidden = False
         last_gg_check = 0.0
+        last_heartbeat = 0.0
+        # O180:SC2 启动/健康检查
+        sc2_pid: str | None = None
+        startup_deadline = t0 + 60.0
+        while proc.poll() is None and sc2_pid is None:
+            sc2_pid = _sc2_pid_for(proc.pid)
+            if sc2_pid is None:
+                if time.time() > startup_deadline:
+                    print(f"[bench] game {i:02d} SC2 未在 60s 内启动", flush=True)
+                    proc.kill()
+                    return None
+                time.sleep(0.5)
+        if proc.poll() is not None:
+            return None
+        # 状态快照停滞检测:90s 无新 snapshot → SC2 卡死/websocket 断链
+        last_state_count = len(list(game_dir.glob("state_*.json")))
+        last_state_time = time.time()
+        # O206c:SC2 CPU 冻结检测已禁用,见下方 while 循环注释。
+        # O206:游戏内时间冻结检测(snapshot 在写但游戏没推进)
+        last_game_time = 0.0
+        last_game_time_ts = time.time()
         while proc.poll() is None:
+            now = time.time()
+            if now - last_heartbeat > 20:
+                print(f"[bench] game {i:02d} alive {now - t0:.0f}s", flush=True)
+                last_heartbeat = now
+            # O180:SC2 进程异常退出(崩溃) → 不再空等 timeout
+            if sc2_pid is not None:
+                try:
+                    os.kill(int(sc2_pid), 0)
+                except OSError:
+                    print(f"[bench] game {i:02d} SC2 进程异常退出", flush=True)
+                    proc.kill()
+                    _kill_orphan_sc2()
+                    _cleanup_blizzard_error(0)
+                    return None
+            # O180:状态快照停滞检测
+            states = list(game_dir.glob("state_*.json"))
+            if len(states) != last_state_count:
+                last_state_count = len(states)
+                last_state_time = now
+            # O206b(o206-vh-zerg-timing 实证):双车道 headless 开局状态写入偶发
+            # 抖动,90s 阈值把正常启动局误杀;放宽到 180s,真卡死仍会触发。
+            elif now - last_state_time > 180:
+                print(
+                    f"[bench] game {i:02d} 状态快照停滞 {now - last_state_time:.0f}s,"
+                    "判定卡死", flush=True
+                )
+                proc.kill()
+                if sc2_pid is not None:
+                    try:
+                        os.kill(int(sc2_pid), 9)
+                    except OSError:
+                        pass
+                _kill_orphan_sc2()
+                _cleanup_blizzard_error(0)
+                return None
+            # O206:游戏时间推进检测(读最新 snapshot 的 time 字段)
+            latest_snap = max(states, key=os.path.getmtime) if states else None
+            if latest_snap is not None:
+                try:
+                    snap_time = json.loads(
+                        latest_snap.read_text(encoding="utf-8")
+                    ).get("time", 0.0)
+                except (OSError, json.JSONDecodeError):
+                    snap_time = last_game_time
+                if snap_time > last_game_time + 0.5:
+                    last_game_time = snap_time
+                    last_game_time_ts = now
+                # O206b:同快照停滞,放宽到 150s,避免双车道启动期误判。
+                elif now - last_game_time_ts > 150:
+                    print(
+                        f"[bench] game {i:02d} 游戏时间停滞 {now - last_game_time_ts:.0f}s"
+                        f"(time={last_game_time:.1f}),判定卡死", flush=True
+                    )
+                    proc.kill()
+                    if sc2_pid is not None:
+                        try:
+                            os.kill(int(sc2_pid), 9)
+                        except OSError:
+                            pass
+                    _kill_orphan_sc2()
+                    _cleanup_blizzard_error(0)
+                    return None
+            # O206c:SC2 CPU 冻结检测已禁用。双车道 headless 下 SC2 开局加载期
+            # CPU 占用天然抖动,基于 `ps cputime` 的采样连续误杀正常对局。
+            # 真卡死由「状态快照停滞 180s」和「游戏时间停滞 150s」兜底捕获。
             if not hidden and subprocess.run(
                 ["pgrep", "-x", "SC2"], capture_output=True
             ).returncode == 0:
                 _hide_sc2_windows()
                 hidden = True
-            if time.time() - last_gg_check > 10 and _surrender_detected(game_dir):
+            if now - last_gg_check > 10 and _surrender_detected(game_dir):
                 last_gg_check = time.time()
-                sc2_pid = _sc2_pid_for(proc.pid)
+                sc2_pid = _sc2_pid_for(proc.pid) or sc2_pid
                 if sc2_pid:
                     print(f"[bench] 敌方打出 gg,帮点接受投降(game {i:02d})", flush=True)
                     _accept_surrender(sc2_pid)
-            if time.time() - t0 > args.timeout:
+            if now - t0 > args.timeout:
                 proc.kill()
                 raise subprocess.TimeoutExpired(proc.args, args.timeout)
             time.sleep(2)
@@ -407,6 +667,11 @@ def _print_table(s: dict) -> None:
 
 
 def main() -> int:
+    # O159/O175: 旧结论认为本机 SC2 客户端不支持多开,用文件锁强制串行。
+    # 2026-08-04 实证推翻:两个 bench.py 实例各带独立 SC2 进程可并行 100s+ 无互踢
+    # (互踢只发生在同一 install 直启二进制抢默认端口;bench 走独立端口分配)。
+    # 因此移除文件锁,允许司令要求的双车道后台验证。
+
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--flow", default="tempest", help="flows.yml 流派名")
@@ -432,6 +697,14 @@ def main() -> int:
     series_dir = _AREAS / "bench" / args.tag
     series_dir.mkdir(parents=True, exist_ok=True)
 
+    # O180:bench 启动时清理残留 SC2,避免之前中断/卡死的进程占端口/资源,
+    # 导致新实例启动崩溃(Blizzard Error Report)。
+    _cleanup_stale_sc2()
+    # O196/O208:顺手清理 SC2 崩溃留下的 Blizzard Error 报告孤儿进程。
+    # 启动时立即杀掉全部(含刚弹出的),避免双车道启动时第二个 SC2 实例的
+    # 崩溃报告器占用许可/资源导致连锁失败。
+    _cleanup_blizzard_error(0)
+
     if args.retro_only:
         game_dirs = sorted(p for p in series_dir.glob("game_*") if p.is_dir())
         games: list[dict] = [
@@ -442,6 +715,9 @@ def main() -> int:
     else:
         games = []
         for i in range(1, args.n + 1):
+            # O207:每局开始前清掉上一局残留的 Blizzard Error 报告进程，
+            # 避免崩溃报告器堆积/占资源/挡输入。
+            _cleanup_blizzard_error(0)
             t0 = time.time()
             try:
                 res = _play_one(i, args, series_dir)
@@ -449,9 +725,14 @@ def main() -> int:
                 res = None
             if res is None:
                 print(f"[bench] 第 {i} 局无结果(崩溃/超时),重试一次", flush=True)
+                _kill_orphan_sc2()
+                _cleanup_blizzard_error(0)
+                _reset_game_dir(series_dir / f"game_{i:02d}")
                 try:
                     res = _play_one(i, args, series_dir)
                 except subprocess.TimeoutExpired:
+                    _kill_orphan_sc2()
+                    _cleanup_blizzard_error(0)
                     res = None
             if res is None:
                 res = {"result": None, "error": "no result json after retry"}

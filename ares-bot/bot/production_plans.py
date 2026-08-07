@@ -133,6 +133,10 @@ def should_expand_dynamic(
     rush_active: bool,
     now: float = 0.0,
     first_expand_at: float = 0.0,
+    minerals: float = 9999.0,
+    fleet_total: int = 999,
+    fleet_min_for_expand: int = 3,
+    mineral_floor_for_expand: float = 500.0,
 ) -> bool:
     """动态开矿触发判定（E2，carrier 流）。纯逻辑，可单测。
 
@@ -141,10 +145,32 @@ def should_expand_dynamic(
     O30 首扩时间触发：bases==1 且 first_expand_at>0 且 now>=first_expand_at（carrier 该
       t≈200 早开 2 矿,不等爆仓——爆仓 when_workers 模式在塔吃矿下永不可达致单矿锁死）。
     约束：rush_active 期间不开（rush 响应优先）、到 max_bases 停、已有 nexus 在建不叠加。
+    O159/O160(o157-vh-zerg-power game_01/02 实证): 首扩之后(bases>=2)舰队未成规模
+    **且**矿物不足时禁止继续扩张,防止fleet=0或只有钱但无舰队时连开三/四矿、
+    防御面被Power一波穿一个。
     """
     if rush_active or bases >= max_bases or nexus_pending:
         return False
     saturated = workers_per_base > 0 and supply_workers >= workers_per_base * bases
+    # O222(o217-lane2 game_05 实证):硬饱和(溢出 ≥8 农民)时舰队门/矿门全旁路 ——
+    # 敌 97 supply vs 我 63 的败局里,2 矿 44 农硬饱和仍被 fleet<3 门拦死三矿,
+    # Zerg 无压力自由运营滚到 2 倍兵力;硬饱和不开矿 = 农民人口纯浪费。
+    hard_saturated = (
+        workers_per_base > 0 and supply_workers >= workers_per_base * bases + 8
+    )
+    # O160: 首扩后必须同时满足「有基本舰队」和「矿物够再撑一矿」才扩,
+    # 原OR门导致矿多时 fleet=0 仍扩(500矿瞬间被Nexus+塔吃掉)。
+    # O216g(司令观察/o216f 尸检实证):矿线饱和(如主基 26 农/分矿 16 农满载)
+    # 时矿门不再拦——不开新矿=农民占人口零产出,舰队门(fleet>=3)保留防裸奔。
+    if (
+        bases >= 2
+        and not hard_saturated
+        and (
+            fleet_total < fleet_min_for_expand
+            or (minerals < mineral_floor_for_expand and not saturated)
+        )
+    ):
+        return False
     advantage = (
         enemy_army_supply > 0
         and own_army_supply >= enemy_army_supply + advantage_supply
@@ -157,6 +183,34 @@ def expansion_cannon_count(ec_min: int, ec_max: int, enemy_army: int) -> int:
     """分矿塔数估算（E2）：clamp(min, min + 敌可见作战单位//4, max)。
     min=保守线(给回援争取时间)，每多 4 个敌兵 +1 塔，max 封顶防塔烧钱。纯逻辑。"""
     return max(ec_min, min(ec_max, ec_min + max(0, enemy_army) // 4))
+
+
+def expansion_cannon_min_dynamic(
+    ec_min: int,
+    fleet_total: int,
+    fleet_min: int = 3,
+    early_cap: int = 3,
+    zero_fleet_cap: int = 2,
+) -> int:
+    """O161/O179: 舰队成型前降低分矿塔 baseline，防止二矿一起就铺 6 塔把舰队矿吃光。
+
+    carrier 流 expansion_cannons.min=6 是为 Power 中局波次设计的;但 fleet<3 时
+    6 塔×150 矿=900 矿，直接把首舰/科技憋死。fleet 未成规模时把 min 压到 early_cap，
+    成型后再恢复到 ec_min。
+
+    O179(o178-vh-zerg-timing game_01-03 实证):fleet=0 时 early_cap=3 仍把 Nexus/首舰
+    资金吃光(3 炮+2 电池+forge+水晶 > 单矿收入)，进一步压到 zero_fleet_cap=1，
+    确保星门/FB 就绪后有钱造出第一艘舰队。
+    O216(o215-vh-zerg-timing 0-9 实证):zero_fleet_cap 1→2，fleet=0 时仍需 2 座
+    保命塔配合 gateway 堵口，避免二矿一落就被 4 地面单位反复抄家;2 塔 300 矿
+    在 Timing 局可承受，且为后续动态扩容打底。
+    rush 期由调用方另走 rush_hold 拉满，不进这里。
+    """
+    if fleet_total <= 0:
+        return min(ec_min, zero_fleet_cap)
+    if fleet_total >= fleet_min:
+        return ec_min
+    return min(ec_min, early_cap)
 
 
 def main_siege_active(enemy_ground_near: int, threshold: int) -> bool:
@@ -594,6 +648,40 @@ def rush_gas_stop_window(
     return rush_active and stop_age < window
 
 
+def mineral_crisis_gas_stop(
+    vespene: float,
+    minerals: float,
+    fleet_total: int,
+    vespene_threshold: float = 600.0,
+    mineral_threshold: float = 300.0,
+    fleet_min: int = 5,
+    bases: int = 99,
+    low_base_threshold: int = 2,
+    low_base_mineral_threshold: float = 400.0,
+) -> bool:
+    """O157/O159/O160: 气体相对矿物过剩、矿物枯竭时，把气矿农民拉回采矿。
+
+    背景（o156/o157-vh-zerg-power game_01/02 实证）：vespene 1500+、minerals 0–300、
+    舰队 0–2 艘，星门因缺矿停产。继续采气 = 浪费农民时间，拉去采矿才能恢复
+    舰队产出。阈值带滞回：触发阈值高于恢复阈值（见调用方），避免边界抖动。
+    O159: 阈值提前（vespene≥800 / minerals≤400 / fleet<5），在气体开始烂银行、
+    矿物尚有余量时就转矿，避免等到矿物贴 0 才反应。
+    O157-b: 基地被压缩到 ≤2 个时，矿物危机阈值放宽到 600——丢基地后每一点
+    矿物收入都决定 Nexus 能不能重开，提前停气转矿避免死锁。
+    O160(o159-vh-zerg-power game_01 1168s 超时): 舰队成型后(fleet≥5)仍可能
+    矿物枯竭(vespene 1473 / minerals 110)，此时 fleet 单位/塔/科技全需矿，
+    继续采气 = 气烂银行而矿永远不够。因此触发不再硬绑 fleet<5，改为
+    「气体明显富余(≥600)且矿物紧缺(≤300)」即停气；基地≤2 时矿物阈值放宽
+    到 400。保留 fleet_total 参数供向后兼容与调用方簿记，不再进入判据。
+    """
+    _mineral_thr = (
+        low_base_mineral_threshold
+        if bases <= low_base_threshold
+        else mineral_threshold
+    )
+    return vespene >= vespene_threshold and minerals <= _mineral_thr
+
+
 def builder_release_exempt(rush_active: bool, defense_urgent: bool) -> bool:
     """O117-②(o116 取证实证):O11 钉点撤回的豁免判据。纯逻辑,可单测。
 
@@ -858,19 +946,26 @@ def carrier_rally_against_aa(
 
 
 def dispatch_viable(
-    minerals: float, income_per_sec: float, walk_time: float, cost: float
+    minerals: float,
+    income_per_sec: float,
+    walk_time: float,
+    cost: float,
+    buffer: float = 0.0,
 ) -> bool:
     """派建造工人前的可负担估算（O19 钉点修复）。纯逻辑，可单测。
 
-    到位时钱够才派：当前矿 + 走位时间 × 收入速率 ≥ 造价 → 派（到位即开工，
+    到位时钱够才派：当前矿 + 走位时间 × 收入速率 ≥ 造价 + buffer → 派（到位即开工，
     零钉点）；不够 → 不派（建筑等下帧重估，农民继续采矿——缺钱时正确行为
     是**不派**，不是派了再撤，E4c 撤回循环前科）。
 
     背景：ares BuildStructure / ExpansionController(prioritize) 不查 can_afford
     就派工，农民钉在建造点等钱（e7e8 bench idle_builder 实证：
     PHOTONCANNON 9-21 次/局、NEXUS 2-7 次/局）。
+
+    O181:增加 buffer 参数，用于 F2/Nexus 等关键注册点，留出 small cushion，
+    避免「估算刚好够 → 下帧被 warp-in/其他开销抽干 → 农民钉点」的残余 idle_builder。
     """
-    return minerals + income_per_sec * walk_time >= cost
+    return minerals + income_per_sec * walk_time >= cost + buffer
 
 
 def redispatch_cooled_down(
@@ -889,12 +984,45 @@ def redispatch_cooled_down(
     return now - last_release >= cooldown
 
 
+def _pylon_redispatch_ok(
+    now: float,
+    supply_left: float,
+    last_release: float | None,
+    cooldown: float = 10.0,
+    can_afford: bool = False,
+) -> bool:
+    """O192-①/O195: AutoSupply 注册前的 PYLON 重派闸门。
+
+    开局前 60s 经济窗口极紧,PYLON 农民被 O11 撤回后若立即重派,
+    同一农民会反复钉点空转(实测 o191/o194 开局 PYLON 农民空转 30s+)。
+    因此 60s 内强制 2s 冷却,让农民先采矿;60s 后只有真的买不起且
+    supply_left>0 时才继续冷却,避免同一农民被反复派去等钱。
+    买得起时直接放行(不卡人口)。
+    """
+    if can_afford:
+        return True
+    if now < 60.0:
+        return redispatch_cooled_down(last_release, now, cooldown=2.0)
+    # O195:买不起且还有 1-2 人口余量时,没必要每帧重派农民去钉点,
+    # 等钱够了(上分支 can_afford)或 supply_left==0 才派。
+    if supply_left > 0:
+        return False
+    return redispatch_cooled_down(last_release, now, cooldown=cooldown)
+
+
 def cannon_target_capped(
     dynamic_count: int,
     min_count: int,
     minerals: float,
     fleet_mineral_cost: float = 350.0,
     rush_active: bool = False,
+    vespene: float = 0.0,
+    fleet_total: int = 999,
+    fleet_min: int = 5,
+    gas_threshold: float = 600.0,
+    mineral_threshold: float = 500.0,
+    mineral_floor: float = 250.0,
+    bases: int = 99,
 ) -> int:
     """Macro 局塔重建限流（诊断 #2：塔矿出血）。纯逻辑，可单测。
 
@@ -902,8 +1030,31 @@ def cannon_target_capped(
     不立即按动态数重建，矿让给航母/农民（o19b-macro 实证：g03 同时 16 座塔
     ≈2400 矿 ≈ 7 艘航母，气 2200+ 烂掉而矿贴 0）。矿 ≥ 舰队矿价（憋得起）
     或 rush 期（保命优先，六连动不变）→ 按原动态数。
+    O157/O159/O160 追加：
+    1. 气体富余（vespene≥600）且 minerals<500 且舰队未成规模
+       (<5) 时，即使矿 ≥350 也按 min 限流，避免 16 塔吃掉本可造舰队的矿。
+    2. O160(o159-vh-zerg-power game_01 918s): 矿物跌破 mineral_floor(250)
+       时直接按 min 限流，不管舰队规模——塔再抽矿会让舰队/农民/科技全面停产。
+    3. 基地已被压缩到 ≤2 个时不再限流——丢基地后矿物收入本就骤降，此时
+       再憋舰队等于放弃最后阵地；优先把塔/电池补满保住现有经济。
     """
-    if rush_active or minerals >= fleet_mineral_cost:
+    if rush_active:
+        return dynamic_count
+    # O157-② / O161: 基地压缩时若舰队已成规模(≥3)才不限流;
+    # 舰队未成规模时二矿盲目堆塔会吃掉舰队科技/产能的矿，继续限流保经济。
+    if bases <= 2 and fleet_total >= 3:
+        return dynamic_count
+    # O160: 矿物极低时硬地板限流，防止塔把舰队矿抽干。
+    if minerals < mineral_floor:
+        return min(dynamic_count, min_count)
+    # O157-①/O160: 气体富余但矿物紧缺、舰队未成规模 → 塔只补 min。
+    if (
+        vespene >= gas_threshold
+        and minerals < mineral_threshold
+        and fleet_total < fleet_min
+    ):
+        return min(dynamic_count, min_count)
+    if minerals >= fleet_mineral_cost:
         return dynamic_count
     return min(dynamic_count, min_count)
 
@@ -1067,6 +1218,12 @@ def extra_production_mineral_gate(
     fleet_beacon_ready: bool = False,
     first_tempest_seen: bool = False,
     default_gate: float = 400.0,
+    vespene: float = 0.0,
+    minerals: float = 0.0,
+    fleet_total: int = 999,
+    fleet_min: int = 8,
+    gas_threshold: float = 1500.0,
+    mineral_threshold: float = 400.0,
 ) -> float:
     """P2a：追加产兵建筑的「矿富余」门槛。纯逻辑，可单测。
 
@@ -1079,9 +1236,17 @@ def extra_production_mineral_gate(
     （337-385s，300 矿/200 气 + 2×43s 建造周期），首艘 TEMPEST 系统性晚
     50-70s → 再加首艘闸：**pivot 且 FB 就绪/在建 且首艘 TEMPEST 已出/在产**
     才豁免为 0。原则：追加产能永远不抢自己前置科技/首艘主 C 的生产窗。
+    O157 追加：vespene 烂银行（≥1500）且 minerals<400、舰队未成规模（<8）时，
+    追加产能门槛提高到 600，避免在矿物紧缺期继续花 250–300 矿造 idle 建筑。
     """
     if pivot_active and fleet_beacon_ready and first_tempest_seen:
         return 0.0
+    if (
+        vespene >= gas_threshold
+        and minerals < mineral_threshold
+        and fleet_total < fleet_min
+    ):
+        return max(default_gate, 600.0)
     return default_gate
 
 
@@ -1424,7 +1589,7 @@ def rush_spawn_fleet_escape(
     vespene: float,
     ready_stargates: int,
     fb_present_or_pending: bool,
-    min_vespene: float = 800.0,
+    min_vespene: float = 400.0,
 ) -> bool:
     """O89(n5m-terran-air game_05 实证):rush 纯叉配方的舰队逃生门。纯逻辑,可单测。
 
@@ -1434,6 +1599,8 @@ def rush_spawn_fleet_escape(
     (game_05:4 星门+FB 就绪、气 2344、124s+ 零舰队败亡)。舰队基建齐备
     (就绪星门+FB)且气银行 ≥800 时逃生门打开:调用方改混编(叉子续防吃矿,
     舰队吃叉子用不上的气)。急性 rush 早期 SG/FB 未齐,门不开,急性语义不变。
+    # O199(o198-vh-zerg-rush game_01 实证):800 气阈值太高,FB 就绪后还要攒很久
+    # 才开混编;降到 400 让舰队更早进入 spawn,避免星门空转。
     """
     return (
         ready_stargates > 0
@@ -1769,6 +1936,12 @@ def early_scout_verdict(
             return "unknown"
         return "greedy"
     if military_structs >= 1 or early_army >= 6:
+        # O169:Zerg 单基地+一个 SPAWNINGPOOL 不一定是 rush(Power/Timing 运营
+        # 也常先池后矿);无早期作战单位时保守判 unknown,避免 Power 局被
+        # 误判进 transition、舰队永远出不来。真 12pool 通常带 ≥6 条狗,
+        # 仍会被 early_army 门槛捕获。
+        if enemy_is_zerg and military_structs < 2 and early_army < 6:
+            return "unknown"
         return "rush"
     # O107(o106 局3/4/5 实证):vs Zerg 的 greedy 出口连回落分支也删掉 ——
     # 补派探机只看到主基地 HATCHERY(单基地、无 pool、无兵)时,scout_verdict
@@ -2157,6 +2330,7 @@ def transition_expand_ready(
     0 触发,鸡生蛋死结。
     O119-②(o118 局5 实证):5/12 仍 0 触发 —— 波次间隙实测 8-12s,
     清净窗被波次节奏切碎;降到 4 叉/8s(局5 在 350-400 有多次 8s+ 间隙)。
+    O204:调用方对 Zerg Rush 可传 min_ground=2/clear_needed=5 进一步降低门槛。
     """
     return (
         transition_active
@@ -2164,6 +2338,36 @@ def transition_expand_ready(
         and ground_army >= min_ground
         and clear_for >= clear_needed
     )
+
+
+def forced_expand_during_transition(
+    transition_active: bool,
+    now: float,
+    cannons_ready: int,
+    enemy_near_home: int,
+    minerals: float,
+    nexus_pending: int,
+    nexus_cost: float,
+    min_time: float = 180.0,
+    min_cannons: int = 2,
+    clear_for: float = 5.0,
+    mineral_buffer: float = 50.0,
+) -> bool:
+    """O204:Rush/transition 期强制二矿触发器。
+
+    原 should_expand_dynamic 在 rush_active 期间直接返回 False,transition_expand_ready
+    又要求地面≥4/清净≥8s,导致 Zerg Rush 局二矿永远开不出(one_base×5)。
+    破法:transition 已激活、时间≥180s、已有≥2 座就绪塔、家 40 格无敌≥3 已持续≥5s、
+    当前 mineral 足够付 Nexus+buffer 且无 Nexus 在建 → 强制触发二矿。
+    该触发器与 rush_active 解耦,只看 transition 和实际防御站稳情况。
+    """
+    if not transition_active or nexus_pending:
+        return False
+    if now < min_time or cannons_ready < min_cannons:
+        return False
+    if enemy_near_home >= 3:
+        return False
+    return minerals >= nexus_cost + mineral_buffer
 
 
 def fleet_exit_allowed(
@@ -2174,6 +2378,7 @@ def fleet_exit_allowed(
     sg_present_or_pending: bool = True,
     deadline: float = 540.0,
     min_ground: float = 14.0,
+    strong_exit_score: float = 25.0,
 ) -> bool:
     """O119-①③/O121-③/O132-①:转舰队退出闸的经济+地面+星门前提前提。纯逻辑,可单测。
 
@@ -2202,10 +2407,11 @@ def fleet_exit_allowed(
     评分 ≥25 本身已含防御质量(塔×3/电池×2/地面×2),strong-exit 的
     领先+清净 30s 在调用方另查 —— 这里不再叠加。评分 <25 的低防局
     仍走原三门(防裸奔退出自杀)。
+    O204:strong_exit_score 参数化,允许 Zerg Rush 局降到 20 放宽转舰队。
     """
     if now > deadline:
-        return ground_supply >= min_ground or defense_score >= 25.0
-    if defense_score >= 25.0:
+        return ground_supply >= min_ground or defense_score >= strong_exit_score
+    if defense_score >= strong_exit_score:
         return True
     return (
         (bases >= 2 or ground_supply >= 20.0)
@@ -2446,6 +2652,17 @@ def tower_zone_pylon_needed(
 def spawn_pause_reason(
     *,
     rebuild_nexus: bool,
+    expand_holding: bool = False,
+    is_zerg_timing: bool = False,
+    nexus_unstarted: int = 0,
+    minerals: float = 9999.0,
+    nexus_price: float = 400.0,
+    tech_saving: bool = False,
+    tech_price: float = 150.0,
+    carrier_saving: bool = False,
+    carrier_price: float = 350.0,
+    immortal_saving: bool = False,
+    immortal_price: float = 275.0,
 ) -> str | None:
     """O135(o134-vh-zerg-timing 0-5 尸检):产出永不暂停 —— 暂停型预留体系
     整体证伪。纯逻辑,可单测。
@@ -2461,9 +2678,51 @@ def spawn_pause_reason(
     仅剩 rebuild_nexus(基地清零应急,没经济一切免谈)可暂停产兵;
     威胁急性窗的应急由 first_zealot_sprint/_sprint 管水晶/农民侧,不停产兵。
     返回暂停原因字符串(簿记用),None = 照常产。
+
+    O216c(o216b game_01 实证):Zerg Timing 下二矿是生存前提,但 ground_spawn
+     zealot(100 矿/个)把 Nexus 资金窗吃光,单矿经济撑不到二矿落地。
+     仅当 Nexus 已派工但**尚未开工**、且存款买不起 Nexus 时暂停产兵,
+     一旦 Nexus 开工(已付 400 矿)或存款够 400 矿立即恢复。
+     避免 O216b 的 300-400 矿缓冲被 zealot 反复吃回 200 以下。
+
+    O224(o220-lane1 game_04 实证):Zerg Timing transition 期 zealot 持续吃掉
+     SG(150)/FB(300) 资金窗,SG 拖到 ~500s、首舰 620+,被 43-supply 波碾穿。
+     防御已立(调用方保证 t≥240+塔≥2)且 SG/FB 缺失买不起时暂停地面产兵攒钱,
+     买得起即恢复(同 O216c 的自校正语义,SG→FB 两段式接力)。
     """
     if rebuild_nexus:
         return "rebuild_nexus"
+    if (
+        is_zerg_timing
+        and expand_holding
+        and nexus_unstarted > 0
+        and minerals < nexus_price
+    ):
+        return "zerg_timing_expand_reserve"
+    if (
+        is_zerg_timing
+        and tech_saving
+        and minerals < tech_price
+    ):
+        return "zerg_timing_tech_reserve"
+    # O240(o237 双 lane game_05 实证):O239 点航母被 can_afford 的 350 矿
+    # 永假封印——矿恒 <100 的经济里航母永远点不起。气烂 ≥800 且航母配比
+    # 落后(航母 < 暴风/6)时暂停产线攒 350,攒够即恢复(O239 同帧点舰)。
+    if (
+        is_zerg_timing
+        and carrier_saving
+        and minerals < carrier_price
+    ):
+        return "zerg_timing_carrier_reserve"
+    # O245e(o245-lane1 game_04 实证):SpawnController 优先级竞争中不朽者
+    # (p0 同档、dict 序在后)每帧让位暴风,零产出;机械台就绪且敌地面 ≥6
+    # 且不朽 <4 时停产攒 275,直产通道(O245e 训练块)同帧消化。
+    if (
+        is_zerg_timing
+        and immortal_saving
+        and minerals < immortal_price
+    ):
+        return "zerg_timing_immortal_reserve"
     return None
 
 
@@ -2822,3 +3081,59 @@ def carrier_push_safe(
     enemy_hard_aa ≥ carriers × per_carrier → 不推(继续蹲塔消耗,等对空变薄)。
     """
     return enemy_hard_aa < carriers * per_carrier
+
+
+def natural_predefense_allowed(
+    nexus_started: bool,
+    minerals: float,
+    nexus_cost: float,
+    defense_cost: float = 350.0,
+    buffer: float = 25.0,
+) -> bool:
+    """O205:分矿 Nexus 落成前是否允许预铺 2 炮+1 电池。纯逻辑,可单测。
+
+    Nexus 已开工 → 允许(塔 29s 比 Nexus 71s 先完工,预派不抢基金)。
+    Nexus 仅 pending 未开工 → 必须保证 Nexus 基金不被抽干才允许预派:
+    当前矿 ≥ Nexus 造价 + 防御预估 + buffer。
+    """
+    if nexus_started:
+        return True
+    return minerals >= nexus_cost + defense_cost + buffer
+
+
+def fleet_recall_target(
+    bases: list[tuple[float, float]],
+    enemies: list[tuple[float, float]],
+    min_threat: int = 6,
+    radius: float = 15.0,
+) -> tuple[float, float] | None:
+    """O205:空军回防目标 —— 任一基地 radius 格内敌地面 ≥min_threat 时返回该基地坐标。
+    纯逻辑,可单测。多基地受威胁时返回最靠前(调用方已按主→分排序)的受威胁基地。
+    """
+    for bx, by in bases:
+        n = sum(
+            1
+            for ex, ey in enemies
+            if (ex - bx) ** 2 + (ey - by) ** 2 <= radius * radius
+        )
+        if n >= min_threat:
+            return (bx, by)
+    return None
+
+
+def rush_deadzone_active(hard_cleared_at: float | None, now: float, deadzone: float = 60.0) -> bool:
+    """O205:舰队成型后硬解 rush_active 后 60s 内不再因敌兵重新进入 full rush-lock。
+    纯逻辑,可单测。
+    """
+    return hard_cleared_at is not None and now - hard_cleared_at < deadzone
+
+
+def idle_builder_fuse_exempt(sid_name: str, critical_ids: set[str] | None = None) -> bool:
+    """O205:idle_builder 5s 熔断豁免名单。纯逻辑,可单测。
+
+    关键防御链(forge/首塔/GW1)、基地、FleetBeacon 在资金窗口紧时允许驻点等钱,
+    不被 5s 熔断误伤。
+    """
+    if critical_ids is None:
+        critical_ids = {"FORGE", "PHOTONCANNON", "GATEWAY", "NEXUS", "FLEETBEACON"}
+    return sid_name in critical_ids

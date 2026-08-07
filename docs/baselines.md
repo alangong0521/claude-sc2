@@ -363,3 +363,9 @@ o154 双系列：**zerg-power 1-4 / zerg-timing 1-4**。greedy 接触问题已�
 
 o155-vh-zerg-power bench 在 game_01  defeat / game_02 败势中 lost（后台任务 bash-1f38qf0m 丢失，进程残留已清）。尸检：舰队峰值 11 艘暴风，**未到 O155 阈值 12，航母配额从未触发**，终局 0 航母；idle_builder 仍刷屏（AutoSupply 被 O11 撤回后每帧重派新工）；中盘 3 矿后基地守不住经济崩盘。
 | O156 | 「o155 尸检：①配额阈值 12 太高（VeryHard Power 等不到 12 艘就被推平）；②AutoSupply 撤回无冷却致 idle_builder 刷屏；③中盘经济崩盘待验证」 | ①`carrier_quota_active` 默认 `fleet_min` 12→8，加 fallback（暴风 ≥6 且 0 航母时强制触发）；②AutoSupply 注册前加 `redispatch_cooled_down` 守卫（非人口紧急时 10s 内不重派）；③先靠航母提前成型验证对中盘影响 | o156-vh-zerg-power（5 局在跑） | 单测 615 绿（614→615，+1 新测）；烟测未跑 | **留**（待 bench） |
+
+o156-vh-zerg-power / o156-vh-terran-power 各跑完 game_01/game_02，**双 lane 0-2，全部 Defeat**。尸检：①炮塔建了但不重建，基地压缩到 1-2 个后防御归零（cannon_target_capped 因矿<主 C 造价压回 min=4）；②舰队 550-700s 被 bio/地面一波穿时尚未达临界质量；③基地丢失后经济死锁（vespene 3000+/minerals 30-120）。
+| O157 | 「o156 尸检：①基地压缩后炮塔不重建；②Power 中盘波次前舰队规模不足；③丢基地后经济死锁」 | ①`cannon_target_capped` 加 `bases` 参数，≤2 基地时返回动态数（不限流）；②`flows.yml` carrier `expansion_cannons` 4/10→6/12；③`mineral_crisis_gas_stop` 加 `bases` 参数，≤2 基地时矿物危机阈值 300→500，提前停气转矿保 Nexus 重建 | o157-vh-zerg-power game_01 1095.8s Defeat；o157-vh-terran-power game_01 1140.6s Defeat（各 1 局，长时败局趋势明确） | 单测 626 绿（615→626，+11 新测） | **留**（O158 待 bench） |
+
+o157 双 lane 各跑 1 局：Zerg Power 1095.8s  defeat（峰值 4 基地/67 农民/18 炮塔/6 暴风+1 航母，后农民被抄光），Terran Power 1140.6s defeat（峰值 3 基地/57 农民/13 炮塔/7 暴风+1 航母，后缩成 1 基地被磨死）。两局都比 O156 活得久，但死因一致：**舰队出门导致 ≤2 基地后被持续抄家，经济断气**。
+| O158 | 「o157 尸检：①舰队出门导致 ≤2 基地时被抄家；②4 矿防御面过散；③航母/暴风数量仍不足」 | ①`bot/managers/combat_manager.py` 加 `_home_guard`：stance 未指定且 `townhalls.amount <= 2` 时 `attack_target = self._defend_anchor()` 强制守家；②`flows.yml` carrier `auto_expand.max_bases` 4→3，集中防守；③`tests/test_flow_config.py` 同步断言 | o158-vh-zerg-power / o158-vh-terran-power（待开） | 单测 626 passed / 1 skipped | **留**（待 bench） |

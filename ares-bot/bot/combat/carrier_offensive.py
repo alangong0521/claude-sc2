@@ -69,10 +69,21 @@ class CarrierOffensive(BaseUnit):
             query_tree=UnitTreeQueryType.AllEnemy,
             return_as_dict=True,
         )
+        # O182:舰队绝境（fleet<8 且基地≤2）时提高残血阈值，更早后撤保命，
+        # 避免中局 fleet 被慢性磨光（o181c 舰队 10→0/11→0 终局气烂银行）。
+        _fleet_total = self.ai.units.filter(
+            lambda u: u.type_id in {UnitID.CARRIER, UnitID.TEMPEST}
+        ).amount
+        _desperate = _fleet_total < 8 and self.ai.townhalls.amount <= 2
+        _wounded_enter = 0.5 if _desperate else None
+        _wounded_exit = 0.65 if _desperate else None
         # O14 滞回:刷新残血集合
         for u in units:
             if wounded_state(
-                u.shield_health_percentage, u.tag in self._wounded_tags
+                u.shield_health_percentage,
+                u.tag in self._wounded_tags,
+                enter_threshold=_wounded_enter or 0.4,
+                exit_threshold=_wounded_exit or 0.55,
             ):
                 self._wounded_tags.add(u.tag)
             else:

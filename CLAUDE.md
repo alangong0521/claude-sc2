@@ -2,6 +2,56 @@
 
 SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。核心模式：**参谋长(LLM / `steer_cli`)下令，bot 执行**——司令(用户)零 APM，靠 steer 命令指挥。
 
+## 当前验证模式（司令 2026-08-06 最终口径，O216e 更新）
+
+> **2026-08-06 司令确认（O216e 重启前）**：下局及后续所有正式 bench 强制走 **headless（`REALTIME=False`）+ 双车道 SC2 并行**。本节作为项目记忆，每次迭代前重读；`REALTIME=True`/单车道仅用于双车道崩溃排查或司令临时观战，不作为默认验证。
+>
+> **O216e 双车道计划**：Lane1 `o216e-vh-zerg-timing-abyssal`（AbyssalReefLE）与 Lane2 `o216e-vh-zerg-timing-paladino`（PaladinoTerminalLE）按 headless 双车道后台启动，命令不带 `--realtime`，SC2 进程以 `-displayMode 0` 无渲染运行。启动前必须 `pkill -9 -x SC2` 清理残留进程；两条 lane 错峰 20-30s，先起 Lane1，SC2 完成授权/监听后再起 Lane2，避免实例冲突崩溃。
+>
+> **人机共驾 / 观战模式定义**：凡 `REALTIME=True` 或人工在 SC2 窗口内输入指令（移动镜头、施放技能、点单位）即属人机共驾；O216e 及后续为 `REALTIME=False` 且 bot 自主决策，仅因 macOS 窗口管理偶发显窗，本质上仍是 headless 后台加速。
+>
+> **司令观察（O216d 验证期）**：仍有农民前期干等着造建筑，没有采矿最大化。已记录为持续优化方向：核心科技建筑/追加产能的派工需引入 `dispatch_viable` 收入守卫（当前仅 F2 塔与扩张使用），避免农民被派去造暂时买不起的建筑而空转。
+
+## 当前验证模式（司令 2026-08-06 最终口径，O216 续接）
+
+> **2026-08-06 司令最终确认（O216 启动前）**：当前 O216 及后续所有正式 bench 强制走 **headless（`REALTIME=False`）+ 双车道 SC2 并行**。本节作为项目记忆，每次迭代前重读；`REALTIME=True`/单车道仅用于双车道崩溃排查或司令临时观战，不作为默认验证。
+>
+> **O216 双车道实况**：Lane1 `o216-vh-zerg-timing-abyssal`（AbyssalReefLE）与 Lane2 `o216-vh-zerg-timing-paladino`（PaladinoTerminalLE）已按 headless 双车道后台启动，命令未带 `--realtime`，SC2 进程以 `-displayMode 0` 无渲染运行。若窗口短暂闪现后被 `_hide_sc2_windows()` 隐藏属于正常启动动画，不构成「人机共驾」。
+>
+> **人机共驾 / 观战模式定义**：凡 `REALTIME=True` 或人工在 SC2 窗口内输入指令（移动镜头、施放技能、点单位）即属人机共驾；O216 当前为 `REALTIME=False` 且 bot 自主决策，仅因 macOS 窗口管理偶发显窗，本质上仍是 headless 后台加速。
+
+## 当前验证模式（司令 2026-08-06 最终口径，O206c 后）
+
+> **2026-08-06 司令最终确认（O214 重申）**：下局及后续所有正式 bench 强制走 **headless（`REALTIME=False`）+ 双车道 SC2 并行**。本节作为项目记忆，每次迭代前重读；`REALTIME=True`/单车道仅用于双车道崩溃排查或司令临时观战，不作为默认验证。
+>
+> **2026-08-06 司令再次确认（O215 续接）**：当前 O215 及后续所有正式 bench 继续强制 **headless（`REALTIME=False`）+ 双车道 SC2 并行**；已启动的 O215 双车道（AbyssalReefLE / PaladinoTerminalLE）即按本模式后台运行，非人机共驾。
+>
+> **O214 当前运行实况**：O214 Zerg Timing bench 已按本模式启动，两条 lane（AbyssalReefLE + PaladinoTerminalLE）均为 `REALTIME=0` headless 后台加速，无人工输入；SC2 窗口仅作为视频输出显示，不构成「人机共驾」。后续 O215 及所有 bench 继续强制本模式。
+>
+> 启动前必须执行 `pkill -9 -x SC2` / `bench.py` 的 `_cleanup_stale_sc2()` 清理残留 SC2 进程；双车道启动时两条 lane **错峰 20-30s**（先起 Lane1，SC2 完成授权/监听后再起 Lane2），避免 SC2 访问许可冲突导致第二个实例崩溃。单局内精确跟踪本局 SC2 PID，检测 60s 未启动 / 崩溃 / 90s 无 snapshot 更新即判定卡死并杀进程重试。
+>
+> 若双车道反复崩溃/卡死，先杀进程再重启；仍不稳时临时降级 `REALTIME=True` 单车道观战排查，但需记录并继续修复稳定性，不能长期停留单车道。
+>
+> **2026-08-06 O212 更新**：O211 Zerg Rush 双车道 bench 已按本模式完成（Abyssal/Paladino 各 3-2 打穿）；O212 及后续继续强制 headless + 双车道并行，不允许以人机共驾/观战模式作为默认验证。
+>
+> **2026-08-06 O213 司令确认**：下局及后续所有正式 bench 继续强制走 **headless（`REALTIME=False`）+ 双车道 SC2 并行**。若出现单车道/人机共驾/观战模式，只能是双车道崩溃排查或司令临时观战，排查完必须切回 headless 双车道，不能长期停留。O212 期间因双车道稳定性问题曾临时降级观战排查，现稳定性已恢复，回归默认验证模式。
+
+## 当前验证模式（司令 2026-08-06 最终口径）
+
+> **2026-08-06 司令再次确认（O206c 重启前）**：下局及后续所有正式 bench 继续强制走 **headless（`REALTIME=False`）+ 双车道 SC2 并行**。本节已作为项目记忆，每次迭代前重读。
+> **2026-08-06 司令确认**：所有正式 bench 必须 **后台 headless（REALTIME=False）+ 双车道 SC2 并行**，不允许以人机共驾/观战模式作为默认验证；单车道/REALTIME=True 仅用于双车道崩溃排查或司令临时观战。
+> **2026-08-06 O206c 更新**：`ares-bot/bench.py` 的 SC2 CPU 冻结检测在双车道 headless 下连续误杀正常对局，已禁用；真卡死由「状态快照停滞 180s」+「游戏时间停滞 150s」+「进程异常退出检测」兜底捕获。
+> **2026-08-05 23:46 司令确认**：下局及后续所有正式 bench 继续强制走 **headless（`REALTIME=False`）+ 双车道 SC2 并行**。本节已作为项目记忆，每次迭代前重读。
+> **2026-08-05 23:29 再次确认**：下局及后续所有正式 bench 统一走 **headless（`REALTIME=False`）+ 双车道 SC2 并行**。本节已作为项目记忆，每次迭代前重读。
+> **2026-08-05 追加确认**：下局及后续所有正式 bench 统一走 **headless（`REALTIME=False`）+ 双车道 SC2 并行**。本节已作为项目记忆，每次迭代前重读。
+> **2026-08-05 17:12 项目记忆更新**：O195 因 Rush game_01 败北已中断，O196 仍按 headless + 双车道并行重启；每次失败先尸检并落地 ≥3 个改进点再开下一组。
+
+- **所有正式 bench 必须同时满足**：
+  1. **headless**：`REALTIME=False`（非观战/非排查场景）。
+  2. **双车道并行**：同一时刻开两条 lane 跑不同组合或对照，最大化迭代速度；单车道仅作为双车道临时故障时的降级或观战排查。
+- 启动前必须调用 `pkill -9 -x SC2` / `_cleanup_stale_sc2()` 清理残留 SC2 进程；单局内精确跟踪本局 SC2 PID，检测 60s 未启动 / 崩溃 / 90s 无 snapshot 更新即判定卡死并杀进程重试。
+- 若双车道反复崩溃/卡死，先杀进程再重启；仍不稳时临时降级 `REALTIME=True` 单车道观战排查，但需记录并继续修复稳定性，而不是长期停留单车道。
+
 - `ares-bot/bot/`：我们的代码（**改动重点**）
 - `ares-bot/ares-sc2/`：ares 框架（本地子包，**尽量不改，用其原语**）
 - `steer_cli.py` / `bot/steer_vocab.py`：参谋长指挥 CLI + 命令词表（单一真相源）
@@ -68,7 +118,7 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 | 对手种族 | `OPPONENT_RACE` | Terran / Zerg / Protoss / Random |
 | 地图 | `MAP` | 随机（**排除 HonorgroundsLE**）/ AbyssalReefLE（baseline 固定图）/ BelShirVestigeLE / CactusValleyLE（4 人混战图）/ NewkirkPrecinctTE / PaladinoTerminalLE / ProximaStationLE（⚠️ HonorgroundsLE 会崩 PlacementManager，勿选） |
 
-示例：`REALTIME=True BUILD=carrier MAP=AbyssalReefLE DIFF=Medium OPPONENT_RACE=Random AI_BUILD=Macro poetry run python run.py`
+示例：`REALTIME=False BUILD=carrier MAP=AbyssalReefLE DIFF=Medium OPPONENT_RACE=Random AI_BUILD=Macro poetry run python run.py`（验证走 headless；观战/排查才用 `REALTIME=True`）
 
 ## 对局后检查（每次对局结束必做，司令指令 2026-07-23）
 
@@ -84,7 +134,9 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 - **升级改动走 `flows.yml` 的 flow.upgrades**（神族生产已不读 `DESIRED_UPGRADES`，该常量已删）；`army_composition.yml` 的 protoss.upgrades 仍被 `tests/test_army_config.py::test_shipped_protoss_upgrades_unchanged` 锁（T/Z 路径还在读它）；flows.yml 的 tempest/stalker 块被 `tests/test_flow_config.py` 的 shipped 测试冻结。
 - **spawn 比例和必须 ≈ 1.0**——`flows.yml` 与 `army_composition.yml` 同一约束（加载时各自校验）。
 - **ares-sc2 是本地包**——`import ares` 需 `sys.path` 加 `ares-sc2/src`（`run.py:14-16`）；离线编译检查也要加。
-- **headless `websocket 超时`**——SC2 更新中 / 冷启动慢会导致；用 REALTIME 或等 SC2 ready。headless 本环境不稳，优先 REALTIME。
+- **headless `websocket 超时`/SC2 启动崩溃**——SC2 更新中 / 冷启动慢会导致；用 REALTIME 或等 SC2 ready。~~headless 本环境不稳，优先 REALTIME~~（已更新：司令 2026-08-05 指示后续验证走 headless，当前 headless 默认 `REALTIME=False`）。
+- **headless + 双车道并行验证（司令 2026-08-05 最终口径）**——后续正式 bench 默认 `REALTIME=False`（headless），并同时开两条 lane 跑不同组合/对照，最大化迭代速度。O180 曾在 `ares-bot/bench.py` 加启动前清理、进程树级 SC2 检测、崩溃/卡死检测与自动重试；单车道串行仅作为双车道临时不稳时的降级，或观战/快速冒烟场景使用。若双车道出现 SC2 进程卡死/崩溃/残留进程冲突，先 `pkill -9 -x SC2` 清理，再重启双车道；反复出现时降级单车道并排查端口/实例隔离。
+- **bench 启动前清理残留 SC2 进程（O180）**——之前中断/卡死的 SC2 会占端口/资源，导致新实例启动即崩溃（`Blizzard Error Report ID: 00000000...`）。`ares-bot/bench.py` 启动时 `_cleanup_stale_sc2()` 会杀掉存活 >5 分钟的残留进程；单局内用 `_sc2_pid_for(run.py_pid)` 精确跟踪本局 SC2，新增启动检测（60s 未出现则放弃）、SC2 进程存活检测（崩溃立即放弃）、状态快照停滞检测（90s 无新 snapshot 判定卡死并杀进程）。
 - **SC2 补丁日首发失败**（2026-07-18 实证）：当天补丁（如 Base97563）后 SC2 二进制能起进程但**不开 websocket、不出窗口、静默退出**，新旧 build 都一样 → 不是 bot 问题，去 Battle.net 让它完成更新 / 「扫描和修复」，确认手动能进游戏后再跑 bench。排查手法：直启二进制 `-listen 127.0.0.1 -port <p>` + `lsof -iTCP:<p> -sTCP:LISTEN`；多实例互斥会互相踢，先 `pkill -9 -x SC2` 再测。
 - **idle 农民**：ares 框架层 `BuildStructure`/`TechUp` 不查 `can_afford`（bot 层加守卫根治：BuildStructure 注册点 + 升级前置建筑全走 `_build_core_structure`）。**TechUp 已加 can_afford 守卫（2026-07-23 修复）**：在 `ares-sc2/src/ares/behaviors/macro/tech_up.py` 两处添加 `can_afford` 检查（第 128 行和第 180 行），防止农民被钉在建造点等钱（Forge 建造实证：两个农民等钱造 forge）。**O19 派工守卫（2026-07-24）**：`dispatch_viable(矿, 收入/秒, 走位时间, 造价)` 到位可负担才派——F2 防御塔注册点（治 PHOTONCANNON 钉点 9-21 次/局）和 E3k 开矿预走位收窄（治 NEXUS 干等；攒钱预留语义不变）；**二轮（o19fix 复验）**：收入高时守卫恒真 →「派工→钱被抽干→钉 6s→O11 撤→又派」循环，加 `redispatch_cooled_down`（O11 撤回后 15s 冷却，F2 门读取）；**idle_builder 检测阈值 1s→3s**（复验实证 1-2s 短等是存款贴 0 风格下的常态噪声，3s 仍 < O11 6s 撤回线）；ares build runner 开局序列派工仍无守卫（框架层不改，O11 watchdog 兜底）。另有 `main._handle_idle_workers` 每 1 游戏秒兜底清扫（跳过侦查/司令接管/采集中的农民）；tracker 里钉点 >6s 且买不起的建造工人会被拆 tracker 撤回（O11 watchdog，例外=人口紧急态水晶、基地建筑 TOWNHALL_TYPES、**rush_active 期间全部**——E4c 实证：rush 矿紧时撤回循环会让塔永远起不来）。**气矿优先级最高（O13）**：`_ensure_expansion_gas` 每帧在追加产能/滚雪球之前跑，每个就绪基地双气满采，在建气矿 45s 不落地拆 tracker 重派。**司令接管**靠的是 PERSISTENT_BUILDER role + `release_from_build_tracker` 摘除 ares building_tracker（BuildingManager 无视 role，只换 role 抢不回单位，O2 实证）。
 - **bot 局小地图点击"失灵"**（2026-07-19 结案）：四层叠加——①窗口非键窗时点击被当"激活"吞掉（先点主画面）；②AI 投降弹窗是模态框挡全部输入（gg 聊天型 bench 自动点 Yes；静默型手动点）；③全速模拟下离散点击被间歇性丢弃；④**主因:并行车道新局开窗每几分钟抢一次键窗,观看窗口被降级,点击被当激活吞掉(开窗期失灵、安静期好使)**。**观察方案:`sc2cam <left|right|top|bottom|center>`(~/.kimi-code/bin/,合成点击切镜头,可靠),或边缘平移(可在游戏内调低滚动速度)**。判别手法：手动开一局 vs AI 能点 = bot 局特有。
@@ -110,7 +162,7 @@ BUILD=carrier poetry run python -c "import sys; sys.path[:0]=['ares-sc2/src/ares
 # 测试(unittest,无需 pytest;86 例)
 poetry run python -m unittest discover -s tests
 # 跑局
-REALTIME=True BUILD=stalker DIFF=Medium OPPONENT_RACE=Random poetry run python run.py
+REALTIME=False BUILD=stalker DIFF=Medium OPPONENT_RACE=Random poetry run python run.py
 ```
 跑局看：兵营>1、bot 日志有 `Researching ...`、`state.army` 含 STALKER+ZEALOT、开局农民不骤减、防御塔/blink 微操。
 
@@ -122,11 +174,32 @@ carrier vs Zerg Harder/Macro 是对局劣势（Zerg 双矿爆兵 vs carrier 慢�
 - **scout**：Bug1 探机撤回回家不死（`home_mineral`）+ Bug2 clear+scout 重派（`_scout_ts` 时间戳）+ O22 探机遇敌逃跑（`_SCOUT_FLEE_RADIUS=8`）+ O27 手动造气 BUILD 长倒计时（`player_yield_for_ability` 30s）+ O28 set target= 清图（validate 空值放行）。
 - **macro**：O21 建造干等先采矿（grace 开局 1s/中段 6s/TOWNHALL 30s）+ O26 3 矿气矿（去全局 assimilator 守卫 + 距离 15）+ O29 E9 停开矿扩散（`expansion_blocked` 非 pivot 走 `enemy_near_home` + 首扩 `bases<=1` 放行）+ O30 `first_expand_at` 时间触发 + `when_workers` 16 + **O32 vs Zerg 不 pivot**（`should_pivot_tempest` 否决 Zerg —— 航母主 C 龟缩，不烧舰队链矿给 Nexus）+ **O33 叉减量**（pre_fleet cap 3/per_enemy 0.3/max 8）+ `first_expand_at` 150。
 - **combat**：O24 启用 carrier_offensive（放机后拉开 AA 射程外 + `_AA_BUFFER` 4 + 残血撤 15 格）+ O25 航母优先级（`carrier_target_priority` 辅助>对空威胁>杂兵）+ 航母 engage 被推家锚点 `ref=敌重心`（主动找敌放机，治"憋家不战斗"）+ O31 塔堵口（`placement_strategy` closest_to 优先 + `ProtossStaticDefence.closest_to_override=defensive_rally_point`）+ O23 航母出击阈值（`carrier_rally_against_aa`：航母<3 + 敌防空→守家攒兵）。
+- **O213 carrier macro/combat 补丁**：
+  - power/macro 风格单基地且无 Nexus pending 时 FB 让位二矿（`production_manager.py`），治 O212 败局 FB 抢 300 矿导致二矿 466s 才落。
+  - carrier 流加 `rally_min_army: 16`（`flows.yml`），兵力不足 16 时守家攒兵，降低 trickle 分批送死。
+  - idle_builder 硬顶细化：FORGE/TOWNHALL 保留 30s，其余结构（含 FB/后续 Gateway/科技建筑）降到 20s，更快释放农民回矿。
+- **O214 Zerg Timing 二矿资金窗补丁**：
+  - O189 强制开二矿对 Zerg Timing 降到 `t≥180 / 矿≥100`（Rush 维持 210/150）。
+  - 扩张预留期间 O131 死锁保险丝延长到 120s/400minerals（打断线 200），避免防御过早抽干 Nexus 400 矿。
+  - `_expand_holding` 且舰队 <4 时，F2 炮塔注册 buffer 从 30 提到 75，保护二矿/首舰资金。
 
 ### 待改（carrier vs Zerg combat 难点，Explore 诊断）
 - **问题① 航母被推家没 engage（矿区待着不防守，司令两轮指出）**：根因锚点 `ref=home` 远离敌。已改 ref=敌重心（rec7 改善 macro 起），但 **rec8 仍矿区待着**（单矿航母 1 兵少守不住 + engage 改条件可能没满足/残血撤退干扰）。**深查**：被推家 attack_target=home 是否触发（floor primary<3/rush/defend）+ engage 改 ref=敌重心是否生效（attack_target.distance_to(start)<20 + near 非空）+ 残血撤退（<40% 走 retreat_ref 不走敌重心）+ O24 AA retreat（Hydralisk air_range 6 后撤 10 格 > engage 9.5 横跳）。可能要：被推家航母强制 attack 最近敌（不只锚点）+ 残血阈值降/被推家不撤。
 
 > **元指示（司令 2026-07-26）**：后续所有司令在聊天框发的优化建议，**全部落地本文件（CLAUDE.md）**，优化流派/bot 时重点参考。
+
+## 当前迭代强制验证模式（司令 2026-08-05 最终口径，O198 再次确认）
+
+> **2026-08-05 21:07 追加确认**：当前正在跑的 O197 双车道 bench 已满足 headless + 双车道并行；下局及后续所有正式 bench 继续强制本模式。本节作为项目记忆，每次迭代前重读。
+> **2026-08-05 22:43 再次确认（司令）**：下局对战及后续所有正式 bench 必须按 **headless（REALTIME=False）** 跑，并同时开 **双车道 SC2 并行**；已作为项目记忆写入本节。
+> **2026-08-05 23:11 司令再次确认**：当前正在跑的 O201 及后续所有正式 bench 继续强制 **headless + 双车道 SC2 并行**；`ares-bot/bench.py` 已同步修正顶部注释。单车道仅作为双车道临时故障、headless 不稳或观战排查时的降级。
+
+- **下局及后续所有正式 bench 必须同时满足**：
+  1. **headless**：`REALTIME=False`（非观战/非排查场景）。`bench.py` 默认 `--realtime` 未置位即注入 `REALTIME=0`，无需额外参数。
+  2. **双车道并行**：同一时刻开两条 lane 跑不同组合或对照，最大化迭代速度；单车道仅作为双车道临时故障时的降级或观战排查。
+- 启动前必须调用 `_cleanup_stale_sc2()` / `pkill -9 -x SC2` 清理残留进程；单局内精确跟踪本局 SC2 PID，检测 60s 未启动 / 崩溃 / 90s 无 snapshot 更新即判定卡死并杀进程重试。
+- 若双车道反复崩溃/卡死，先杀进程再重启；仍不稳时临时降级 `REALTIME=True` 单车道观战排查，但需记录并继续修复稳定性，而不是长期停留单车道。
+- **窗口可见性兜底**：`bench.py` 每局启动后调用 `_hide_sc2_windows()` 隐藏 SC2 窗口；若因系统事件/用户点击重新显窗，不影响「headless=无人工输入、REALTIME=False 后台加速」的本质。排查需要观战时可手动显窗。
 - **问题② 持续侦查不足**：Probe scout 一次性不补（`_handle_scout`）+ Oracle `one_off` 死了不补。改：vs Zerg 循环 scout（60-75s 自动重派）+ Oracle 维持 1 架。**司令指示**：叉子配合先知探路+牵制（不全程 floor 守家）。
 - **问题③ 塔防御不足/晚**：6 分钟自动塔偏晚（roach all-in 5:00）+ 反应式（敌到 40 格才建）。改：vs Zerg 自动塔提前 240s（`_should_build_defense`）+ scout 驱动塔 + threat 阈值降（`max(8,own×1.2)`）。**司令指示**：防御主要靠光子塔（不靠叉堆）。
 
@@ -134,9 +207,9 @@ carrier vs Zerg Harder/Macro 是对局劣势（Zerg 双矿爆兵 vs carrier 慢�
 - **侦查是最重要的优化方向**（防 rush 一波）：前期做好侦查，**先知 + 叉叉兵要和敌方主力部队接触**（持续了解敌我兵力），供主基地/分矿**建造足够光子塔 + 护盾电池**做防御判断。即"侦查接触敌 → 了解兵力 → 造塔防御"闭环。
 - **分矿防御模型**（塔性价比 > 兵）：分矿 Nexus 建好 → **立刻落地水晶** → 水晶好 → **补 3 个光子塔**（最低防御）→ 侦查驱动逐步增加。塔围绕**地形入口**集结（兵营 gateway 顶前面堵口，塔密集后方），不让敌直冲推平主基。防御塔同等金钱守家打出比兵更多伤害。
 - **分矿堵口方案**（司令 2026-07-26）：分矿 ramp 前**排一个兵营（gateway）堵口**，**后排放若干光子塔密集防守**（塔射程覆盖 gateway —— 敌打 gateway 时塔集火）。gateway 顶前 + 塔后排 = wall-in 堵口防御。expansion_cannons min:3（min 5 挤矿 macro 差,实证 rec11 vs rec10/Lane2）。
-- **双车道 SC2 可行**（2026-08-04 实证推翻旧结论）：两个 `bench.py` 进程各带一个 SC2 实例并行 100s+ 无互踢（多开互踢只发生在同一 install 直启二进制抢默认端口；bench 每局走独立端口分配）。矩阵迭代用双通道吞吐翻倍；注意同一时刻写的代码改动会混进在跑局的后续局（汇报时标版本分界）。旧条目（"单实例锁互踢"）作废。
+- **headless + 双车道并行验证**（司令 2026-08-05 最终口径）：后续正式 bench 统一走 **headless 双车道并行**（同时开两条 lane 跑不同组合/对照），最大化迭代速度；`bench.py` 保留启动清理、SC2 进程树跟踪、崩溃/卡死检测与自动重试。单车道串行仅作为双车道临时不稳时的降级，或观战/快速冒烟场景使用。O192 追加：bench 启动前必须 `pkill -9 -x SC2` 清理残留进程，避免端口/实例冲突；对局内 townhalls==0 且无法重建时主动 `leave()`，杜绝 SC2 残局不判负导致的 bench 空转。
 - **被攻击矿区农民撤离**（司令 2026-07-26）：被攻击的矿区农民应跑回主基或其他安全基地，不在被攻击基地继续采矿。E6 机制（`update_worker_evacuation`）已有，触发条件敌地面 ≥4 进 Nexus 15 格 → 可能阈值太高/覆盖不全，需调。
 - **叉叉兵减量**（防御靠塔，叉配合先知侦查+牵制）→ 省矿给 2 矿 + 航母尽早成型。
 - **2 矿更早**（10 分钟 2 矿没开 = 经济死，敌方 3 矿碾压单矿）。
 - **航母尽早成型** + 被推家该 engage 防御（不憋家）。
-- **双车道后台 SC2 验证**（两实例并行跑 headless，加速矩阵迭代）。
+- **验证模式：headless + 双车道并行**（司令 2026-08-05 最终口径）。后续所有正式 bench 默认 `REALTIME=False`，并同时开两条 lane 跑不同组合/对照，最大化迭代速度。双车道出现 SC2 卡死/崩溃/残留冲突时，先清理再重启；仍不稳时临时降级 `REALTIME=True` 单车道或观战排查。

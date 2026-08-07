@@ -30,9 +30,11 @@ from bot.production_plans import (
     carrier_rally_against_aa,
     defense_anchor_index,
     defensive_rally_point,
+    fleet_recall_target,
     floor_army_defends_home,
     full_pop_all_in,
     hot_base_index,
+    is_combat_type,
     rally_min_for_verdict,
     rush_defend_base,
     should_push_advantage,
@@ -94,6 +96,14 @@ class CombatManager(Manager):
         self._rally_min: int = self._flow.rally_min_army
         # B3 刹车状态(事件去抖:只在"判负"边沿记一条,不每帧刷 events)
         self._sim_retreat_active: bool = False
+        # O205:空军回防基地状态 —— 任一 Nexus 15 格内 ≥6 敌地面时召回,保留 10s 滞回
+        self._fleet_recall_until: float = 0.0
+        self._fleet_recall_target: Point2 | None = None
+        # O217:基地残敌清剿事件去抖(激活边沿记一条,清除后复位)
+        self._intruder_cleanup_active: bool = False
+        # O226:残敌清剿 3s 收尾滞回(防 attack_target 每帧翻转 yo-yo)
+        self._intruder_last_seen: float | None = None
+        self._intruder_last_target: Point2 | None = None
         # combat kind → combat class 分派表(oracle_harass 由 OracleManager 单独管,这里不收)
         self._combat_dispatch: dict[str, BaseUnit] = {
             "tempest_offensive": self.tempest_offensive,
@@ -246,6 +256,91 @@ class CombatManager(Manager):
         idx = hot_base_index(threats, min_threat=min_threat)
         return ths[idx].position if idx is not None else None
 
+    # O205:受威胁时强制召回的空军类型(ATTACKING 编制内)
+    _FLEET_AIR_TYPES = {
+        UnitID.CARRIER,
+        UnitID.TEMPEST,
+        UnitID.VOIDRAY,
+        UnitID.PHOENIX,
+        UnitID.MOTHERSHIP,
+    }
+
+    def _air_fleet_recall_target(self) -> Point2 | None:
+        """O205:任一 Nexus 15 格内 ≥6 敌地面 → 空军回防该基地,保留 10s 滞回。
+
+        与 E6 工人撤离联动:触发 E6 的基地(阈值 4)与这里(阈值 6)部分重叠,
+        大波(≥6)时空军同步回防。优先回防距主基最近的受威胁基地(主战方向)。
+        """
+        now = getattr(self.ai, "time", 0.0)
+        if now < self._fleet_recall_until and self._fleet_recall_target is not None:
+            return self._fleet_recall_target
+        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        ths = sorted(
+            self.ai.ready_townhalls,
+            key=lambda t: t.position.distance_to(self.ai.start_location),
+        )
+        if not ths:
+            return None
+        enemies = [
+            (u.position.x, u.position.y)
+            for u in self.ai.enemy_units
+            if not u.is_structure and not u.is_flying and u.type_id not in workers
+        ]
+        target = fleet_recall_target(
+            [(th.position.x, th.position.y) for th in ths],
+            enemies,
+            min_threat=6,
+            radius=15.0,
+        )
+        if target is not None:
+            self._fleet_recall_target = Point2(target)
+            self._fleet_recall_until = now + 10.0
+            return self._fleet_recall_target
+        return None
+
+    def _base_intruder_target(self) -> Point2 | None:
+        """O217(司令观察):基地内残敌清剿 —— 大战后敌小股(1-5 个,如一条狗)
+        滞留我方基地拆建筑,现有回防通道(O205 空军召回/_hot_base_anchor,
+        阈值均 ≥6)不触发,守军锚点又不指向它,任由其拆光建筑。
+
+        敌作战单位(is_combat_type,排除王虫/侦查/运输/工人)在任一就绪基地
+        15 格内 1-5 个 → 攻击目标改为离基地最近的那个残敌位置(先清再推);
+        ≥6 走原有大波回防通道,返回 None。rush 急性窗(rush_active)不清剿
+        —— 坡口墙/守军不能为一条狗离位;transition 期照常(残敌已在墙内)。
+        """
+        _pm = getattr(self.ai, "production_manager", None)
+        if _pm is not None and getattr(_pm, "_rush_active", False):
+            return None
+        ths = list(self.ai.ready_townhalls)
+        if not ths:
+            return None
+        intruders = [
+            u
+            for u in self.ai.enemy_units
+            if not u.is_structure
+            and is_combat_type(u.type_id)
+            and any(u.position.distance_to(th.position) < 15 for th in ths)
+        ]
+        now = getattr(self.ai, "time", 0.0)
+        if 1 <= len(intruders) <= 5:
+            target = min(
+                intruders,
+                key=lambda u: min(u.position.distance_to(th.position) for th in ths),
+            )
+            # O226(o222-lane2 game_04 实证):无滞回时残敌进出 15 格/目标死亡
+            # 让 attack_target 每帧翻转,O217 激活 218 次,全军 yo-yo 磨死。
+            # 激活期每帧重算最近残敌(位置新鲜),消失后 3s 收尾才退出。
+            self._intruder_last_seen = now
+            self._intruder_last_target = target.position
+            return target.position
+        if (
+            self._intruder_last_seen is not None
+            and now - self._intruder_last_seen < 3.0
+            and self._intruder_last_target is not None
+        ):
+            return self._intruder_last_target
+        return None
+
     def _enemy_near_their_base(self) -> bool:
         """敌主力是否还在自己家附近（⑥择时 when_enemy_away：在家就等他出门再打）。
         多人：看的是**焦点敌人**的家。"""
@@ -390,16 +485,39 @@ class CombatManager(Manager):
                 if not e.is_structure
                 and e.type_id in self._HARD_AA
             )
+            _fleet_count: int = _carriers + _tempests
+            # O164/O195(o194-vh-zerg-rush game_01 实证):舰队成型后(航母+暴风 ≥8)
+            # 且游戏时间 >9 分钟仍蹲家 → 强制推进,不再等待 supply 优势。
+            # 原阈值 10 艘/10 分钟在 Rush 局优势顶点 9 艘不触发,导致被滚雪球。
+            # O227(o224-lane1 game_01 实证):Zerg Timing 舰队顶点只有 6 艘
+            # (气烂 1806 矿恒 <70,8 艘永远到不了),蹲 = 等敌 90 supply 滚平;
+            # Timing 阈值降到 6 艘,带塔/地面窗口期反打一波断敌运营。
+            _pm_o227 = getattr(self.ai, "production_manager", None)
+            _is_zerg_timing = (
+                _pm_o227 is not None
+                and getattr(_pm_o227, "_opp_race", "") == "zerg"
+                and getattr(_pm_o227, "_ai_build", "") == "timing"
+            )
+            _push_fleet_need = 6 if _is_zerg_timing else 8
+            # O241(0-30 回归排查):O232 的劣势闸让 bot 全程被动挨打,zerg 自由
+            # 运营到 2 倍兵力;回滚到舰队 6+t>540 即强推(两场胜局都是主动
+            # 压出去打的)。其他组合保持原判据不变。
+            _force_push: bool = (
+                _fleet_count >= _push_fleet_need
+                and getattr(self.ai, "time", 0.0) > 540.0
+            )
             if not (
                 (
-                    should_push_advantage(
+                    _force_push
+                    or should_push_advantage(
                         self.ai.supply_used - self.ai.supply_workers,
                         self.ai.production_manager._visible_enemy_army_supply(),
                         # O59(o58 实证):航母 ≥6(临界质量)后均势即推 —— 龟到对面
                         # 也满人口(98 supply)就是 max-vs-max 必输局;
                         # 趁我方舰队成型、对面未满(60-75 supply)时打。
                         # O60:临界线按舰队合计(航母+暴风 ≥8)
-                        margin=0.0 if (_carriers + _tempests) >= 8 else 15.0,
+                        # O227:临界线随 _push_fleet_need(Zerg Timing 6,其余 8)
+                        margin=0.0 if _fleet_count >= _push_fleet_need else 15.0,
                     )
                     # O70(司令观察,t≈1740 实证):接近满人口(≥95%)+存款充足
                     # (≥1500) → 全力进攻,跳过 supply 优势检查 —— 满人口攒不出
@@ -409,7 +527,7 @@ class CombatManager(Manager):
                         self.ai.supply_used, self.ai.supply_cap, self.ai.minerals
                     )
                 )
-                and carrier_push_safe(_carriers + _tempests, _hard_aa)
+                and carrier_push_safe(_fleet_count, _hard_aa)
             ):
                 # O63(game_01 实证):蹲守阶段基地被围攻(≥6) → 舰队回防热点基地。
                 # Power 的持续小队(10-18 地面)轮抄分矿,静态锚点蹲错位 → 基地被
@@ -492,13 +610,56 @@ class CombatManager(Manager):
             + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST),
             self._enemy_aa_count(),
         )
-        if (order.get("stance") is None and 0 < self._own_army_count() < _rally) or _aa_hold:
+        # O158:基地被压缩到 <2 个时舰队守家保经济——再丢基地=没收入,
+        # 舰队出门推导致分矿/主矿被抄是 O156/O157 长时败局的主因。
+        # O178(o176-vh-zerg-power-headless game_01 1800s 超时):2 基地且大舰队时
+        # 仍守家导致永远推不出去,被 AI 拖到超时;改为 <2 基地才强制守家。
+        # O195(o194-vh-zerg-rush game_01/03 实证):只剩 1 基地时若已有成型舰队,
+        # 继续强制守家会进入「丢基地→推不出去→被滚雪球」死循环。舰队 ≥8 且
+        # t>9min 时允许出门换家/抢回基地,而不是蹲家等死。
+        # O195:单基地且成型舰队时不再强制蹲家(计算口径同 O60:航母+暴风合计)
+        _fleet_now = (
+            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
+            + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+        )
+        _home_guard = (
+            order.get("stance") is None
+            and self.ai.townhalls.amount < 2
+            and not (_fleet_now >= 8 and getattr(self.ai, "time", 0.0) > 540.0)
+        )
+        if (
+            (order.get("stance") is None and 0 < self._own_army_count() < _rally)
+            or _aa_hold
+            or _home_guard
+        ):
             attack_target = self._defend_anchor()  # O37:守家攒兵蹲最暴露的基地
             self._push_committed = False  # O65:集结/对空攒兵期不算推进承诺
         else:
             attack_target = self.attack_target
         # B3 can_win_fight 接战刹车:模拟器判负 → 目标改为撤回主基地(只当一票否决)
         attack_target = self._apply_combat_sim_brake(attack_target)
+        # O217(司令观察):基地内残敌清剿 —— 大战后敌小股(1-5)滞留基地拆建筑,
+        # 攻击目标改为残敌位置,先清再推(≥6 的大波走 O205/_hot_base_anchor)。
+        _intruder = self._base_intruder_target()
+        if _intruder is not None:
+            if not self._intruder_cleanup_active:
+                self._intruder_cleanup_active = True
+                events = getattr(self.ai, "_events", None)
+                if events is not None:
+                    events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": "O217:基地残敌清剿(敌小股滞留基地拆建筑,先清再推)",
+                    })
+            attack_target = _intruder
+        else:
+            self._intruder_cleanup_active = False
+        # O219(司令观察):敌主力(≥6)压上任一基地 → 全军协防该基地(骚扰编制
+        # 如 oracle 不在本 manager 分派内,天然除外)。此前各分支锚点各自为政:
+        # 集结期/对空攒兵/蹲守 → 主基或最暴露分矿;transition → 坡口/两矿中点;
+        # 结果大波打二矿时只有空军回防(O205),地面守军蹲主基看戏,空军孤立阵亡、
+        # 二矿被推平。统一盖到所有分支(含 sim 刹车/残敌清剿)之后,主力优先。
+        if (hot_all := self._hot_base_anchor(min_threat=6)) is not None:
+            attack_target = hot_all
         # B6 Squad 化:主力 squad 中心做散兵归队锚点(拿不到 → None 降级现状)
         regroup_center = self._main_squad_center()
         # O148-②:防守战(rush/过渡/威胁)伤兵回撤点 —— 电池优先(能奶回来
@@ -523,6 +684,7 @@ class CombatManager(Manager):
                 _retreat_point = min(
                     _cover, key=lambda s: s.distance_to(self.ai.start_location)
                 ).position
+        _air_recall = self._air_fleet_recall_target()
         for spec in self._army.by_role("ATTACKING"):
             combat = self._combat_dispatch.get(spec.combat)
             if combat is None:
@@ -533,9 +695,15 @@ class CombatManager(Manager):
             if units := self.manager_mediator.get_units_from_role(
                 role=UnitRole.ATTACKING, unit_type=unit_id
             ):
+                # O205:空军基地遇袭回防 —— 仅对空军生效,地面仍按原 attack_target
+                _unit_attack_target = (
+                    _air_recall
+                    if _air_recall is not None and unit_id in self._FLEET_AIR_TYPES
+                    else attack_target
+                )
                 combat.execute(
                     units,
-                    attack_target=attack_target,
+                    attack_target=_unit_attack_target,
                     focus=order.get("focus"),        # ③焦点
                     maneuver=order.get("maneuver"),  # ④机动意图
                     regroup_center=regroup_center,   # B6 归队锚点(仅 generic 用,其余忽略)

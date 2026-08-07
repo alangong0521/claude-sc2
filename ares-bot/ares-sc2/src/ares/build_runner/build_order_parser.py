@@ -131,8 +131,10 @@ class BuildOrderParser:
             ),
             BuildOrderOptions.SUPPLY: lambda: BuildOrderStep(
                 command=self.ai.supply_type,
+                # O196:Protoss 建造序列派工时不查 can_afford,农民到建造点等钱
+                # (FORGE/PYLON/PHOTONCANNON 开局干等 3-20s),改成买得起才触发。
                 start_condition=lambda: self.ai.can_afford(self.ai.supply_type)
-                if self.ai.race == Race.Zerg
+                if self.ai.race in (Race.Zerg, Race.Protoss)
                 else self.ai.minerals >= 25,
                 end_condition=lambda: True
                 if self.ai.race == Race.Zerg
@@ -252,6 +254,15 @@ class BuildOrderParser:
                 end_condition=lambda: True,
             )
         else:
+            # O196:Protoss 建筑在买得起之前不派农民,避免 build runner 开局
+            # 把农民钉在 FORGE/PYLON/CANNON 建造点干等(等钱 3-20s)。
+            if self.ai.race == Race.Protoss:
+                return lambda: BuildOrderStep(
+                    command=structure_id,
+                    start_condition=lambda: self.ai.can_afford(structure_id),
+                    # set via on_structure_started hook
+                    end_condition=lambda: False,
+                )
             return lambda: BuildOrderStep(
                 command=structure_id,
                 start_condition=lambda: self.ai.minerals >= cost.minerals - _mineral

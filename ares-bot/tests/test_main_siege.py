@@ -55,16 +55,18 @@ class TestMainSiegeActive(unittest.TestCase):
 
 
 class TestShippedMainSiege(unittest.TestCase):
-    """需求3:全神族流派(carrier/tempest/stalker/dt)都配了 main_siege={12,25,4}。"""
+    """需求3:全神族流派都配了 main_siege;carrier 流因舰队矿吃紧单独压到 6 门,
+    其余流派保持 (12,25,2)。"""
 
     def test_all_flows_have_main_siege(self):
         _yaml_or_skip(self)
         for name in ("tempest", "stalker", "carrier", "dt"):
             fc = FlowConfig.load(name)
             self.assertIsNotNone(fc.main_siege, f"{name} 缺 main_siege 配置")
+            expected = MainSiege(6, 25.0, 2) if name == "carrier" else MainSiege(12, 25.0, 2)
             self.assertEqual(
-                fc.main_siege, MainSiege(12, 25.0, 2),
-                f"{name} main_siege 应为 (cannons=12, radius=25, threshold=4)",
+                fc.main_siege, expected,
+                f"{name} main_siege 应为 {expected}",
             )
 
 
