@@ -152,6 +152,7 @@ from bot.production_plans import (  # noqa: E402
     main_defense_first,
     unknown_verdict_defense,
     zerg_timing_unknown_floor,
+    zerg_timing_expand_allowed,
     fb_gate_f2_exempt_zt,
     wall_disabled_after,
     wall_escort_needed,
@@ -2774,6 +2775,19 @@ class TestO133TimingDefense(unittest.TestCase):
         self.assertTrue(fb_gate_f2_exempt_zt(True, False))
         self.assertFalse(fb_gate_f2_exempt_zt(True, True))
         self.assertFalse(fb_gate_f2_exempt_zt(False, False))
+
+    def test_zerg_timing_expand_allowed(self):
+        # O263-①:t<320 → 不开;t≥320 且家无敌且分矿点无敌 → 放行;
+        # 敌进家/敌踩分矿点 → 不开;首舰已出/t≥620 硬门原样
+        self.assertFalse(zerg_timing_expand_allowed(True, False, 250, 0, 0))
+        self.assertFalse(zerg_timing_expand_allowed(True, False, 300, 0, 0))
+        self.assertTrue(zerg_timing_expand_allowed(True, False, 320, 0, 0))
+        self.assertFalse(zerg_timing_expand_allowed(True, False, 400, 2, 0))
+        self.assertFalse(zerg_timing_expand_allowed(True, False, 400, 0, 1))
+        self.assertTrue(zerg_timing_expand_allowed(True, True, 400, 2, 1))
+        self.assertTrue(zerg_timing_expand_allowed(True, False, 620, 0, 0))
+        # 非 ZT 不受影响
+        self.assertTrue(zerg_timing_expand_allowed(False, False, 100, 0, 0))
 
     def test_rush_blocks_reserve(self):
         # O151-①:rush 但家 40 格无敌(波间隙)→ 不挡攒钱预留;

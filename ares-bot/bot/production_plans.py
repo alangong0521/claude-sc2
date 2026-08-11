@@ -543,6 +543,34 @@ def evacuation_clear(enemy_ground_near: int, clear_below: int = 2) -> bool:
     return enemy_ground_near < clear_below
 
 
+def worker_last_stand(
+    enemy_ground_near: int,
+    cannons_near: int,
+    ready_townhalls: int,
+    threat_or_rush: bool,
+    overwhelm_base: int = 6,
+    overwhelm_per_cannon: int = 4,
+) -> bool:
+    """O256-①(o255 双 lane 0-9 尸检):主基决死协防判据。纯逻辑,可单测。
+
+    o255 全 9 局同一死因:280-350s 波(9 蟑螂+11 狗 ~20 单位)进主基,
+    E6 被两道闸挡死(rush 期主基不撤 + 单基地无处可撤 target=None),
+    22-26 农民白死(每局 →5-10),经济断气。算账:22 农民(≈100dps)
+    + 4 塔(64dps)对 9 蟑螂是赢面,白死才是输面 —— 塔已被压垮
+    (≥overwhelm)且无处可撤时,农民拉去塔下协战比站着被屠强。
+    只在「就绪基地 ≤1(无处可撤)+ 有塔可依 + 急性窗(rush/threat)
+    + 敌地面达压垮线」四条件同时成立时触发;多基地局走 E6 撤离(更稳),
+    非急性窗不扰动运营。
+    """
+    return (
+        threat_or_rush
+        and ready_townhalls <= 1
+        and cannons_near >= 1
+        and enemy_ground_near
+        >= overwhelm_base + overwhelm_per_cannon * cannons_near
+    )
+
+
 def pick_evacuation_base(raided_pos, candidates):
     """E6：撤离目标基地选择。纯逻辑，可单测。
 
@@ -2293,6 +2321,32 @@ def fb_gate_f2_exempt_zt(is_zerg_timing: bool, sg_ready: bool) -> bool:
     解锁 → SG 提前 ~50s。SG 就绪后(FB 窗真实存在)闸恢复原语义。
     """
     return is_zerg_timing and not sg_ready
+
+
+def zerg_timing_expand_allowed(
+    is_zerg_timing: bool,
+    first_fleet_seen: bool,
+    now: float,
+    enemy_home: int,
+    enemy_near_natural: int,
+    at: float = 320.0,
+    hard_gate: float = 620.0,
+) -> bool:
+    """O258-①/O262-①/O263-①:ZT 二矿窗判据(防御驱动)。纯逻辑,可单测。
+
+    O247/O250 的「首舰前 t<620 不开二矿」把二矿落成压到 518-671s ——
+    O236 胜负对照「二矿 ≤400s=胜、≥500s=负」全落在负侧。
+    O258(t≥340+非威胁):threat 首波后常驻,闸整局不开(o261a-g01 单矿 900s)。
+    O262(t≥260+去 threat):260s 强开把建筑期 Nexus 拍进波的行进路线
+    (o262a-g02:293s 落 309s 被拆,白捐 400,主基防钱同空)——窗太早。
+    O263:t≥320(首波 305-320s 到脸、被塔阵接住的时点之后) + 家 40 格无敌
+    + **分矿点 35 格无敌**(波次路径不再踩分矿) 三条件;首舰/t≥620 硬门原样。
+    """
+    if not is_zerg_timing:
+        return True
+    if first_fleet_seen or now >= hard_gate:
+        return True
+    return now >= at and enemy_home == 0 and enemy_near_natural == 0
 
 
 def unknown_verdict_defense(

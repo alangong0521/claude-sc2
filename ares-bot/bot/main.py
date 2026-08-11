@@ -18,6 +18,7 @@ from bot.production_plans import (
     scout_next_step,
     should_evacuate_workers,
     should_release_waiting_builder,
+    worker_last_stand,
 )
 from bot.shield_battery import restore_with_batteries
 from bot.selftune import SelfTuner
@@ -332,6 +333,129 @@ def update_worker_evacuation(ai) -> None:
         }
 
 
+# 决死协防农民挂 CONTROL_GROUP_TWO(与 E6 撤离的 CONTROL_GROUP_ONE 互斥,
+# ares 无消费者):Mining/idle 清扫/建造派工都不碰,敌退后归 GATHERING 重上岗。
+_LAST_STAND_ROLE = UnitRole.CONTROL_GROUP_TWO
+# O256-③:决死协防的塔覆盖口径比 E6 宽 —— 坡口塔距 Nexus 常 >9 格
+# (o256a game_03:塔 3 座在坡口,9 格口径判 0 塔 → 协防没触发,农民白死),
+# 18 格 ≈ 主基矿区+坡口全域,塔在坡口开火时农民在矿线协战仍吃塔输出。
+_LAST_STAND_COVER: float = 18.0
+
+
+def update_worker_last_stand(ai) -> None:
+    """O256-①(o255 双 lane 0-9 尸检):主基决死协防 —— 无处可撤的农民不再白死。
+
+    o255 全 9 局同一死因:280-350s 波(如 9 蟑螂+11 狗)进主基,E6 被两道闸
+    挡死(rush 期主基不撤 + 单基地 target=None 无处可撤),22-26 农民保持
+    采矿被逐个屠掉(每局 →5-10),经济断气后 FB/舰队/扩张全停。算账:22 农民
+    (≈100dps)+4 塔(64dps)对 9 蟑螂是赢面,站着被屠才是输面。
+
+    触发(纯判据 production_plans.worker_last_stand):急性窗(rush/threat)+
+    就绪基地 ≤1(无处可撤)+ 矿区有就绪塔可依 + 敌地面达压垮线(6+4×塔数)。
+    动作:GATHERING 农民(跳过建造 tracker/司令接管/E6 撤离中)拉去攻击离
+    主基最近的敌地面单位,role 归 _LAST_STAND_ROLE。
+    退出:敌地面 <2(与 E6 同滞回口径)或基地丢失 → 全员归 GATHERING 回采。
+    多基地局不触发(E6 撤离更稳);非急性窗不扰动运营。
+    纯操作函数,判据可单测。"""
+    stand: set[int] = ai._last_stand
+    worker_types = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+    ready_ths = [t for t in ai.townhalls if t.is_ready]
+    main_th = (
+        min(ready_ths, key=lambda t: t.position.distance_to(ai.start_location))
+        if ready_ths
+        else None
+    )
+
+    def _enemy_ground_near(pos) -> int:
+        return sum(
+            1
+            for u in ai.enemy_units
+            if not u.is_structure
+            and not u.is_flying
+            and u.type_id not in worker_types
+            and u.position.distance_to(pos) < _EVAC_RADIUS
+        )
+
+    # —— 退出维护:敌退/基地丢 → 回采;战死/被接管 → 出账 ——
+    anchor = main_th.position if main_th is not None else ai.start_location
+    if stand and (main_th is None or evacuation_clear(_enemy_ground_near(anchor))):
+        returned = 0
+        for tag in list(stand):
+            w = next((x for x in ai.workers if x.tag == tag), None)
+            if w is None or tag in ai._player_ctrl:
+                stand.discard(tag)
+                continue
+            ai.mediator.assign_role(tag=tag, role=UnitRole.GATHERING)
+            if ai.mineral_field:
+                w.gather(ai.mineral_field.closest_to(w))
+            stand.discard(tag)
+            returned += 1
+        if returned:
+            ai._events.append(
+                {"t": round(ai.time, 1), "msg": f"O256:敌退,{returned}协防农民回采"}
+            )
+    if main_th is None:
+        stand.clear()
+        return
+    # 战死者出账(每帧顺带清,防 tag 滞留)
+    for tag in list(stand):
+        if not any(w.tag == tag for w in ai.workers):
+            stand.discard(tag)
+
+    # —— 触发判定 ——
+    n = _enemy_ground_near(main_th.position)
+    cannons = sum(
+        1
+        for s in ai.structures
+        if s.type_id in _STATIC_DEFENCE
+        and s.is_ready
+        and s.position.distance_to(main_th.position) <= _LAST_STAND_COVER
+    )
+    pm = ai.production_manager
+    if not worker_last_stand(
+        n,
+        cannons,
+        len(ready_ths),
+        threat_or_rush=(
+            pm.rush_active or getattr(pm, "_threat_active", False)
+        ),
+    ):
+        return
+    enemies = [
+        u
+        for u in ai.enemy_units
+        if not u.is_structure
+        and not u.is_flying
+        and u.type_id not in worker_types
+        and u.position.distance_to(main_th.position) < _EVAC_RADIUS
+    ]
+    if not enemies:
+        return
+    tracker = ai.mediator.get_building_tracker_dict
+    gathering = set(ai.mediator.get_unit_role_dict[UnitRole.GATHERING])
+    pulled = 0
+    for w in ai.workers:
+        if w.tag in stand or w.tag not in gathering:
+            continue
+        if w.tag in tracker or w.tag in ai._player_ctrl:
+            continue
+        ai.mediator.assign_role(tag=w.tag, role=_LAST_STAND_ROLE)
+        w.attack(min(enemies, key=lambda e: e.position.distance_to(w.position)))
+        stand.add(w.tag)
+        pulled += 1
+    # 已在协战但闲置(目标死了/命令断)的农民补刀最近敌
+    for tag in list(stand):
+        w = next((x for x in ai.workers if x.tag == tag), None)
+        if w is None or not w.is_idle:
+            continue
+        w.attack(min(enemies, key=lambda e: e.position.distance_to(w.position)))
+    if pulled:
+        ai._events.append({
+            "t": round(ai.time, 1),
+            "msg": f"O256:主基决死协防(敌{n}地面,塔{cannons}),拉{pulled}农民塔下协战",
+        })
+
+
 # 人机共驾：司令一旦亲手操作某单位，bot 让权 N 游戏秒；期间不再自动指挥它，
 # N 秒内没有新手操 → 自动收回控制权。停放在 PERSISTENT_BUILDER（"不自动重指派"）role，
 # combat/oracle/mining 都按 role 选单位，自然全部跳过它；唯一例外是 ares
@@ -431,6 +555,8 @@ class MyBot(AresBot):
             pass  # 调参失败不挡开局
         # E6 农民被抄转移:被抄基地 th_tag -> {"pos","target","workers"}(撤离台账)
         self._evac_bases: dict[int, dict] = {}
+        # O256-①:决死协防农民账(tag 集;update_worker_last_stand 全权维护)
+        self._last_stand: set[int] = set()
         # O162:每局重置开局自动 scout 标记
         self._auto_scout_done = False
         # O19 idle_builder 检测:tag -> [干等起点时间, 本 episode 已发过事件]
@@ -458,6 +584,10 @@ class MyBot(AresBot):
         # 放在 production 之后:rush_active 是本帧最新;role 改动先于 _after_step
         # 的 Mining 执行生效,不会与 Mining 抢命令。
         update_worker_evacuation(self)
+        # O256-①:主基决死协防(E6 两道闸都挡死的场景:rush 期主基+单基地
+        # 无处可撤 → 农民拉去塔下协战,不再站着被屠)。E6 之后跑:撤离优先,
+        # 无处可撤才协战。
+        update_worker_last_stand(self)
         # O39:敌主力盘踞的矿线摘掉农民资源指派(基地被推平后持旧指派回流送死),
         # 1s 节流;摘除后 ResourceManager 把人重派到活着基地
         if self.time - self._last_contested_scan >= 1.0:

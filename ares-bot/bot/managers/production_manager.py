@@ -172,6 +172,7 @@ from bot.production_plans import (
     tower_zone_pylon_needed,
     unknown_verdict_defense,
     zerg_timing_unknown_floor,
+    zerg_timing_expand_allowed,
     upgrade_tech_buildings,
     wall_disabled_after,
     wall_escort_needed,
@@ -878,7 +879,15 @@ class ProductionManager(Manager):
         # O255-②(o254 尸检):unknown 保守防御(t≥200)同样武装 —— presumed
         # 在 verdict=unknown 落地(~80s)即解除,Timing 波 280-310 到脸时墙后
         # 站位/堵缝全黑,狗群直穿矿线屠农(o254a game_03/04:25→6)。
-        _wall = self._wall_slots()
+        # O258-②:ZT unknown 窗 force 重开墙槽(O138 关断只针对 rush 早期窗),
+        # 武装/封口判定/建造链才能拿到槽位数据。
+        _wall = self._wall_slots(
+            force=(
+                self._opp_race == "zerg"
+                and self._ai_build == "timing"
+                and _unknown_defense
+            )
+        )
         if _wall is not None and (
             self._rush_confirmed or _presumed_rush or _unknown_defense
         ):
@@ -1330,6 +1339,26 @@ class ProductionManager(Manager):
         )
         if _presumed_manual:
             await self._presumed_defense_chain()
+        # O257-①(o256 双 lane 0-10 尸检):ZT unknown 窗(verdict=unknown,
+        # t≥200)坡口墙造到封口为止 —— presumed 在 ~80s 解除后墙链停摆,
+        # 死窗波(9蟑螂+11狗,~30 supply,305-320s 到脸)无墙可挡,塔/叉/追猎
+        # 全组合实测守不住(o252-o256 累计 0-38)。物理封口 + 塔/电池墙后
+        # 输出是 rush 局已验证的解;波到脸(threat)即停工转防守。
+        # O257-① 墙链已于 O261-② 再次关断(o258/o260 双系列实证):墙 400 矿
+        # (水晶/GW/forge 上墙)在 261-330s 资金窗挤死塔3与 SG,封口也从未在
+        # 波前(305-320s)完成 —— 墙在 ZT 死窗同样不成立,非只 rush 早期窗。
+        # 代码保留备查(_wall_build_chain/_wall_slots force 通道原样)。
+        if False and (  # noqa: SIM115 — 关断备查,勿删(见上行尸检证据)
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and _unknown_defense
+            and not _presumed_manual
+            and not self._threat_active
+            and self._structure_present_or_pending(UnitID.STARGATE)
+            and self._wall_slots(force=True) is not None
+            and not self._wall_sealed
+        ):
+            self._wall_build_chain(self.ai.start_location, force=True)
         # O179/O181:舰队总规模(就绪+在建)在 F2 注册判断与塔目标分支都要读,
         # 提到 if 链之前,避免 UnboundLocalError 并减少重复计算。
         _fleet_total_now = (
@@ -1550,7 +1579,20 @@ class ProductionManager(Manager):
             elif _unknown_defense:
                 # O133-③:unknown 判决保守防御 —— presumed 同级但 target 2 塔
                 # (200s 的 unknown ≠ 65s 的 unknown,timing 波 273 必来)
-                cannons = 2
+                # O256-②(o255b game_02 实证):2 塔接不住 9 蟑螂+11 狗 ——
+                # 塔3/塔4 在波到脸后(329-333s)才拍下,建造期被拆;ZT unknown
+                # 窗目标 2→3,第三座塔在 ~280s 就绪,波到脸是 3 座成型塔。
+                # O260-③:第三座塔同样让 SG 先派工(舰队科技优先,o259b-g01
+                # 防御超支饿死 SG 实证);SG 在途/就绪后补。
+                cannons = (
+                    3
+                    if (
+                        self._opp_race == "zerg"
+                        and self._ai_build == "timing"
+                        and self._structure_present_or_pending(UnitID.STARGATE)
+                    )
+                    else 2
+                )
             elif _presumed_rush:
                 # O98-②:疑似 rush 节制版 —— forge+1 塔先立(PSD 自动补 forge),
                 # 不多铺(贪心局只亏 1 塔钱);rush/threat 分支优先于本分支。
@@ -1653,6 +1695,17 @@ class ProductionManager(Manager):
             ):
                 batt = min(batt, 1)
                 _batt_psd = 0 if self._flow.transition is not None else batt
+            # O256-③(o255b game_02 实证):ZT unknown 防御窗电池 1→2 —— 9 蟑螂
+            # 集火 6s 一座塔,单电池奶不住;双电池互充+奶塔把塔存活拉长 ~3 倍,
+            # 给决死协防的农民/叉子换输出时间。100 矿出自死窗期 1300+ 银行。
+            # O260-③:第二块电池同样让 SG 先派工(舰队科技优先)。
+            if (
+                _unknown_defense
+                and self._opp_race == "zerg"
+                and self._ai_build == "timing"
+                and self._structure_present_or_pending(UnitID.STARGATE)
+            ):
+                batt = max(batt, 2)
             # O102-②/O132-②:过渡期塔封顶(cap=3)—— 第 4+ 座塔的钱
             # 换叉;cap=2 时 timing 波稳定穿防(o131 实证)
             cannons = transition_cannon_cap(cannons, self._transition_active)
@@ -2445,17 +2498,81 @@ class ProductionManager(Manager):
                         "msg": f"O239:气烂银行点航母(气={self.ai.vespene:.0f})",
                     })
                     break
-        # O251(o250-lane1 game_02 实证):硬饱和(农民 ≥16×基地+8)触发开矿但
-        # Nexus 因矿恒 <475(dispatch_viable buffer)永远排不出,2 基地 44 农封顶
-        # 被慢性磨死。硬饱和时对最近空闲扩张点钉点派 Nexus(驻点等钱,与
-        # SG/FB/robo 同款),三矿真正把饱和农民变成收入。
+        # O260-②(o259b-g02 实证):航母买不起(矿恒 <350)但暴风买得起且气
+        # ≥500 → 空闲星门先点暴风。save_up 截断(航母占比落后只留航母)把
+        # 星门押给永远凑不齐的 350 矿,气 1000+ 烂 300s 只产 1 暴风 1 航母;
+        # 舰队数量 > 完美配比,暴风落地即战力。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and 2 <= self.ai.townhalls.amount < 5
+            and self.ai.vespene >= 500.0
+            and self._fb_entities_now > 0
+            and not self.ai.can_afford(UnitID.CARRIER)
+            and self.ai.can_afford(UnitID.TEMPEST)
+        ):
+            for _sg in self.manager_mediator.get_own_structures_dict[
+                UnitID.STARGATE
+            ]:
+                if _sg.is_ready and _sg.is_idle:
+                    _sg.train(UnitID.TEMPEST)
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": f"O260:气烂点暴风兜底(气={self.ai.vespene:.0f})",
+                    })
+                    break
+        # O261-①(o224 胜局编配实证 + o254-o260 累计 0-58 死窗尸检):ZT 直爬
+        # SG 就绪(261-281s)→FB 就绪(~385s)之间星门空转 100s+,而死窗波
+        # (9蟑螂+11狗)零对空 —— 虚空(仅需 SG)是死窗唯一的真实战力:
+        # 2 艘虚空 ~20dps 无战损点杀蟑螂,o224 首胜编配里就有 3 虚空。
+        # FB 就绪即停(舰队科技接管星门),最多 2 艘(300/200,不抢 FB 窗)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self._fb_entities_now == 0
+            and not self._structure_present_or_pending(UnitID.FLEETBEACON)
+            and (
+                self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.VOIDRAY)
+                + cy_unit_pending(self.ai, UnitID.VOIDRAY)
+            ) < 2
+            and self.ai.can_afford(UnitID.VOIDRAY)
+        ):
+            for _sg in self.manager_mediator.get_own_structures_dict[
+                UnitID.STARGATE
+            ]:
+                if _sg.is_ready and _sg.is_idle:
+                    _sg.train(UnitID.VOIDRAY)
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": "O261:死窗虚空(FB 前星门不空转)",
+                    })
+                    break
+        # Nexus 因矿恒 <475(dispatch_viable buffer)永远排不出,2 基地 44 农封顶
+        # 被慢性磨死。硬饱和时对最近空闲扩张点钉点派 Nexus(驻点等钱,与
+        # SG/FB/robo 同款),三矿真正把饱和农民变成收入。
+        # O262-②(o261 双 lane 0-10 尸检,复盘 one_base×5):钉点开矿从三矿
+        # 起(2<=bases)扩到首扩(1<=bases)——单矿硬饱和(≥24 农)时同样钉点,
+        # 治「主闸已放行但 Nexus 排不出/被波次打断」。
+        # O262-③:钉点派工加近可负担门(矿 ≥350)——驻点等钱从 100s+ 压到
+        # <10s,暴露窗与 idle_builder 等钱同步收敛(o261a-g01 两次钉点
+        # 各等 100s+ 被波次打断)。
+        # O263-②:首扩钉点叠加「320s 窗 + 分矿点无敌」——O262-② 的无窗首扩
+        # 钉点会把 Nexus 拍进首波行进路线(o262a-g02 白捐 400 实证);
+        # 多矿钉点(o251 原场景)行为不变。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and 1 <= self.ai.townhalls.amount < 5
             and self.ai.supply_workers >= 16 * self.ai.townhalls.amount + 8
             and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) == 0
             and not self._rush_active
+            and self.ai.minerals >= 350.0
+            and (
+                self.ai.townhalls.amount >= 2
+                or (
+                    self.ai.time >= 320.0
+                    and self._zt_enemy_near_natural() == 0
+                )
+            )
         ):
             _free_exp = [
                 el
@@ -2485,10 +2602,13 @@ class ProductionManager(Manager):
         # O245d(o245-lane2 game_03 实证):波次连续时 transition 常驻不退出,
         # _fleet_transitioned 永假 → robo 整局不排(本局 1354s robo=0)。
         # 加时间旁路:转舰队 或 t≥360 且敌地面 ≥6 即排。
+        # O257-②(o256 尸检):360s 太晚 —— 波 305-315s 已可见(敌地面 ≥6),
+        # 360 才排 → 首不朽 ~450s,波 2-6(350-660s 连续)已把经济磨穿;
+        # 降到 280(敌地面 ≥6 前提不变,无形早排风险)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and (self._fleet_transitioned or self.ai.time >= 360.0)
+            and (self._fleet_transitioned or self.ai.time >= 280.0)
             and self._visible_enemy_army_count() >= 6
             and not self._structure_present_or_pending(UnitID.ROBOTICSFACILITY)
         ):
@@ -2751,7 +2871,7 @@ class ProductionManager(Manager):
     # 墙链/墙后站位/农民堵缝全由此取 None 回退 o135 行为;重开实验翻 True
     _WALL_ENABLED: bool = False
 
-    def _wall_slots(self) -> tuple | None:
+    def _wall_slots(self, force: bool = False) -> tuple | None:
         """O136-①:主坡墙位簿记 = (墙位水晶点, [3x3 墙槽×2], 墙缝点)。
 
         读 burnysc2 Ramp 的 protoss_wall_pylon/protoss_wall_buildings/
@@ -2763,8 +2883,12 @@ class ProductionManager(Manager):
         O138(o136b/o137 两系列 0-10,avg 231-233 远差于 o135 基线 570-640):
         坡口墙实验整体证伪 —— 墙派工(水晶→GW→forge 串行+等电窗)拖累
         防链,两轮修复没救回。默认关断(代码保留备查,重开= _WALL_ENABLED
-        翻 True);protoss_builds.yml 的 '12 gateway' 开局独立有效,不受影响。"""
-        if not self._WALL_ENABLED:
+        翻 True);protoss_builds.yml 的 '12 gateway' 开局独立有效,不受影响。
+        force(O258-②):O138 关断针对的是 rush 早期窗(55-150s 墙派工抢
+        forge/首塔钱);ZT unknown 窗(t≥200,银行 1300+,threat 即停工)是
+        不同的经济上下文,调用方传 force=True 局部重开,_WALL_ENABLED
+        保持 False 不动 O138 语义。"""
+        if not (self._WALL_ENABLED or force):
             return None
         if self._wall_disabled:
             return None
@@ -2887,6 +3011,69 @@ class ProductionManager(Manager):
             return True
         return False
 
+    def _wall_build_chain(self, home, force: bool = False) -> bool:
+        """O136-①/O257 抽取:坡口墙建造链(墙位水晶 → GW 上墙 → forge 上墙)。
+
+        True = 墙工在途/等钱(调用方串行返回,一次只推进一步);
+        False = 无墙槽 或 三件已在墙(调用方继续后续链)。
+        物理封口后狗群进不来,叉/塔竞速(差 1-2s 的硬币)整个家族被消灭。
+        runner 的 '12 gateway' 若抢先落普通槽不冲突 —— rush 局 GW2 本来
+        就要(③b cap 3),max_on_route=2 不被它在途占住。
+        force(O258-②):透传 _wall_slots 的局部重开(ZT unknown 窗)。
+        """
+        wall = self._wall_slots(force=force)
+        if wall is None:
+            return False
+        _pylon_pos, _slots, _gap = wall
+        # O137-①:墙槽在途超 30s 未开工(驻车干等)→ 放人回落普通槽
+        for _wsid in (UnitID.PYLON, UnitID.GATEWAY, UnitID.FORGE):
+            self._wall_release_stalled(_wsid, [_pylon_pos] if _wsid == UnitID.PYLON else _slots)
+        # ① 墙位供电水晶(墙两件没电起不来;水晶自身即电源 needs_power=False)
+        # O137-①②:can_afford 守卫(无钱不派工不驻车)+ 失败取证/30s 回落
+        if UnitID.PYLON not in self._wall_fallback and (
+            sum(
+                1 for s in self.ai.structures
+                if s.type_id == UnitID.PYLON
+                and s.position.distance_to(_pylon_pos) < 3.0
+            )
+            + self._pending_near(UnitID.PYLON, _pylon_pos)
+        ) == 0:
+            if not self.ai.can_afford(UnitID.PYLON):
+                return True  # 无钱:等下帧(原链各步自带守卫,同样无米下锅)
+            self._wall_track(
+                UnitID.PYLON,
+                self._dispatch_structure(
+                    UnitID.PYLON, home,
+                    closest_to=_pylon_pos, needs_power=False, wall=True,
+                ),
+            )
+            return True
+        # ② GW 上墙(血厚墙件;在普通槽的 runner GW 不算数)
+        if UnitID.GATEWAY not in self._wall_fallback and not self._on_wall(
+            _slots, UnitID.GATEWAY
+        ):
+            if not self.ai.can_afford(UnitID.GATEWAY):
+                return True
+            self._wall_track(
+                UnitID.GATEWAY,
+                self._dispatch_structure(
+                    UnitID.GATEWAY, home, wall=True, max_on_route=2
+                ),
+            )
+            return True
+        # ③ forge 上墙(第二墙件;墙两件+缝 = 物理封口,只漏 1 格单位缝)
+        if UnitID.FORGE not in self._wall_fallback and not self._on_wall(
+            _slots, UnitID.FORGE
+        ):
+            if not self.ai.can_afford(UnitID.FORGE):
+                return True
+            self._wall_track(
+                UnitID.FORGE,
+                self._dispatch_structure(UnitID.FORGE, home, wall=True),
+            )
+            return True
+        return False
+
     async def _presumed_defense_chain(self) -> None:
         """O118-①/O127-①/O129:presumed/冲刺窗防御链手动版,不走 PSD。
 
@@ -2896,61 +3083,10 @@ class ProductionManager(Manager):
         交还 F2 正常防御链(调用方条件保证)。
         """
         home = self.ai.start_location
-        # O136-①:坡口墙链(速骰真人标准解)—— 墙位水晶 → GW 上墙 → forge
-        # 上墙,三件在途/落地后落回原链(首塔起)。物理封口后狗群进不来,
-        # 叉/塔竞速(差 1-2s 的硬币)整个家族被消灭。runner 的 '12 gateway'
-        # 若抢先落普通槽不冲突 —— rush 局 GW2 本来就要(③b cap 3),
-        # max_on_route=2 不被它在途占住
-        wall = self._wall_slots()
-        if wall is not None:
-            _pylon_pos, _slots, _gap = wall
-            # O137-①:墙槽在途超 30s 未开工(驻车干等)→ 放人回落普通槽
-            for _wsid in (UnitID.PYLON, UnitID.GATEWAY, UnitID.FORGE):
-                self._wall_release_stalled(_wsid, [_pylon_pos] if _wsid == UnitID.PYLON else _slots)
-            # ① 墙位供电水晶(墙两件没电起不来;水晶自身即电源 needs_power=False)
-            # O137-①②:can_afford 守卫(无钱不派工不驻车)+ 失败取证/30s 回落
-            if UnitID.PYLON not in self._wall_fallback and (
-                sum(
-                    1 for s in self.ai.structures
-                    if s.type_id == UnitID.PYLON
-                    and s.position.distance_to(_pylon_pos) < 3.0
-                )
-                + self._pending_near(UnitID.PYLON, _pylon_pos)
-            ) == 0:
-                if not self.ai.can_afford(UnitID.PYLON):
-                    return  # 无钱:等下帧(原链各步自带守卫,同样无米下锅)
-                self._wall_track(
-                    UnitID.PYLON,
-                    self._dispatch_structure(
-                        UnitID.PYLON, home,
-                        closest_to=_pylon_pos, needs_power=False, wall=True,
-                    ),
-                )
-                return
-            # ② GW 上墙(血厚墙件;在普通槽的 runner GW 不算数)
-            if UnitID.GATEWAY not in self._wall_fallback and not self._on_wall(
-                _slots, UnitID.GATEWAY
-            ):
-                if not self.ai.can_afford(UnitID.GATEWAY):
-                    return
-                self._wall_track(
-                    UnitID.GATEWAY,
-                    self._dispatch_structure(
-                        UnitID.GATEWAY, home, wall=True, max_on_route=2
-                    ),
-                )
-                return
-            # ③ forge 上墙(第二墙件;墙两件+缝 = 物理封口,只漏 1 格单位缝)
-            if UnitID.FORGE not in self._wall_fallback and not self._on_wall(
-                _slots, UnitID.FORGE
-            ):
-                if not self.ai.can_afford(UnitID.FORGE):
-                    return
-                self._wall_track(
-                    UnitID.FORGE,
-                    self._dispatch_structure(UnitID.FORGE, home, wall=True),
-                )
-                return
+        # O136-①:坡口墙链(O257 起抽为 _wall_build_chain, presumed 链与
+        # ZT unknown 窗共用);True=墙工在途/等钱,调用方串行返回
+        if self._wall_build_chain(home):
+            return
         # O168:8 农民开局 carrier 核心科技(CYBERNETICCORE/STARGATE/FLEETBEACON)
         # 缺失期间，presumed 链连 forge 一起跳过，把 150 矿留给科技链。
         # 真实 rush 局 _rush_active 为真 → _early_core_missing 为假 → 链正常走。
@@ -4455,6 +4591,12 @@ class ProductionManager(Manager):
                         )
                     )
                     _cap2 = max(_cap2, 12 if _fleet_now_o246 < 8 else 8)
+                    # O260-①(o259b-g02 实证):气烂 ≥600 说明瓶颈是矿不是气,
+                    # 12 追猎(1500 矿)波灭即重建,把航母(350 矿)的资金窗
+                    # 磨没(舰队 750-1050s 卡 2-3,气 1000+ 恒在)。气烂时
+                    # 追猎核收到 4,矿让给舰队。
+                    if self.ai.vespene >= 600.0:
+                        _cap2 = min(_cap2, 4)
                 spawn = pre_fleet_spawn(
                     spawn,
                     floor_id=uid2,
@@ -4571,6 +4713,31 @@ class ProductionManager(Manager):
             )
         )
 
+    def _zt_enemy_near_natural(self) -> int:
+        """O263-①:最近的空闲扩张点 35 格内敌作战单位数(波次路径踩点检查)。
+
+        无空闲扩张点 → 0(不挡开矿闸,反正也开不了)。
+        O263b(o263a 两局 ERROR 实证):基地死光后 townhalls 为空,
+        min() 空序列炸 ValueError 整局崩 —— 空列表守卫。"""
+        if not self.ai.townhalls:
+            return 0
+        free = [
+            el
+            for el in self.ai.expansion_locations_list
+            if not self.ai.townhalls.closer_than(5.0, el)
+        ]
+        if not free:
+            return 0
+        nat = min(
+            free,
+            key=lambda el: min(el.distance_to(th) for th in self.ai.townhalls),
+        )
+        return sum(
+            1 for u in self.ai.enemy_units
+            if not u.is_structure and is_combat_type(u.type_id)
+            and u.position.distance_to(nat) < 35
+        )
+
     def _want_dynamic_expand(self) -> bool:
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
@@ -4598,11 +4765,23 @@ class ProductionManager(Manager):
         # 经济永远起不来;改舰队先行 —— 首舰(Tempest)出场前不开二矿,
         # 舰队掩护下再扩(600s 前后),单矿期矿全给塔/地面/舰队科技。
         # 本门在 O189 强开上游,首舰前 O189 同步不触发(语义一致)。
-        if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
-            and not self._first_fleet_seen()
-            and self.ai.time < 620.0
+        # O258-①(o257 双 lane 0-10 尸检):O255-O257 后死窗/波 2-6 可守,
+        # 闸改防御驱动(zerg_timing_expand_allowed):t≥340 且非急性窗即放行,
+        # 不等首舰 —— O236 对照「二矿 ≤400s=胜、≥500s=负」,原闸把落成压到
+        # 518-671s 全在负侧(单矿 22-24 农养不起航母海,舰队 2-3 封顶被磨死)。
+        # O262-①(o261 双 lane 0-10 尸检):threat 首波后几乎常驻,闸整局不开
+        # (o261a-g01 单矿到 900s);窗提前到 260s 且去 threat 条件(波打主基
+        # 正是分矿空窗),家 40 格有敌仍不开。
+        if not zerg_timing_expand_allowed(
+            self._opp_race == "zerg" and self._ai_build == "timing",
+            self._first_fleet_seen(),
+            self.ai.time,
+            sum(
+                1 for u in self.ai.enemy_units
+                if not u.is_structure and is_combat_type(u.type_id)
+                and u.position.distance_to(self.ai.start_location) < 40
+            ),
+            self._zt_enemy_near_natural(),
         ):
             return False
         ae = self._flow.auto_expand
@@ -5434,7 +5613,19 @@ class ProductionManager(Manager):
                         or _timing_fb_gate
                     )
                 ):
-                    await self._build_core_structure(UnitID.FLEETBEACON)
+                    # O259(o258 双 lane 0-10 尸检):ZT 直爬路线 FB 帧级抢钱
+                    # 连败 —— game_02:FB 380s 起派,no_money 反复,667s 才落
+                    # (Nexus/塔/农民每帧抽走 300 矿窗),首舰拖到 788s。
+                    # O228 的钉点派工(驻点等钱=钱到立刻开工)从重建窗扩到
+                    # ZT 直爬;威胁让位闸(threat/rush)不变。
+                    if self._opp_race == "zerg" and self._ai_build == "timing":
+                        self._dispatch_structure(
+                            UnitID.FLEETBEACON,
+                            self.ai.start_location,
+                            critical=True,
+                        )
+                    else:
+                        await self._build_core_structure(UnitID.FLEETBEACON)
             else:
                 await self._build_core_structure(structure_id)
 
@@ -5860,11 +6051,19 @@ class ProductionManager(Manager):
             # O250(o249-lane game_04/05 实证):O247 首舰前不开矿被 _spend_bank
             # 绕开(存款 800 早到 + SG 未就绪 → fb_missing_starved 永假,
             # 二矿 249s 落成即被轮抄);舰队先行门同步接入滚雪球开矿。
-            and not (
-                self._opp_race == "zerg"
-                and self._ai_build == "timing"
-                and not self._first_fleet_seen()
-                and self.ai.time < 620.0
+            # O258-①:与主闸同源改防御驱动(zerg_timing_expand_allowed)。
+            # O262-①:去 threat 条件,窗 260s(同主闸)。
+            # O263-①:窗 320s + 分矿点 35 格无敌(260 强开拍进波路径实证)。
+            and zerg_timing_expand_allowed(
+                self._opp_race == "zerg" and self._ai_build == "timing",
+                self._first_fleet_seen(),
+                self.ai.time,
+                sum(
+                    1 for u in self.ai.enemy_units
+                    if not u.is_structure and is_combat_type(u.type_id)
+                    and u.position.distance_to(self.ai.start_location) < 40
+                ),
+                self._zt_enemy_near_natural(),
             )
             and not fleet_expand_holds(
                 self._fleet_transitioned,

@@ -32,11 +32,31 @@ from bot.production_plans import (  # noqa: E402
     evacuation_clear,
     pick_evacuation_base,
     should_evacuate_workers,
+    worker_last_stand,
 )
 
 MAIN = Point2((20.0, 20.0))
 NAT = Point2((60.0, 20.0))
 THIRD = Point2((100.0, 20.0))
+
+
+class TestWorkerLastStand(unittest.TestCase):
+    """O256-①纯判据:worker_last_stand(主基决死协防)。"""
+
+    def test_triggers_only_when_overwhelmed_single_base_with_cover(self):
+        # o255b game_02 现场:20 敌地面(9蟑螂+11狗)、2 塔、单基地、rush → 触发
+        self.assertTrue(worker_last_stand(20, 2, 1, True))
+        # 压垮线 = 6+4×塔数:2 塔压垮线 14,13 不触发
+        self.assertFalse(worker_last_stand(13, 2, 1, True))
+        # 无塔可依 → 不触发(纯送死,交 keep_safe/E6 语义)
+        self.assertFalse(worker_last_stand(20, 0, 1, True))
+        # 多基地 → 不触发(E6 撤离更稳)
+        self.assertFalse(worker_last_stand(20, 2, 2, True))
+        # 非急性窗 → 不触发(不扰动运营)
+        self.assertFalse(worker_last_stand(20, 2, 1, False))
+        # 1 塔压垮线 10
+        self.assertTrue(worker_last_stand(10, 1, 1, True))
+        self.assertFalse(worker_last_stand(9, 1, 1, True))
 
 
 class TestEvacuationCriteria(unittest.TestCase):
