@@ -151,6 +151,8 @@ from bot.production_plans import (  # noqa: E402
     two_base_guard_point,
     main_defense_first,
     unknown_verdict_defense,
+    zerg_timing_unknown_floor,
+    fb_gate_f2_exempt_zt,
     wall_disabled_after,
     wall_escort_needed,
     wall_fallback_due,
@@ -2754,6 +2756,24 @@ class TestO133TimingDefense(unittest.TestCase):
         self.assertTrue(ground_floor_active(False, 4))
         self.assertFalse(ground_floor_active(False, 3))
         self.assertFalse(ground_floor_active(False, 0))
+
+    def test_zerg_timing_unknown_floor(self):
+        # O255-③:Zerg Timing + unknown + t≥220 + 舰队未出 → 死窗叉子 floor
+        self.assertTrue(zerg_timing_unknown_floor(True, "unknown", 220, False))
+        self.assertTrue(zerg_timing_unknown_floor(True, "unknown", 300, False))
+        # 舰队已出 / 判决落地 / 时点未到 / 非 Timing → 不激活
+        self.assertFalse(zerg_timing_unknown_floor(True, "unknown", 300, True))
+        self.assertFalse(zerg_timing_unknown_floor(True, "greedy", 300, False))
+        self.assertFalse(zerg_timing_unknown_floor(True, "rush", 300, False))
+        self.assertFalse(zerg_timing_unknown_floor(True, None, 300, False))
+        self.assertFalse(zerg_timing_unknown_floor(True, "unknown", 219, False))
+        self.assertFalse(zerg_timing_unknown_floor(False, "unknown", 300, False))
+
+    def test_fb_gate_f2_exempt_zt(self):
+        # O255-①:Zerg Timing 且 SG 未就绪 → F2 豁免 FB 让位闸;SG 就绪恢复
+        self.assertTrue(fb_gate_f2_exempt_zt(True, False))
+        self.assertFalse(fb_gate_f2_exempt_zt(True, True))
+        self.assertFalse(fb_gate_f2_exempt_zt(False, False))
 
     def test_rush_blocks_reserve(self):
         # O151-①:rush 但家 40 格无敌(波间隙)→ 不挡攒钱预留;

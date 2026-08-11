@@ -2257,6 +2257,44 @@ def ground_floor_active(
     return rush_confirmed or enemy_ground_visible >= min_enemy
 
 
+def zerg_timing_unknown_floor(
+    is_zerg_timing: bool,
+    verdict: str | None,
+    now: float,
+    fleet_seen: bool,
+    at: float = 220.0,
+) -> bool:
+    """O255-③(o254 双 lane 0-10 尸检):Zerg Timing 死窗叉子 floor 判据。
+    纯逻辑,可单测。
+
+    o254 实证:Zerg Timing 波 280-310s 到脸(10-19 supply),verdict=unknown
+    时 ground_floor_active 不激活(无接触、敌未可见),守军 = 1-2 塔 + 0 地面
+    + 22-26 农民裸接,农民被屠(25→6)后基地连锁崩。o252/o254 长局与速败的
+    唯一分野就是这波硬币是否接住。
+    开一条窄通道:Zerg Timing + verdict==unknown + t≥at + 舰队未出 →
+    floor 激活,调用方把追猎 cap 压 0、叉 cap 压 3(300 矿,从常态 1300+
+    银行出 = 白捡的死窗防守)。与 O253(t≥240 floor 常开 + 追猎 cap2=12,
+    吃气吃矿把 SG/FB 挤死,o253 0-7 实证)的区别:不碰气、上限极小、
+    舰队一出即退。
+    """
+    return is_zerg_timing and verdict == "unknown" and now >= at and not fleet_seen
+
+
+def fb_gate_f2_exempt_zt(is_zerg_timing: bool, sg_ready: bool) -> bool:
+    """O255-①(o254 双 lane 0-10 尸检):F2 让位 FB 闸的 Zerg Timing 豁免。
+    纯逻辑,可单测。
+
+    O170/O172 的 FB 闸(FB 无实体 → F2 整段让位,保 FB 300 矿资金窗)在
+    Zerg Timing 直爬路线构成死锁:FB 需就绪星门,星门未就绪时 FB 资金窗
+    根本不存在,F2 却给「还不存在的窗」让位 —— game_02 实证 200-350s
+    防御建设整段冻结(1 塔 0 电池接 300s 波),银行躺 1900;同时 O216i
+    (SG 让位 2 塔)无塔可等,SG 被推到 305s、首舰 ~450s。
+    SG 就绪前豁免该闸:2-3 塔+电池 250s 前落地,O216i 的 2 塔条件同时
+    解锁 → SG 提前 ~50s。SG 就绪后(FB 窗真实存在)闸恢复原语义。
+    """
+    return is_zerg_timing and not sg_ready
+
+
 def unknown_verdict_defense(
     enemy_is_zerg: bool,
     has_transition: bool,

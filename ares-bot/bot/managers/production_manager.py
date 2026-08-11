@@ -91,6 +91,7 @@ from bot.production_plans import (
     ground_floor_gateways,
     ground_floor_unmet,
     ground_floor_active,
+    fb_gate_f2_exempt_zt,
     is_combat_type,
     main_siege_active,
     mineral_crisis_gas_stop,
@@ -170,6 +171,7 @@ from bot.production_plans import (
     transition_tech_frozen,
     tower_zone_pylon_needed,
     unknown_verdict_defense,
+    zerg_timing_unknown_floor,
     upgrade_tech_buildings,
     wall_disabled_after,
     wall_escort_needed,
@@ -321,6 +323,9 @@ class ProductionManager(Manager):
         # O144-③:地面 floor 激活闸(rush 确认或敌可见地面 ≥4;每帧重算,
         # _apply_floor/_build_extra_production/UC prioritize 闸读)
         self._floor_active: bool = False
+        # O255-③:Zerg Timing unknown 死窗叉子 floor 旗标(每帧重算;
+        # 激活时 _apply_floor 把追猎 cap 压 0、叉 cap 压 3)
+        self._floor_unknown_zt: bool = False
         # O146-①:threat 末次激活时刻(急性窗 25s 延展用;None=本局未威胁)
         self._threat_last_active: float | None = None
         # O150-②:rush 证实时刻(接触/情报谁先谁记;过渡进入的接触时限用,
@@ -827,6 +832,8 @@ class ProductionManager(Manager):
         )
         # O144-③:地面 floor 激活闸(rush 确认 / 敌可见地面 ≥4;纯运营局
         # 不产地面,矿全进舰队科技链 —— O134 无差别 floor 挤科技钱实证)
+        # O253 已回滚(o253 双 lane 0-7 全速败实证):t≥240 floor 常开把
+        # SG/FB/塔的钱吃成叉/追猎,舰队更晚、早期更脆,比 bank 闲置更糟。
         self._floor_active = ground_floor_active(
             self._rush_confirmed,
             sum(
@@ -835,6 +842,18 @@ class ProductionManager(Manager):
                 and is_combat_type(u.type_id)
             ),
         )
+        # O255-③(o254 双 lane 0-10 尸检):Zerg Timing + verdict=unknown +
+        # t≥220 + 舰队未出 → 死窗叉子 floor(仅叉 cap 3,追猎 cap 0 ——
+        # 与 O253 的区别:不碰气、上限极小、舰队一出即退)。波 280-310 到脸时
+        # 不再 0 地面裸接;o252/o254 长局与速败的分野就是这波硬币。
+        self._floor_unknown_zt = zerg_timing_unknown_floor(
+            self._opp_race == "zerg" and self._ai_build == "timing",
+            self._verdict,
+            self.ai.time,
+            self._first_fleet_seen(),
+        )
+        if self._floor_unknown_zt:
+            self._floor_active = True
         # O146-①:急性窗标记(敌进家 40 格 / threat 激活或 25s 内)——
         # 农民下限与刹车家族都读它;慢性状态(rush latch/sprint/过渡态
         # 本身)一律不得压农民
@@ -856,8 +875,13 @@ class ProductionManager(Manager):
         # O136:坡口墙状态每帧刷新(rush 确认/presumed 时武装)——
         # combat _rush_defend_anchor 读 _wall_hold_point(叉子墙后站位),
         # 协防读 _wall_gap_point/_wall_sealed(封口前农民肉身堵缝)
+        # O255-②(o254 尸检):unknown 保守防御(t≥200)同样武装 —— presumed
+        # 在 verdict=unknown 落地(~80s)即解除,Timing 波 280-310 到脸时墙后
+        # 站位/堵缝全黑,狗群直穿矿线屠农(o254a game_03/04:25→6)。
         _wall = self._wall_slots()
-        if _wall is not None and (self._rush_confirmed or _presumed_rush):
+        if _wall is not None and (
+            self._rush_confirmed or _presumed_rush or _unknown_defense
+        ):
             _gap = _wall[2]
             _hp = wall_hold_point(
                 (_gap.x, _gap.y),
@@ -1438,12 +1462,26 @@ class ProductionManager(Manager):
             # 塔/追加星门继续抽干资金。
             # O221(o220-lane1 game_01 实证):无防基地豁免 —— 新二矿落成后
             # FB 等待闸把 F2 拦了 52s(385→442),敌 4 地面到脸时水晶/塔刚开工。
+            # O255-①(o254 双 lane 0-10 尸检):Zerg Timing 直爬路线 SG 未就绪时
+            # FB 资金窗根本不存在(FB 需就绪 SG),F2 给「还不存在的窗」让位 =
+            # 200-350s 防御建设整段冻结(game_02:1 塔 0 电池接 300s 波,银行
+            # 躺 1900;O216i 的 2 塔条件同步死锁,SG 被推到 305s)。SG 就绪前
+            # 豁免,SG 就绪后(FB 窗真实存在)恢复原语义。
             and (
                 (not _fb_truly_missing and not self._fb_waiting)
                 or self._threat_active
                 or self._rush_active
                 or self._timing_sprint
                 or _defenseless_base
+                or fb_gate_f2_exempt_zt(
+                    self._opp_race == "zerg" and self._ai_build == "timing",
+                    any(
+                        s.is_ready
+                        for s in self.manager_mediator.get_own_structures_dict[
+                            UnitID.STARGATE
+                        ]
+                    ),
+                )
             )
             and not _sprint  # O129:冲刺期 F2 整块让位(手动链管 forge+首塔)
         ):
@@ -4385,10 +4423,14 @@ class ProductionManager(Manager):
                 # O233(o232-lane1 game_01 实证):首舰刚出(舰队 1-2)时 8 追猎
                 # 与暴风抢矿,舰队 280s 卡 1 艘;cap2=8 再后置到舰队 ≥3。
                 _cap2 = pf.cap2
+                # O255-③:unknown 死窗 floor 不产追猎 —— 追猎吃气(125/50)
+                # 直接抢 SG/FB 资金窗(O253 实证 0-7);死窗只要矿耗叉子。
+                if self._floor_unknown_zt:
+                    _cap2 = 0
                 # O236:Nexus 钉点期间追猎 floor 归零(125 矿/只),与探机暂停
                 # 一起把 400 矿资金窗让给二矿;pinning 解除自动恢复。
                 # O238:只限首扩钉点(bases<2);三矿以上钉点追猎核照产(防守优先)。
-                if (
+                elif (
                     self._opp_race == "zerg"
                     and self._ai_build == "timing"
                     and self.ai.townhalls.amount < 2
@@ -4427,8 +4469,20 @@ class ProductionManager(Manager):
             spawn,
             floor_id=uid,
             floor_count=self.manager_mediator.get_own_unit_count(unit_type_id=uid),
-            floor_cap=pre_fleet_cap(
-                pf.cap, pf.per_enemy, pf.max, self._visible_enemy_army_count()
+            # O255-③:unknown 死窗 floor 叉子上限压 3(300 矿,从常态 1300+
+            # 银行出);常规 floor 通道(rush 确认/敌可见 ≥4)不受影响。
+            floor_cap=(
+                min(
+                    pre_fleet_cap(
+                        pf.cap, pf.per_enemy, pf.max,
+                        self._visible_enemy_army_count(),
+                    ),
+                    3,
+                )
+                if self._floor_unknown_zt
+                else pre_fleet_cap(
+                    pf.cap, pf.per_enemy, pf.max, self._visible_enemy_army_count()
+                )
             ),
             fleet_online=fleet_online,
             priority=6,
