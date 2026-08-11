@@ -12,9 +12,9 @@
 | Terran Rush | ✅ o241t lane2 3-2 |
 | Terran Timing | ✅ o242t lane2 3-2（后补至 3-2） |
 | Terran Power | ✅ o243t lane1 5-0 |
-| **Zerg Timing** | **3 胜（o224-g05 / o229-g03 / o249-g03），未打穿** |
+| **Zerg Timing** | ✅ **o263 lane2 3-1 打穿（2026-08-11，O255-O263 十轮迭代）** |
 
-## 2. Zerg Timing 当前路线（O248-O251，相对胜率最高的代码）
+## 2. Zerg Timing 路线（已打穿，o263 版）（O248-O251，相对胜率最高的代码）
 
 - **不强制/禁止 transition**（O248/O249b）：直爬 cyber→SG→FB，首舰 374-510s（原 550-620s）。
 - **舰队先行**（O247/O250）：未见首舰 + t<620 不开二矿（含 _spend_bank 滚雪球通道）。
