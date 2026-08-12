@@ -1524,6 +1524,14 @@ class ProductionManager(Manager):
             _ec_min = expansion_cannon_min_dynamic(
                 ec.min if ec is not None else 1, _fleet_total_now, fleet_min=3, early_cap=3
             )
+            # O268-②(o267 尸检,司令观察):ZT 塔底线 2→3 —— 败局分矿 0-1 塔
+            # 被 10+ 地面白拆(o267a-g03:分矿 541s 塔1 被抄、战损后 90s 裸奔
+            # 再被抄、811s 丢矿);胜/败局塔量差仅 1 座/基地,就是这条命。
+            if (
+                self._opp_race == "zerg"
+                and self._ai_build == "timing"
+            ):
+                _ec_min = max(_ec_min, 3)
             # O209:Zerg Timing 炮塔目标封顶 3/基地。O208 出现 20+ 炮塔局，
             # 把舰队成型资金吃光；3 基地 9 塔足够配合地面/舰队守家。
             # O231 曾降 3→2,但 O231b/O233 把追猎核后置到舰队≥3 后,中期
@@ -1754,9 +1762,15 @@ class ProductionManager(Manager):
                 mor = 2
             else:
                 mor = 1
+            # O268-③(o267a-g03 实证):裸矿(有基地 0 就绪塔)战损补塔串行
+            # 太慢 —— 分矿 2 塔被拆后 ~90s 才补回 1 座,次波到脸仍裸奔丢矿。
+            # 裸矿时建造槽保底 2(双塔并行,补防速度翻倍;急性期本来就 ≥2)。
+            if _defenseless_base:
+                mor = max(mor, 2)
             # O207:Nexus/FB 资金窗期间，塔串行建造，避免多工人同时抽干
             # 让位资金。rush/威胁/timing 冲刺期已走多槽，不覆盖。
-            if (_expand_holding or self._fb_waiting) and mor <= 2:
+            # O268-③:裸矿补塔豁免串行(补防速度优先于资金窗整洁)。
+            if (_expand_holding or self._fb_waiting) and mor <= 2 and not _defenseless_base:
                 mor = 1
             # O31:主基堵口塔跟 ramp 口(集中火力,不散基地周边)。ramp.top 朝基地 -4 格
             # (= defensive_rally_point 同款 sharpy PlanHeatDefender)。没 ramp → None 不 override。
@@ -5842,6 +5856,15 @@ class ProductionManager(Manager):
             )
             if _have > 0:
                 continue
+            # O268-①(o267a-g03 实证):BuildStructure 在途不落 tracker TARGET,
+            # _pending_at 恒查不到 → 每帧重注册+刷事件(80s+ 空转几百次,
+            # 墙件实际没多建)。按落点 latch:派过就记,45s 后仍未落成才重派。
+            _wlatch = getattr(self, "_o216_dispatched", None)
+            if _wlatch is None:
+                _wlatch = self._o216_dispatched = {}
+            _key = (round(th_pos.x), round(th_pos.y))
+            if self.ai.time - _wlatch.get(_key, -999.0) < 45.0:
+                continue
             _anchor = base_defense_anchor(
                 False,
                 (th_pos.x, th_pos.y),
@@ -5859,6 +5882,7 @@ class ProductionManager(Manager):
                     find_alternative=True,
                 )
             )
+            _wlatch[_key] = self.ai.time
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
                 "msg": "O216:分矿 gateway 堵口",
