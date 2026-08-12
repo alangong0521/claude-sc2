@@ -2777,17 +2777,17 @@ class TestO133TimingDefense(unittest.TestCase):
         self.assertFalse(fb_gate_f2_exempt_zt(False, False))
 
     def test_zerg_timing_expand_allowed(self):
-        # O263-①:t<320 → 不开;t≥320 且家无敌且分矿点无敌 → 放行;
-        # 敌进家/敌踩分矿点 → 不开;首舰已出/t≥620 硬门原样
-        self.assertFalse(zerg_timing_expand_allowed(True, False, 250, 0, 0))
-        self.assertFalse(zerg_timing_expand_allowed(True, False, 300, 0, 0))
-        self.assertTrue(zerg_timing_expand_allowed(True, False, 320, 0, 0))
-        self.assertFalse(zerg_timing_expand_allowed(True, False, 400, 2, 0))
-        self.assertFalse(zerg_timing_expand_allowed(True, False, 400, 0, 1))
-        self.assertTrue(zerg_timing_expand_allowed(True, True, 400, 2, 1))
-        self.assertTrue(zerg_timing_expand_allowed(True, False, 620, 0, 0))
+        # O265 已证伪回退 320s:t<320 或首塔未就绪 → 不开;t≥320 + 首塔 +
+        # 家无敌 + 分矿点无敌 → 放行;首舰已出/t≥620 硬门原样(不看塔)
+        self.assertFalse(zerg_timing_expand_allowed(True, False, 250, 0, 0, 1))
+        self.assertFalse(zerg_timing_expand_allowed(True, False, 320, 0, 0, 0))
+        self.assertTrue(zerg_timing_expand_allowed(True, False, 320, 0, 0, 1))
+        self.assertFalse(zerg_timing_expand_allowed(True, False, 400, 2, 0, 1))
+        self.assertFalse(zerg_timing_expand_allowed(True, False, 400, 0, 1, 1))
+        self.assertTrue(zerg_timing_expand_allowed(True, True, 400, 2, 1, 0))
+        self.assertTrue(zerg_timing_expand_allowed(True, False, 620, 0, 0, 0))
         # 非 ZT 不受影响
-        self.assertTrue(zerg_timing_expand_allowed(False, False, 100, 0, 0))
+        self.assertTrue(zerg_timing_expand_allowed(False, False, 100, 0, 0, 0))
 
     def test_rush_blocks_reserve(self):
         # O151-①:rush 但家 40 格无敌(波间隙)→ 不挡攒钱预留;

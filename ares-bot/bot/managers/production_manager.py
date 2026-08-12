@@ -2520,6 +2520,35 @@ class ProductionManager(Manager):
                         "msg": f"O260:气烂点暴风兜底(气={self.ai.vespene:.0f})",
                     })
                     break
+        # O264-②(司令观察③):舰队 ≥3 艘后补母舰 —— 隐身场(Cloaking Field)
+        # 覆盖航母/暴风/地面混编,Zerg Timing AI 反隐靠眼虫、推进通常不带,
+        # 隐身期舰队存活显著拉长;母舰本体还有光束输出。只吃烂气窗口
+        # (气 ≥600 且买得起才点,400/400 不抢舰队产能资金窗);全局 1 艘。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self._fb_entities_now > 0
+            and self.ai.vespene >= 600.0
+            and (
+                self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+                + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
+            ) >= 3
+            and (
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.MOTHERSHIP
+                )
+                + cy_unit_pending(self.ai, UnitID.MOTHERSHIP)
+            )
+            == 0
+            and self.ai.can_afford(UnitID.MOTHERSHIP)
+        ):
+            for _th in self.ai.townhalls.ready.idle:
+                _th.train(UnitID.MOTHERSHIP)
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O264:母舰开造(隐身场保舰队)",
+                })
+                break
         # O261-①(o224 胜局编配实证 + o254-o260 累计 0-58 死窗尸检):ZT 直爬
         # SG 就绪(261-281s)→FB 就绪(~385s)之间星门空转 100s+,而死窗波
         # (9蟑螂+11狗)零对空 —— 虚空(仅需 SG)是死窗唯一的真实战力:
@@ -2558,6 +2587,7 @@ class ProductionManager(Manager):
         # O263-②:首扩钉点叠加「320s 窗 + 分矿点无敌」——O262-② 的无窗首扩
         # 钉点会把 Nexus 拍进首波行进路线(o262a-g02 白捐 400 实证);
         # 多矿钉点(o251 原场景)行为不变。
+        # O265 已证伪回退(220s 实验双 lane 1-4/1-2,速败回升):窗保持 320s。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -2570,6 +2600,7 @@ class ProductionManager(Manager):
                 self.ai.townhalls.amount >= 2
                 or (
                     self.ai.time >= 320.0
+                    and self._cannons_ready_peak >= 1
                     and self._zt_enemy_near_natural() == 0
                 )
             )
@@ -4782,6 +4813,7 @@ class ProductionManager(Manager):
                 and u.position.distance_to(self.ai.start_location) < 40
             ),
             self._zt_enemy_near_natural(),
+            self._cannons_ready_peak,
         ):
             return False
         ae = self._flow.auto_expand
@@ -6054,6 +6086,7 @@ class ProductionManager(Manager):
             # O258-①:与主闸同源改防御驱动(zerg_timing_expand_allowed)。
             # O262-①:去 threat 条件,窗 260s(同主闸)。
             # O263-①:窗 320s + 分矿点 35 格无敌(260 强开拍进波路径实证)。
+            # O265:窗 220s + 首塔就绪前提(宗师速开二矿实验,同主闸)。
             and zerg_timing_expand_allowed(
                 self._opp_race == "zerg" and self._ai_build == "timing",
                 self._first_fleet_seen(),
@@ -6064,6 +6097,7 @@ class ProductionManager(Manager):
                     and u.position.distance_to(self.ai.start_location) < 40
                 ),
                 self._zt_enemy_near_natural(),
+                self._cannons_ready_peak,
             )
             and not fleet_expand_holds(
                 self._fleet_transitioned,
@@ -6411,6 +6445,22 @@ class ProductionManager(Manager):
             if targets:
                 break
         if not targets:
+            # O264(司令观察②):SG 落地前 chrono 全程闲置(0-260s 能量白攒
+            # 50-100)—— 宗师开局惯例:前期 chrono 全给 Nexus 加速产农。
+            # 目标=在产且未加速的 Nexus;任何能量 ≥50 的基地施放。
+            # SG 出现后由下方流派 targets 接管(舰队科技优先),语义不回头。
+            _busy_th = [
+                t
+                for t in self.ai.townhalls
+                if t.is_ready
+                and not t.is_idle
+                and not t.has_buff(BuffId.CHRONOBOOSTENERGYCOST)
+            ]
+            if _busy_th:
+                for nexus in self.ai.townhalls:
+                    if nexus.energy >= 50:
+                        nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, _busy_th[0])
+                        return
             return
         # P2c:chrono 主 C 判定 verdict 化 —— pivot 风暴主 C 阶段认 TEMPEST
         # (否则 primary_pending 等航母在产,星门整段无 chrono,E10b 实锤星门 1-2);

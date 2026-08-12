@@ -2329,24 +2329,32 @@ def zerg_timing_expand_allowed(
     now: float,
     enemy_home: int,
     enemy_near_natural: int,
+    cannons_ready: int = 1,
     at: float = 320.0,
     hard_gate: float = 620.0,
 ) -> bool:
-    """O258-①/O262-①/O263-①:ZT 二矿窗判据(防御驱动)。纯逻辑,可单测。
+    """O258-①/O262-①/O263-①/O265:ZT 二矿窗判据(防御驱动)。纯逻辑,可单测。
 
     O247/O250 的「首舰前 t<620 不开二矿」把二矿落成压到 518-671s ——
     O236 胜负对照「二矿 ≤400s=胜、≥500s=负」全落在负侧。
     O258(t≥340+非威胁):threat 首波后常驻,闸整局不开(o261a-g01 单矿 900s)。
-    O262(t≥260+去 threat):260s 强开把建筑期 Nexus 拍进波的行进路线
-    (o262a-g02:293s 落 309s 被拆,白捐 400,主基防钱同空)——窗太早。
-    O263:t≥320(首波 305-320s 到脸、被塔阵接住的时点之后) + 家 40 格无敌
-    + **分矿点 35 格无敌**(波次路径不再踩分矿) 三条件;首舰/t≥620 硬门原样。
+    O262(t≥260+去 threat):拍进波行进路线(o262a-g02 白捐 400)。
+    O263(t≥320+分矿点踩点检查):o263 lane2 3-1 打穿,二矿 353s。
+    O265(司令观察①,宗师速开二矿实验,窗 220s):o265 双 lane 1-4/1-2,
+    速败回升(166/66s wall)——220s 的二矿抢走死窗防御钱,早波变体直接穿。
+    **证伪回退 320s**(保留踩点+首塔前提);宗师 90s 时点在本环境不可行:
+    forge/首塔链(55-170s)是 rush 变体保命钱。
     """
     if not is_zerg_timing:
         return True
     if first_fleet_seen or now >= hard_gate:
         return True
-    return now >= at and enemy_home == 0 and enemy_near_natural == 0
+    return (
+        now >= at
+        and cannons_ready >= 1
+        and enemy_home == 0
+        and enemy_near_natural == 0
+    )
 
 
 def unknown_verdict_defense(
