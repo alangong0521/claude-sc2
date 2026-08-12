@@ -2524,6 +2524,8 @@ class ProductionManager(Manager):
         # 覆盖航母/暴风/地面混编,Zerg Timing AI 反隐靠眼虫、推进通常不带,
         # 隐身期舰队存活显著拉长;母舰本体还有光束输出。只吃烂气窗口
         # (气 ≥600 且买得起才点,400/400 不抢舰队产能资金窗);全局 1 艘。
+        # O266b(o266 双 lane 实证):Nexus 全程在产农 → idle 永不成立,
+        # 母舰整轮零出场;改为允许排队(跟在 1 个农民后 +12s,可接受)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -2542,7 +2544,9 @@ class ProductionManager(Manager):
             == 0
             and self.ai.can_afford(UnitID.MOTHERSHIP)
         ):
-            for _th in self.ai.townhalls.ready.idle:
+            for _th in self.ai.townhalls.ready:
+                if _th.orders and len(_th.orders) >= 2:
+                    continue  # 队列里已有 2 条(农民+母舰在途)就别再压
                 _th.train(UnitID.MOTHERSHIP)
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),

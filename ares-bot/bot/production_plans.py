@@ -553,15 +553,15 @@ def worker_transfer_count(
     """O266(司令观察):满载基地 → 欠饱和新矿的农民调拨量判据。纯逻辑,可单测。
 
     司令观察:主基农民 16+ 满载,新分矿只有 2-3 个 —— ares ResourceManager
-    只给「未指派」农民派矿点,已指派农民永不跨基地再平衡,新矿只能靠
-    新训农民慢慢填。滞回设计:超额/缺口都 ≥2 才调(边界 1 个不调,
-    防往返空跑),单次上限 max_move(分批,每 3s 一批)。
+    只给「未指派」农民派矿点,且矿线按 2/矿点封顶(主基矿线恒 ≤16,
+    「超目标」永不成立 —— 首版用超额判据全程零触发,o266 实证)。
+    改**均衡化**(人类 maynard 手法):两基地矿线人数差 ≥4 → 调差额一半,
+    单批 ≤max_move,不超过目标基地缺口;源基地短缺的由新训农民回填。
     """
-    excess = src_workers - src_target
-    deficit = dst_target - dst_workers
-    if excess < 2 or deficit < 2:
+    gap = src_workers - dst_workers
+    if gap < 4:
         return 0
-    return min(excess, deficit, max_move)
+    return min(gap // 2, max(0, dst_target - dst_workers), max_move)
 
 
 def worker_last_stand(
