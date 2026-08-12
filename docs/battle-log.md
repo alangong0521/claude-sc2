@@ -7149,3 +7149,31 @@ headless 双车道并行（REALTIME=False）：
   forge/首塔链是 rush 变体保命钱;本环境二矿窗的实证最优解就是 320s+踩点。
 
 ---
+## O266 — 满载基地→新矿农民调拨（司令观察）
+
+**日期**：2026-08-12
+
+### 司令观察
+
+主基农民 16+ 满载,新分矿只有 2-3 个,采矿效率浪费。
+
+### 根因（代码实证）
+
+ares `ResourceManager._assign_workers_to_mineral_patches` 只给**未指派**农民
+派矿点;已在主基矿线上的农民永不跨基地再平衡,新矿只能靠新训农民慢慢填
+(~3 分钟才满)。ares 全框架无 maynard/transfer 机制。
+
+### 落地（O266）
+
+- `worker_transfer_count`(纯判据,滞回:超额/缺口均 ≥2 才调,单批 ≤4)
+  + `update_worker_transfer`(main.py,3s 节流):超额农民从 ares 簿记摘除
+  (remove_worker_from_mineral)并 gather 到新矿矿点,ResourceManager 自然重派。
+- 守卫:急性窗(rush/threat)不动;目标基地 20 格有敌地面不调;跳过建造
+  tracker/司令接管/E6 撤离/决死协防农民;每农民 30s 冷却防往返。
+
+### 验证
+
+- `py_compile` 通过;`unittest` **657 例 OK**(新增调拨判据 5 用例)。
+- 观察指标:新矿农民填充时长(目标 <60s)、调拨事件次数、无往返空跑。
+
+---

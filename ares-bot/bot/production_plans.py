@@ -543,6 +543,27 @@ def evacuation_clear(enemy_ground_near: int, clear_below: int = 2) -> bool:
     return enemy_ground_near < clear_below
 
 
+def worker_transfer_count(
+    src_workers: int,
+    src_target: int,
+    dst_workers: int,
+    dst_target: int,
+    max_move: int = 4,
+) -> int:
+    """O266(司令观察):满载基地 → 欠饱和新矿的农民调拨量判据。纯逻辑,可单测。
+
+    司令观察:主基农民 16+ 满载,新分矿只有 2-3 个 —— ares ResourceManager
+    只给「未指派」农民派矿点,已指派农民永不跨基地再平衡,新矿只能靠
+    新训农民慢慢填。滞回设计:超额/缺口都 ≥2 才调(边界 1 个不调,
+    防往返空跑),单次上限 max_move(分批,每 3s 一批)。
+    """
+    excess = src_workers - src_target
+    deficit = dst_target - dst_workers
+    if excess < 2 or deficit < 2:
+        return 0
+    return min(excess, deficit, max_move)
+
+
 def worker_last_stand(
     enemy_ground_near: int,
     cannons_near: int,

@@ -33,6 +33,7 @@ from bot.production_plans import (  # noqa: E402
     pick_evacuation_base,
     should_evacuate_workers,
     worker_last_stand,
+    worker_transfer_count,
 )
 
 MAIN = Point2((20.0, 20.0))
@@ -42,6 +43,19 @@ THIRD = Point2((100.0, 20.0))
 
 class TestWorkerLastStand(unittest.TestCase):
     """O256-①纯判据:worker_last_stand(主基决死协防)。"""
+
+    def test_transfer_count_hysteresis(self):
+        # O266:主基 22/16 超饱和 + 新矿 2/16 欠饱和 → 调 4(单批上限)
+        self.assertEqual(worker_transfer_count(22, 16, 2, 16), 4)
+        # 超额只有 2 → 按超额调 2
+        self.assertEqual(worker_transfer_count(18, 16, 2, 16), 2)
+        # 超额/缺口 <2 不调(滞回防往返)
+        self.assertEqual(worker_transfer_count(17, 16, 2, 16), 0)
+        self.assertEqual(worker_transfer_count(18, 16, 15, 16), 0)
+        # 缺口小于上限按缺口调
+        self.assertEqual(worker_transfer_count(22, 16, 13, 16), 3)
+        # 恰好饱和不调
+        self.assertEqual(worker_transfer_count(16, 16, 2, 16), 0)
 
     def test_triggers_only_when_overwhelmed_single_base_with_cover(self):
         # o255b game_02 现场:20 敌地面(9蟑螂+11狗)、2 塔、单基地、rush → 触发

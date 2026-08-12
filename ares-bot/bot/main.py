@@ -19,6 +19,7 @@ from bot.production_plans import (
     should_evacuate_workers,
     should_release_waiting_builder,
     worker_last_stand,
+    worker_transfer_count,
 )
 from bot.shield_battery import restore_with_batteries
 from bot.selftune import SelfTuner
@@ -456,6 +457,100 @@ def update_worker_last_stand(ai) -> None:
         })
 
 
+def update_worker_transfer(ai) -> None:
+    """O266(司令观察):满载基地农民调拨到欠饱和基地(maynard)。
+
+    司令观察:主基 16+ 满载时新分矿只有 2-3 个农民 —— ares ResourceManager
+    只给「未指派」农民派矿点,已指派农民永不跨基地再平衡,新矿只靠新训
+    农民慢慢填(~3 分钟才满)。本函数每 3s 扫一次:某基地矿线农民超
+    (2×矿点+2) 且另一基地欠 (2×矿点-2) → 把超额农民(每批 ≤4,
+    worker_transfer_count 判据)从 ares 簿记摘除并 gather 到目标基地
+    矿点,ResourceManager 随后在新矿自然重派。
+    守卫:急性窗(rush/threat)不动;目标基地 20 格有敌地面不调;
+    跳过建造 tracker/司令接管/E6 撤离/决死协防中的农民;
+    每农民 30s 冷却防往返。纯操作函数,判据可单测。"""
+    if ai.time - getattr(ai, "_last_transfer_scan", 0.0) < 3.0:
+        return
+    ai._last_transfer_scan = ai.time
+    pm = ai.production_manager
+    if pm.rush_active or getattr(pm, "_threat_active", False):
+        return
+    ready_ths = [t for t in ai.townhalls if t.is_ready]
+    if len(ready_ths) < 2 or not ai.mineral_field:
+        return
+    th_of_worker = ai.mediator.get_worker_tag_to_townhall_tag
+    on_minerals = ai.mediator.get_worker_to_mineral_patch_dict
+    worker_types = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+
+    def _enemy_ground_near(pos, r=20.0) -> int:
+        return sum(
+            1
+            for u in ai.enemy_units
+            if not u.is_structure
+            and not u.is_flying
+            and u.type_id not in worker_types
+            and u.position.distance_to(pos) < r
+        )
+
+    # 每基地:矿线农民数 / 饱和目标(2×矿点)
+    stats = []
+    for th in ready_ths:
+        patches = ai.mineral_field.closer_than(10, th).amount
+        if patches == 0:
+            continue  # 死矿不调出也不调入
+        count = sum(
+            1
+            for tag, th_tag in th_of_worker.items()
+            if th_tag == th.tag and tag in on_minerals
+        )
+        stats.append((th, count, patches * 2))
+    if len(stats) < 2:
+        return
+    tracker = ai.mediator.get_building_tracker_dict
+    cd: dict = ai._transfer_cd
+    gathering = set(ai.mediator.get_unit_role_dict[UnitRole.GATHERING])
+    for dst, dst_count, dst_target in sorted(stats, key=lambda s: s[1]):
+        if _enemy_ground_near(dst.position):
+            continue  # 目标基地被踩,不往里调
+        for src, src_count, src_target in sorted(
+            stats, key=lambda s: -s[1]
+        ):
+            n = worker_transfer_count(
+                src_count, src_target, dst_count, dst_target
+            )
+            if n <= 0 or src.tag == dst.tag:
+                continue
+            moved = 0
+            for w in ai.workers:
+                if moved >= n:
+                    break
+                if th_of_worker.get(w.tag) != src.tag:
+                    continue
+                if w.tag not in on_minerals:
+                    continue
+                if w.tag in tracker or w.tag in ai._player_ctrl:
+                    continue
+                if cd.get(w.tag, 0.0) > ai.time:
+                    continue
+                if w.tag not in gathering:
+                    continue
+                ai.mediator.remove_worker_from_mineral(worker_tag=w.tag)
+                w.gather(ai.mineral_field.closest_to(dst.position))
+                cd[w.tag] = ai.time + 30.0
+                moved += 1
+            if moved:
+                ai._events.append({
+                    "t": round(ai.time, 1),
+                    "msg": (
+                        f"O266:农民调拨 {moved} 人"
+                        f"(矿线 {src_count}→{src_count - moved},"
+                        f"新矿 {dst_count}→{dst_count + moved})"
+                    ),
+                })
+                dst_count += moved
+                src_count -= moved
+
+
 # 人机共驾：司令一旦亲手操作某单位，bot 让权 N 游戏秒；期间不再自动指挥它，
 # N 秒内没有新手操 → 自动收回控制权。停放在 PERSISTENT_BUILDER（"不自动重指派"）role，
 # combat/oracle/mining 都按 role 选单位，自然全部跳过它；唯一例外是 ares
@@ -557,6 +652,8 @@ class MyBot(AresBot):
         self._evac_bases: dict[int, dict] = {}
         # O256-①:决死协防农民账(tag 集;update_worker_last_stand 全权维护)
         self._last_stand: set[int] = set()
+        # O266:农民调拨冷却(tag → 解锁时刻;防满载/欠饱和边界往返)
+        self._transfer_cd: dict[int, float] = {}
         # O162:每局重置开局自动 scout 标记
         self._auto_scout_done = False
         # O19 idle_builder 检测:tag -> [干等起点时间, 本 episode 已发过事件]
@@ -588,6 +685,9 @@ class MyBot(AresBot):
         # 无处可撤 → 农民拉去塔下协战,不再站着被屠)。E6 之后跑:撤离优先,
         # 无处可撤才协战。
         update_worker_last_stand(self)
+        # O266(司令观察):满载基地 → 欠饱和新矿的农民调拨(ares 只派未指派
+        # 农民,新矿靠新训慢慢填的缺口)。E6/决死之后跑,3s 节流。
+        update_worker_transfer(self)
         # O39:敌主力盘踞的矿线摘掉农民资源指派(基地被推平后持旧指派回流送死),
         # 1s 节流;摘除后 ResourceManager 把人重派到活着基地
         if self.time - self._last_contested_scan >= 1.0:
