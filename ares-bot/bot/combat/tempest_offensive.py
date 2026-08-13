@@ -11,6 +11,10 @@ from sc2.units import Units
 
 
 from bot.levers import pick_focus_key, prefer_void_rays
+from sc2.ids.unit_typeid import UnitTypeId as UnitID
+
+# O272-①:制空避战触发单位(实证:o270b-g03 暴风 9→2 被 腐化8-13+飞蛇 磨光)。
+_AA_COUNTER = {UnitID.CORRUPTOR, UnitID.VIPER}
 
 
 def _pick_focus(enemies, focus: str | None, origin=None) -> Unit:
@@ -90,6 +94,14 @@ class TempestOffensive(BaseUnit):
             query_tree=UnitTreeQueryType.AllEnemy,
             return_as_dict=True,
         )
+        # O272-①:撤避掩体点(最近就绪塔/电池,无则主基) —— 腐化/飞蛇成群逼近时
+        # 暴风不风筝硬拼(腐化对装甲加成+速度碾压,风筝=慢速送死,实证:o270b-g03
+        # 暴风 9→2 全灭),撤回地面火力圈上空,让塔/追猎接手制空。
+        _cover_points = [
+            s.position
+            for s in self.ai.structures.ready
+            if s.type_id in (UnitID.PHOTONCANNON, UnitID.SHIELDBATTERY)
+        ]
 
         for unit in units:
             offensive_maneuver: CombatManeuver = CombatManeuver()
@@ -97,6 +109,31 @@ class TempestOffensive(BaseUnit):
             enemy_near_tempest: Units = everything_near_tempests[unit.tag].filter(
                 lambda u: not u.is_memory
             )
+
+            # O272-①:制空避战 —— 腐化 ≥3 或飞蛇 ≥1(寄生弹)进入 15 格圈,
+            # 直接脱离战场回掩体上空(不 commit_push 时;承诺推进照打)。
+            _aa_close = [
+                u
+                for u in enemy_near_tempest
+                if not u.is_structure and u.type_id in _AA_COUNTER
+            ]
+            if (
+                not commit_push
+                and (
+                    sum(1 for u in _aa_close if u.type_id == UnitID.CORRUPTOR) >= 3
+                    or any(u.type_id == UnitID.VIPER for u in _aa_close)
+                )
+            ):
+                _fallback = (
+                    min(_cover_points, key=lambda p: p.distance_to(unit.position))
+                    if _cover_points
+                    else self.ai.start_location
+                )
+                offensive_maneuver.add(
+                    PathUnitToTarget(unit, self.mediator.get_air_grid, _fallback)
+                )
+                self.ai.register_behavior(offensive_maneuver)
+                continue
 
             in_attack_range: list[Unit] = cy_in_attack_range(unit, enemy_near_tempest)
 

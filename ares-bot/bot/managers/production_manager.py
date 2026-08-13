@@ -4646,6 +4646,23 @@ class ProductionManager(Manager):
                     # 追猎核收到 4,矿让给舰队。
                     if self.ai.vespene >= 600.0:
                         _cap2 = min(_cap2, 4)
+                    # O272-②(o270b-g03 实证):敌制空成群(腐化/飞蛇/大龙)时
+                    # 追猎是暴风唯一的存活保障(对装甲加成,射程外点杀腐化),
+                    # 节流让位 —— cap 拉回 12,舰队被腐化磨光比矿窗更要命。
+                    _enemy_aa = sum(
+                        1
+                        for u in self.ai.enemy_units
+                        if u.is_flying
+                        and u.type_id
+                        in (
+                            UnitID.CORRUPTOR,
+                            UnitID.VIPER,
+                            UnitID.MUTALISK,
+                            UnitID.BROODLORD,
+                        )
+                    )
+                    if _enemy_aa >= 4:
+                        _cap2 = max(_cap2, 12)
                 spawn = pre_fleet_spawn(
                     spawn,
                     floor_id=uid2,
