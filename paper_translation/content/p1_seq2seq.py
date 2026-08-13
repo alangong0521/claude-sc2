@@ -2,27 +2,25 @@
 Sutskever, Vinyals, Le (NIPS 2014) - arXiv:1409.3215
 Full bilingual (English / 中文) content.
 """
+from reportlab.lib.units import cm
 
 PAPER1 = {
     "title_for_pdf": "Sequence to Sequence Learning with Neural Networks (EN/ZH)",
     "content": [
-        {"type": "title", "text": "Sequence to Sequence Learning with Neural Networks"},
-        {"type": "p", "en": "用神经网络进行序列到序列学习", "zh": "用神经网络进行序列到序列学习"},
+        {"type": "title_pair", "en": "Sequence to Sequence Learning with Neural Networks",
+         "zh": "用神经网络进行序列到序列学习"},
 
-        {"type": "authors", "text":
-            "Ilya Sutskever &nbsp;&nbsp;&nbsp; Oriol Vinyals &nbsp;&nbsp;&nbsp; Quoc V. Le<br/>"
-            "Google<br/>"
-            "{ilyasu, vinyals, qvl}@google.com"},
-        {"type": "p", "en":
-            "伊利亚·苏茨克维尔 · 奥里奥尔·维尼亚尔斯 · 夸克·V·黎 (均来自 Google)",
-            "zh":
-            "伊利亚·苏茨克维尔 · 奥里奥尔·维尼亚尔斯 · 夸克·V·黎(均来自 Google)"},
+        {"type": "authors_pair",
+         "en": "Ilya Sutskever     Oriol Vinyals     Quoc V. Le<br/>"
+               "Google<br/>"
+               "{ilyasu, vinyals, qvl}@google.com",
+         "zh": "伊利亚·苏茨克维尔 · 奥里奥尔·维尼亚尔斯 · 夸克·V·黎(均来自 Google)"},
 
         {"type": "meta", "text": "Advances in Neural Information Processing Systems 27 (NIPS 2014), pp. 3104–3112"},
 
         {"type": "spacer", "size": 8},
 
-        {"type": "abstract_title", "text": "Abstract &nbsp;&nbsp;|&nbsp;&nbsp; 摘要"},
+        {"type": "abstract_title", "text": "Abstract   |   摘要"},
         {"type": "p_abstract", "en":
             "Deep Neural Networks (DNNs) are powerful models that have achieved excellent performance "
             "on difficult learning tasks. Although DNNs work well whenever large labeled training sets "
@@ -59,7 +57,7 @@ PAPER1 = {
             "语言之间引入了许多“短期依赖”,从而大大降低了优化问题的难度。"},
 
         # ----- 1. Introduction -----
-        {"type": "h1", "text": "1. Introduction &nbsp;&nbsp;|&nbsp;&nbsp; 引言"},
+        {"type": "h1", "text": "1. Introduction   |   引言"},
 
         {"type": "p", "en":
             "Deep Neural Networks (DNNs) are extremely powerful machine learning models that achieve "
@@ -145,7 +143,7 @@ PAPER1 = {
             "sentence. The model stops making predictions after outputting the end-of-sentence "
             "token. Note that the LSTM reads the input sentence in reverse, because doing so "
             "introduces many short term dependencies in the data that make the optimization "
-            "problem much easier. &nbsp;&nbsp;|&nbsp;&nbsp; 图 1 —— 模型读入输入句 “ABC”,输出 "
+            "problem much easier.   |   图 1 —— 模型读入输入句 “ABC”,输出 "
             "句 “WXYZ”;在生成句末符 (end-of-sentence) 后停止预测。注意 LSTM 反向读取输入句, "
             "因为这样会在数据中引入大量短期依赖,从而显著降低优化问题的难度。"},
 
@@ -212,13 +210,13 @@ PAPER1 = {
             "们的模型能感知词序,并且对主动 / 被动语态的替换相对稳健。"},
 
         # ----- 2. The model -----
-        {"type": "h1", "text": "2. The Model &nbsp;&nbsp;|&nbsp;&nbsp; 模型"},
+        {"type": "h1", "text": "2. The Model   |   模型"},
 
         {"type": "p", "en":
             "The Recurrent Neural Network (RNN) is a natural generalization of feedforward neural "
             "networks to sequences. Given a sequence of inputs (x₁,…,x_T), a standard RNN computes "
             "a sequence of outputs (y₁,…,y_T) by iterating the following equation: "
-            "h_t = sigm(W^hx x_t + W^hh h_{t−1}); &nbsp; y_t = W^yh h_t. "
+            "h_t = sigm(W^hx x_t + W^hh h_{t−1});   y_t = W^yh h_t. "
             "The RNN can easily map sequences to sequences whenever the alignment between the "
             "inputs and the outputs is known ahead of time. However, it is not clear how to apply "
             "an RNN to problems whose input and the output sequences have different lengths with "
@@ -226,7 +224,7 @@ PAPER1 = {
          "zh":
             "循环神经网络 (RNN) 是前馈神经网络向序列的自然推广。给定一个输入序列 (x₁,…,x_T), "
             "标准 RNN 通过反复迭代以下方程来计算输出序列 (y₁,…,y_T): "
-            "h_t = sigm(W^hx x_t + W^hh h_{t−1});&nbsp; y_t = W^yh h_t。 "
+            "h_t = sigm(W^hx x_t + W^hh h_{t−1});  y_t = W^yh h_t。 "
             "只要输入与输出之间的对齐关系事先已知,RNN 就能容易地完成序列到序列的映射。然而, "
             "对于输入序列和输出序列长度不同、且关系复杂且非单调的问题,RNN 应当如何使用并不明 "
             "朗。"},
@@ -303,7 +301,7 @@ PAPER1 = {
             "现,这种简单的数据变换可以极大地提升 LSTM 的性能。"},
 
         # ----- 3. Experiments -----
-        {"type": "h1", "text": "3. Experiments &nbsp;&nbsp;|&nbsp;&nbsp; 实验"},
+        {"type": "h1", "text": "3. Experiments   |   实验"},
 
         {"type": "p", "en":
             "We applied our method to the WMT’14 English to French MT task in two ways. We used it "
@@ -317,7 +315,7 @@ PAPER1 = {
             "行重排序。我们报告这些翻译方法的准确度,给出若干翻译样例,并对所学到的句子表示进 "
             "行可视化。"},
 
-        {"type": "h2", "text": "3.1 Dataset Details &nbsp;|&nbsp; 数据集细节"},
+        {"type": "h2", "text": "3.1 Dataset Details  |  数据集细节"},
 
         {"type": "p", "en":
             "We used the WMT’14 English to French dataset. We trained our models on a subset of 12M "
@@ -341,7 +339,7 @@ PAPER1 = {
             "言使用 160 000 个最高频词,目标语言使用 80 000 个最高频词。每个词表外的词都被替换 "
             "为特殊标记 “UNK”。"},
 
-        {"type": "h2", "text": "3.2 Decoding and Rescoring &nbsp;|&nbsp; 解码与重排序"},
+        {"type": "h2", "text": "3.2 Decoding and Rescoring  |  解码与重排序"},
 
         {"type": "p", "en":
             "The core of our experiments involved training a large deep LSTM on many sentence "
@@ -379,7 +377,7 @@ PAPER1 = {
             "我们还使用 LSTM 对基线系统产生的 1000-best 候选列表进行重排序。对 n-best 列表进行 "
             "重排序时,我们用 LSTM 计算每一条假设的对数概率,并将其分数与 LSTM 分数取算术平均。"},
 
-        {"type": "h2", "text": "3.3 Reversing the Source Sentences &nbsp;|&nbsp; 反转源句词序"},
+        {"type": "h2", "text": "3.3 Reversing the Source Sentences  |  反转源句词序"},
 
         {"type": "p", "en":
             "While the LSTM is capable of solving problems with long term dependencies, we "
@@ -424,7 +422,7 @@ PAPER1 = {
             "信。然而,在反转源句上训练的 LSTM 在长句上反而比在原始源句上训练的 LSTM 表现更 "
             "好(见第 3.7 节)。这表明,反转源句能够获得对内存利用更高效的 LSTM。"},
 
-        {"type": "h2", "text": "3.4 Training Details &nbsp;|&nbsp; 训练细节"},
+        {"type": "h2", "text": "3.4 Training Details  |  训练细节"},
 
         {"type": "p", "en":
             "We found that the LSTM models are fairly easy to train. We used deep LSTMs with 4 "
@@ -476,7 +474,7 @@ PAPER1 = {
             "稀少,造成 minibatch 中大量计算被浪费。为解决这一问题,我们使每个 minibatch 内 "
             "的句子长度大致接近,从而获得约 2 倍的加速。"},
 
-        {"type": "h2", "text": "3.5 Parallelization &nbsp;|&nbsp; 并行化"},
+        {"type": "h2", "text": "3.5 Parallelization  |  并行化"},
 
         {"type": "p", "en":
             "A C++ implementation of deep LSTM with the configuration from the previous section on "
@@ -497,7 +495,7 @@ PAPER1 = {
             "每块 GPU 负责与一个 1000×20 000 维矩阵相乘。最终实现的处理速度为 6 300 个 "
             "(英 / 法)词 / 秒,minibatch 大小为 128。该实现训练大约需要 10 天。"},
 
-        {"type": "h2", "text": "3.6 Experimental Results &nbsp;|&nbsp; 实验结果"},
+        {"type": "h2", "text": "3.6 Experimental Results  |  实验结果"},
 
         {"type": "p", "en":
             "We used the cased BLEU score to evaluate the quality of our translations. We computed "
@@ -569,7 +567,7 @@ PAPER1 = {
          "caption_zh":
              "表 2 —— 在 WMT’14 英—法测试集 (ntst14) 上,将神经网络与 SMT 系统相结合的方法。"},
 
-        {"type": "h2", "text": "3.7 Performance on Long Sentences &nbsp;|&nbsp; 长句表现"},
+        {"type": "h2", "text": "3.7 Performance on Long Sentences  |  长句表现"},
 
         {"type": "p", "en":
             "We were surprised to discover that the LSTM did well on long sentences, which is "
@@ -635,7 +633,7 @@ PAPER1 = {
             "sentence length, where the x-axis corresponds to the test sentences sorted by their "
             "length. There is no degradation on sentences with less than 35 words, there is only "
             "a minor degradation on the longest sentences. The right plot shows the LSTM’s "
-            "performance on sentences with progressively more rare words. &nbsp;&nbsp;|&nbsp;&nbsp; "
+            "performance on sentences with progressively more rare words.   |   "
             "图 2 —— 左图显示系统性能随句子长度的变化,横轴为按长度排序后的测试句子。在长度小 "
             "于 35 词的句子上没有任何性能下降,在最长句子上也仅有轻微的下降。右图显示 LSTM 在 "
             "包含越来越多低频词的句子上的表现。"},
@@ -643,12 +641,12 @@ PAPER1 = {
         {"type": "caption", "text":
             "Figure 3 — A 2-D PCA projection of LSTM hidden states obtained after processing the "
             "phrases. The phrases cluster by meaning — primarily a function of word order, "
-            "which would be difficult to capture with a bag-of-words model. &nbsp;&nbsp;|&nbsp;&nbsp; "
+            "which would be difficult to capture with a bag-of-words model.   |   "
             "图 3 —— 处理短语后得到的 LSTM 隐藏状态的二维 PCA 投影。短语按含义聚类,而这种含 "
             "义在本例中主要由词序决定;这一点是词袋模型难以捕捉的。"},
 
         # ----- 4. Related work -----
-        {"type": "h1", "text": "4. Related Work &nbsp;&nbsp;|&nbsp;&nbsp; 相关工作"},
+        {"type": "h1", "text": "4. Related Work   |   相关工作"},
 
         {"type": "p", "en":
             "There is a large body of work on applications of neural networks to machine "
@@ -712,7 +710,7 @@ PAPER1 = {
             "需要在预先计算的句向量库中查找最近邻,或者对一个句子进行重排序。"},
 
         # ----- 5. Conclusion -----
-        {"type": "h1", "text": "5. Conclusion &nbsp;&nbsp;|&nbsp;&nbsp; 结论"},
+        {"type": "h1", "text": "5. Conclusion   |   结论"},
 
         {"type": "p", "en":
             "In this work, we showed that a large deep LSTM, that has a limited vocabulary and "
@@ -763,7 +761,7 @@ PAPER1 = {
             "具有挑战性的序列到序列问题上同样表现良好。"},
 
         # ----- Acknowledgments -----
-        {"type": "h2", "text": "Acknowledgments &nbsp;|&nbsp; 致谢"},
+        {"type": "h2", "text": "Acknowledgments  |  致谢"},
 
         {"type": "p", "en":
             "We thank Samy Bengio, Jeff Dean, Matthieu Devin, Geoffrey Hinton, Nal Kalchbrenner, "
@@ -779,7 +777,7 @@ PAPER1 = {
             "Note: This is a faithful, full-text translation of the paper as published in NIPS "
             "2014. Figures have been referenced by number but not re-rendered; please consult the "
             "original paper for figures. The translation preserves technical terms (BLEU, "
-            "softmax, SGD, beam search, etc.) in their conventional forms. &nbsp;&nbsp;|&nbsp;&nbsp; "
+            "softmax, SGD, beam search, etc.) in their conventional forms.   |   "
             "备注:这是对 NIPS 2014 论文的完整忠实翻译。图表仅按编号引用,未重新绘制;如需图表 "
             "请参阅原论文。翻译保留 BLEU、softmax、SGD、beam search 等专业术语的通行译法。"},
     ],

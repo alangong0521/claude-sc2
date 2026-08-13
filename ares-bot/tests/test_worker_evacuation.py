@@ -60,18 +60,18 @@ class TestWorkerLastStand(unittest.TestCase):
     def test_triggers_only_when_overwhelmed_single_base_with_cover(self):
         # o256 现场:20 敌地面(9蟑螂+11狗)、2 塔、单基地、rush → 触发
         self.assertTrue(worker_last_stand(20, 2, 1, True))
-        # O268-④:压垮线 4+2×塔 —— 2 塔线 8(o268a-g01 的 9 蟑螂局要触发)
-        self.assertTrue(worker_last_stand(8, 2, 1, True))
-        self.assertFalse(worker_last_stand(7, 2, 1, True))
+        # O268-④ 放宽已回退(o269 0-10 实证):压垮线 6+4×塔
+        self.assertTrue(worker_last_stand(14, 2, 1, True))
+        self.assertFalse(worker_last_stand(13, 2, 1, True))
         # 无塔可依 → 不触发(纯送死,交 keep_safe/E6 语义)
         self.assertFalse(worker_last_stand(20, 0, 1, True))
         # 多基地 → 不触发(E6 撤离更稳)
         self.assertFalse(worker_last_stand(20, 2, 2, True))
         # 非急性窗 → 不触发(不扰动运营)
         self.assertFalse(worker_last_stand(20, 2, 1, False))
-        # 1 塔压垮线 6
-        self.assertTrue(worker_last_stand(6, 1, 1, True))
-        self.assertFalse(worker_last_stand(5, 1, 1, True))
+        # 1 塔压垮线 10
+        self.assertTrue(worker_last_stand(10, 1, 1, True))
+        self.assertFalse(worker_last_stand(9, 1, 1, True))
 
 
 class TestEvacuationCriteria(unittest.TestCase):

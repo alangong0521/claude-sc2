@@ -569,8 +569,8 @@ def worker_last_stand(
     cannons_near: int,
     ready_townhalls: int,
     threat_or_rush: bool,
-    overwhelm_base: int = 4,
-    overwhelm_per_cannon: int = 2,
+    overwhelm_base: int = 6,
+    overwhelm_per_cannon: int = 4,
 ) -> bool:
     """O256-①/O268-④:主基决死协防判据。纯逻辑,可单测。
 
@@ -579,10 +579,8 @@ def worker_last_stand(
     22-26 农民白死(每局 →5-10),经济断气。算账:22 农民(≈100dps)
     + 4 塔(64dps)对 9 蟑螂是赢面,白死才是输面 —— 塔已被压垮
     (≥overwhelm)且无处可撤时,农民拉去塔下协战比站着被屠强。
-    O268-④(o268a-g01 实证):压垮线 6+4×塔 太保守 —— 9 蟑螂 vs 2 塔
-    (线=14)不触发,农民 24→2 照样被屠;塔对蟑螂的实际交换比约
-    1:2(6s/座),线改 4+2×塔(2 塔线=8,1 塔线=6),协战在还有
-    塔可依托时开火,而不是塔死光后没人触发。
+    O268-④(4+2×塔 放宽)o269 双 lane 0-10 速败实证**回退 6+4×塔**:
+    协战触发太早 = 农民提前离矿送死,崩得比不协战还快。
     """
     return (
         threat_or_rush

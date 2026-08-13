@@ -37,10 +37,18 @@ EN_I = "Times-Italic"
 
 TITLE = ParagraphStyle(
     "Title", parent=styles["Title"], fontName=EN_B, fontSize=18,
-    leading=24, alignment=1, textColor=colors.HexColor("#0a2a52"), spaceAfter=8,
+    leading=24, alignment=1, textColor=colors.HexColor("#0a2a52"), spaceAfter=4,
+)
+ZH_TITLE = ParagraphStyle(
+    "ZhTitle", parent=styles["Title"], fontName=CN, fontSize=16,
+    leading=22, alignment=1, textColor=colors.HexColor("#0a2a52"), spaceAfter=10,
 )
 AUTHOR = ParagraphStyle(
     "Author", parent=styles["Normal"], fontName=EN, fontSize=10.5,
+    leading=14, alignment=1, textColor=colors.HexColor("#333333"), spaceAfter=4,
+)
+ZH_AUTHOR = ParagraphStyle(
+    "ZhAuthor", parent=styles["Normal"], fontName=CN, fontSize=10.5,
     leading=14, alignment=1, textColor=colors.HexColor("#333333"), spaceAfter=10,
 )
 META = ParagraphStyle(
@@ -107,9 +115,29 @@ def page_decoration(canvas, doc):
     canvas.saveState()
     canvas.setFont(EN_I, 8)
     canvas.setFillColor(colors.HexColor("#888888"))
-    canvas.drawString(2 * cm, 1.2 * cm, "AI Papers - Bilingual Edition (EN / 中文)")
+    canvas.drawString(2 * cm, 1.2 * cm, "AI Papers - Bilingual Edition (EN / ZH)")
     canvas.drawRightString(A4[0] - 2 * cm, 1.2 * cm, f"Page {doc.page}")
     canvas.restoreState()
+
+
+def _split_bilingual(text, base_style, cn_size=None, two_lines=False):
+    """If text contains '|', split into EN | ZH. By default render as single paragraph
+    with inline Chinese font. If two_lines=True, render as two separate paragraphs."""
+    if "|" not in text:
+        return [Paragraph(text, base_style)]
+    cn_size = cn_size or "12"
+    parts = text.split("|", 1)
+    if two_lines:
+        en_para = Paragraph(parts[0].strip(), base_style)
+        zh_style = ParagraphStyle(
+            "zh_inline_" + base_style.name, parent=base_style,
+            fontName=CN, fontSize=float(cn_size), leading=float(cn_size) + 4,
+            spaceBefore=2, spaceAfter=4,
+        )
+        zh_para = Paragraph(parts[1].strip(), zh_style)
+        return [en_para, zh_para]
+    html = f'{parts[0]}<font name="{CN}" fontSize="{cn_size}">{parts[1]}</font>'
+    return [Paragraph(html, base_style)]
 
 
 def render_paragraph(item, first_section=False):
@@ -118,18 +146,25 @@ def render_paragraph(item, first_section=False):
     out = []
     if t == "title":
         out.append(Paragraph(item["text"], TITLE))
+    elif t == "title_pair":
+        # Bilingual title: English in Times Bold, Chinese in STSong-Light
+        out.append(Paragraph(item["en"], TITLE))
+        out.append(Paragraph(item["zh"], ZH_TITLE))
     elif t == "authors":
         out.append(Paragraph(item["text"], AUTHOR))
+    elif t == "authors_pair":
+        out.append(Paragraph(item["en"], AUTHOR))
+        out.append(Paragraph(item["zh"], ZH_AUTHOR))
     elif t == "meta":
         out.append(Paragraph(item["text"], META))
     elif t == "h1":
-        out.append(Paragraph(item["text"], H1))
+        out.extend(_split_bilingual(item["text"], H1, cn_size="13", two_lines=True))
     elif t == "h2":
-        out.append(Paragraph(item["text"], H2))
+        out.extend(_split_bilingual(item["text"], H2, cn_size="11", two_lines=True))
     elif t == "h3":
-        out.append(Paragraph(item["text"], H3))
+        out.extend(_split_bilingual(item["text"], H3, cn_size="10", two_lines=True))
     elif t == "abstract_title":
-        out.append(Paragraph(item["text"], ABSTRACT_TITLE))
+        out.extend(_split_bilingual(item["text"], ABSTRACT_TITLE, cn_size="11", two_lines=True))
     elif t == "p":
         out.append(Paragraph(item["en"], EN_P))
         out.append(Paragraph(item["zh"], ZH_P))
