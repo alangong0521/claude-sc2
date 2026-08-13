@@ -1751,6 +1751,22 @@ class ProductionManager(Manager):
             # 分矿保底塔不走归零 —— 外层 dispatch_viable 守卫已管钉点,
             # 工人到位等几秒 > 分矿整段裸奔;主基 PSD 路径保持 O210 不变。
             _cannons_expansion = cannons if cannons > 0 else min(_ec_min, 2)
+            # O274-②(司令观察):防御集中到分矿 —— 塔/电池分铺主分矿 =
+            # 两处都薄(o267a-g03:主 1 塔/分 1 塔,波到分矿即穿)。ZT 且
+            # 二矿已落成:分矿塔目标抬到 ≥3(+电池,迎敌侧锚点已有 O38),
+            # 主基降到 1(坡口墙/叉子已在,塔是补漏);死窗期(单基地)
+            # 主基目标不动。
+            _zt_fortify_natural = (
+                self._opp_race == "zerg"
+                and self._ai_build == "timing"
+                and self.ai.townhalls.ready.amount >= 2
+            )
+            if _zt_fortify_natural:
+                _cannons_expansion = max(_cannons_expansion, 3)
+                # 主基降到 ≤2(坡口墙/叉子在,塔是补漏);威胁/rush 期不动
+                # 主基目标(波打主基时塔照拉满)。
+                if cannons > 0 and not self._threat_active and not self._rush_active:
+                    cannons = min(cannons, 2)
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
             # O207:非紧急状态下把 mor 压到 1，避免 PSD 一次派多个工人等钱
@@ -2606,13 +2622,19 @@ class ProductionManager(Manager):
         # 钉点会把 Nexus 拍进首波行进路线(o262a-g02 白捐 400 实证);
         # 多矿钉点(o251 原场景)行为不变。
         # O265 已证伪回退(220s 实验双 lane 1-4/1-2,速败回升):窗保持 320s。
+        # O274-①(司令观察):首扩钉点去 rush 闸 —— 波 60-90s 一波,
+        # rush latch 近半时间激活,钉点被无限推迟(二矿 422-482s 甚至不开,
+        # 司令实证)。波在主基被塔/墙接住时正是分矿空窗,保留
+        # 320s 窗 + 分矿点无敌 + 矿 ≥350 三重保护,不再等 rush 解除。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and 1 <= self.ai.townhalls.amount < 5
             and self.ai.supply_workers >= 16 * self.ai.townhalls.amount + 8
             and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) == 0
-            and not self._rush_active
+            and (
+                not self._rush_active or self.ai.townhalls.amount == 1
+            )
             and self.ai.minerals >= 350.0
             and (
                 self.ai.townhalls.amount >= 2
