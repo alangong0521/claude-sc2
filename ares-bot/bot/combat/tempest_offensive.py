@@ -14,7 +14,9 @@ from bot.levers import pick_focus_key, prefer_void_rays
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 
 # O272-①:制空避战触发单位(实证:o270b-g03 暴风 9→2 被 腐化8-13+飞蛇 磨光)。
-_AA_COUNTER = {UnitID.CORRUPTOR, UnitID.VIPER}
+# O273-②:加入 INFESTOR —— 霉菌(fungal)定身暴风 = 空中判死刑,
+# 见虫即撤(o272b-g01:暴风 4→0 仅 8s,内有 3 感染虫)。
+_AA_COUNTER = {UnitID.CORRUPTOR, UnitID.VIPER, UnitID.INFESTOR}
 
 
 def _pick_focus(enemies, focus: str | None, origin=None) -> Unit:
@@ -110,8 +112,9 @@ class TempestOffensive(BaseUnit):
                 lambda u: not u.is_memory
             )
 
-            # O272-①:制空避战 —— 腐化 ≥3 或飞蛇 ≥1(寄生弹)进入 15 格圈,
-            # 直接脱离战场回掩体上空(不 commit_push 时;承诺推进照打)。
+            # O272-①:制空避战 —— 腐化 ≥3 或飞蛇/感染虫 ≥1(寄生弹/霉菌)
+            # 进入 15 格圈,直接脱离战场回掩体上空(不 commit_push 时;
+            # 承诺推进照打)。
             _aa_close = [
                 u
                 for u in enemy_near_tempest
@@ -120,8 +123,12 @@ class TempestOffensive(BaseUnit):
             if (
                 not commit_push
                 and (
-                    sum(1 for u in _aa_close if u.type_id == UnitID.CORRUPTOR) >= 3
-                    or any(u.type_id == UnitID.VIPER for u in _aa_close)
+                    sum(1 for u in _aa_close if u.type_id == UnitID.CORRUPTOR)
+                    >= 3
+                    or any(
+                        u.type_id in (UnitID.VIPER, UnitID.INFESTOR)
+                        for u in _aa_close
+                    )
                 )
             ):
                 _fallback = (

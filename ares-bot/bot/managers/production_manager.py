@@ -4663,6 +4663,12 @@ class ProductionManager(Manager):
                     )
                     if _enemy_aa >= 4:
                         _cap2 = max(_cap2, 12)
+                    # O273-①(o272b-g01 实证):敌制空转型是预见性的(700s 后
+                    # 必来),等看见腐化再产追猎 = 30s+ 产能空窗,舰队 8s 内
+                    # 先死(4→0)。t≥700 追猎 cap 预置 8(防空保险),
+                    # 舰队成型(≥8)后回 4 让矿给航母。
+                    if self.ai.time >= 700.0 and _fleet_now_o246 < 8:
+                        _cap2 = max(_cap2, 8)
                 spawn = pre_fleet_spawn(
                     spawn,
                     floor_id=uid2,
