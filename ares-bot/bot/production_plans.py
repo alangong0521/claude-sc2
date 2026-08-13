@@ -569,19 +569,20 @@ def worker_last_stand(
     cannons_near: int,
     ready_townhalls: int,
     threat_or_rush: bool,
-    overwhelm_base: int = 6,
-    overwhelm_per_cannon: int = 4,
+    overwhelm_base: int = 4,
+    overwhelm_per_cannon: int = 2,
 ) -> bool:
-    """O256-①(o255 双 lane 0-9 尸检):主基决死协防判据。纯逻辑,可单测。
+    """O256-①/O268-④:主基决死协防判据。纯逻辑,可单测。
 
     o255 全 9 局同一死因:280-350s 波(9 蟑螂+11 狗 ~20 单位)进主基,
     E6 被两道闸挡死(rush 期主基不撤 + 单基地无处可撤 target=None),
     22-26 农民白死(每局 →5-10),经济断气。算账:22 农民(≈100dps)
     + 4 塔(64dps)对 9 蟑螂是赢面,白死才是输面 —— 塔已被压垮
     (≥overwhelm)且无处可撤时,农民拉去塔下协战比站着被屠强。
-    只在「就绪基地 ≤1(无处可撤)+ 有塔可依 + 急性窗(rush/threat)
-    + 敌地面达压垮线」四条件同时成立时触发;多基地局走 E6 撤离(更稳),
-    非急性窗不扰动运营。
+    O268-④(o268a-g01 实证):压垮线 6+4×塔 太保守 —— 9 蟑螂 vs 2 塔
+    (线=14)不触发,农民 24→2 照样被屠;塔对蟑螂的实际交换比约
+    1:2(6s/座),线改 4+2×塔(2 塔线=8,1 塔线=6),协战在还有
+    塔可依托时开火,而不是塔死光后没人触发。
     """
     return (
         threat_or_rush
