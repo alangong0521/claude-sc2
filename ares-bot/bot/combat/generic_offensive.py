@@ -116,33 +116,8 @@ class GenericOffensive(BaseUnit):
                 else:
                     maneuver_plan.add(AMove(unit, target.position))
             elif enemy_near and not ambush:
-                # O275(o268/o269 死窗尸检):防守战(有回撤点= rush/过渡/威胁
-                # 激活)地面兵不冲锋 —— 敌进 15 格圈就 AMove 出去接 9 蟑螂
-                # = 离开塔程散开送死(死窗 3 叉全灭于此)。改为守掩体圈:
-                # 敌进回撤点 8 格(塔程内)才接,否则钉在回撤点。
-                if retreat_point is not None and not unit.is_flying:
-                    close_enemy = [
-                        e
-                        for e in enemy_near
-                        if e.position.distance_to(retreat_point) <= 8.0
-                    ]
-                    if close_enemy:
-                        target = _pick_focus(close_enemy, focus, origin=unit)
-                        maneuver_plan.add(AMove(unit, target.position))
-                    elif unit.distance_to(retreat_point) > 4.0:
-                        grid = self._maybe_grid(unit)
-                        if grid is not None:
-                            maneuver_plan.add(
-                                PathUnitToTarget(unit, grid, retreat_point)
-                            )
-                        else:
-                            maneuver_plan.add(AMove(unit, retreat_point))
-                    else:
-                        # 已在掩体点:AMove 到自身位置 = 原地驻守,接进圈敌人
-                        maneuver_plan.add(AMove(unit, retreat_point))
-                else:
-                    target: Unit = _pick_focus(enemy_near, focus, origin=unit)
-                    maneuver_plan.add(AMove(unit, target.position))
+                target: Unit = _pick_focus(enemy_near, focus, origin=unit)
+                maneuver_plan.add(AMove(unit, target.position))
             else:
                 grid = self._maybe_grid(unit)
                 # B6 归队(来源:ares SquadManager 教程;渐进式:只加归队,不改交战细节):
