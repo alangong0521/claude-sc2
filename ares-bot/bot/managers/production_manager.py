@@ -1762,7 +1762,9 @@ class ProductionManager(Manager):
                 and self.ai.townhalls.ready.amount >= 2
             )
             if _zt_fortify_natural:
-                _cannons_expansion = max(_cannons_expansion, 3)
+                # O277-①(司令观察):分矿口塔 3→4 —— 3 塔+电池仍被 10+ 蟑螂
+                # 突进(o274 败局实证),分矿口是主防区,按主防区配塔。
+                _cannons_expansion = max(_cannons_expansion, 4)
                 # 主基降到 ≤2(坡口墙/叉子在,塔是补漏);威胁/rush 期不动
                 # 主基目标(波打主基时塔照拉满)。
                 if cannons > 0 and not self._threat_active and not self._rush_active:
@@ -1781,8 +1783,10 @@ class ProductionManager(Manager):
             # O268-③(o267a-g03 实证):裸矿(有基地 0 就绪塔)战损补塔串行
             # 太慢 —— 分矿 2 塔被拆后 ~90s 才补回 1 座,次波到脸仍裸奔丢矿。
             # 裸矿时建造槽保底 2(双塔并行,补防速度翻倍;急性期本来就 ≥2)。
+            # O277-③:裸矿槽 2→3 —— o274 局补回 3 塔仍要 ~90s(600→694s),
+            # 三槽并行把「补满前线塔阵」压进波间隙(~60s)。
             if _defenseless_base:
-                mor = max(mor, 2)
+                mor = max(mor, 3)
             # O207:Nexus/FB 资金窗期间，塔串行建造，避免多工人同时抽干
             # 让位资金。rush/威胁/timing 冲刺期已走多槽，不覆盖。
             # O268-③:裸矿补塔豁免串行(补防速度优先于资金窗整洁)。
@@ -1993,6 +1997,9 @@ class ProductionManager(Manager):
                     )
                 # O140-②:transition 流电池手动派工(从 PSD 剥离,见上)——
                 # 锚点 = 最近就绪塔(电池贴塔奶);钱到位才派(不驻车)
+                # O277-②(司令观察):锚点从「任意最近塔」(恒落主基)改
+                # 「最暴露基地(离敌焦点最近)附近的塔」—— 电池跟着前线
+                # 塔阵走,分矿堵口阵才有奶;无塔可贴时落最暴露基地锚点。
                 if self._flow.transition is not None and batt > 0:
                     _batt_have = (
                         len(
@@ -2005,13 +2012,24 @@ class ProductionManager(Manager):
                         ]
                     )
                     if _batt_have < batt:
+                        _focus = self.ai.focused_enemy_start()
+                        _front_th = min(
+                            self.ai.townhalls.ready,
+                            key=lambda t: t.position.distance_to(_focus),
+                            default=None,
+                        )
                         _batt_anchor = next(
                             (
                                 s.position
                                 for s in self.ai.structures.ready
                                 if s.type_id == UnitID.PHOTONCANNON
+                                and (
+                                    _front_th is None
+                                    or s.position.distance_to(_front_th.position)
+                                    < 15
+                                )
                             ),
-                            rally,
+                            _front_th.position if _front_th is not None else rally,
                         )
                         self._dispatch_structure(
                             UnitID.SHIELDBATTERY,
@@ -5910,7 +5928,11 @@ class ProductionManager(Manager):
                 ).amount
                 + sum(1 for p in _pending_at if th_pos.distance_to(p) < 10)
             )
-            if _have > 0:
+            # O277-④(司令观察):单兵营堵口挡不住蟑螂大军 —— 兵营血厚便宜,
+            # 分矿口墙件 1→2(双兵营+塔阵+电池构成主防区);
+            # 多出来的兵营后段照常当产能,不浪费。
+            _wall_want = 2 if self.ai.townhalls.ready.amount >= 2 else 1
+            if _have >= _wall_want:
                 continue
             # O268-①(o267a-g03 实证):BuildStructure 在途不落 tracker TARGET,
             # _pending_at 恒查不到 → 每帧重注册+刷事件(80s+ 空转几百次,
