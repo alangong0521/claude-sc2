@@ -5713,12 +5713,23 @@ class ProductionManager(Manager):
                     # (Nexus/塔/农民每帧抽走 300 矿窗),首舰拖到 788s。
                     # O228 的钉点派工(驻点等钱=钱到立刻开工)从重建窗扩到
                     # ZT 直爬;威胁让位闸(threat/rush)不变。
+                    # O276(A 方向结构改):FB 钉点等首艘虚空 —— SG 就绪即钉 FB
+                    # 会把 O261 死窗虚空永远堵死(FB pending 整窗);虚空是
+                    # 死窗波(零对空)的唯一真实战力。首艘虚空在产/就绪,或
+                    # t≥320(等不起的兜底)才钉 FB;舰队成型只晚 ~30s。
                     if self._opp_race == "zerg" and self._ai_build == "timing":
-                        self._dispatch_structure(
-                            UnitID.FLEETBEACON,
-                            self.ai.start_location,
-                            critical=True,
+                        _voids_now = (
+                            self.manager_mediator.get_own_unit_count(
+                                unit_type_id=UnitID.VOIDRAY
+                            )
+                            + cy_unit_pending(self.ai, UnitID.VOIDRAY)
                         )
+                        if _voids_now >= 1 or self.ai.time >= 320.0:
+                            self._dispatch_structure(
+                                UnitID.FLEETBEACON,
+                                self.ai.start_location,
+                                critical=True,
+                            )
                     else:
                         await self._build_core_structure(UnitID.FLEETBEACON)
             else:
