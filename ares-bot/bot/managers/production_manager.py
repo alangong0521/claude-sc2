@@ -3747,6 +3747,8 @@ class ProductionManager(Manager):
         与 _expansion_predefense(Nexus 在途才预派)互补:本函数管 Nexus 之前。"""
         if self._opp_race != "zerg" or self._ai_build != "timing":
             return
+        if not self.ai.townhalls:
+            return  # 基地全灭后 min() 空序列(o278a-g03 实证崩溃)
         if self.ai.time < 250.0 or self._cannons_ready_peak < 2:
             return
         if any(
