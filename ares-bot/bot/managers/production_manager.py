@@ -256,6 +256,8 @@ class ProductionManager(Manager):
         self._pivot_scout_route: list = []
         # O71: 二次侦查(首判后 t=250 复核开局,rush 确认偏晚修复)
         self._rescout_done: bool = False
+        # O279:首波预警 latch(二判敌兵 ≥6 → 扩张暂停+叉增产;接触即解除)
+        self._wave_incoming: bool = False
         self._rescout_tag: int | None = None
         self._rescout_verdict_done: bool = False
         # O72: O71 情报确认的 rush 预警持有到接触(上限时刻;None=不持有)
@@ -855,6 +857,9 @@ class ProductionManager(Manager):
         )
         if self._floor_unknown_zt:
             self._floor_active = True
+        # O279:预警 latch 接触即解除(威胁响应包接管,预警使命完成)
+        if self._wave_incoming and (self._threat_active or self._rush_active):
+            self._wave_incoming = False
         # O146-①:急性窗标记(敌进家 40 格 / threat 激活或 25s 内)——
         # 农民下限与刹车家族都读它;慢性状态(rush latch/sprint/过渡态
         # 本身)一律不得压农民
@@ -2662,6 +2667,10 @@ class ProductionManager(Manager):
                 not self._rush_active or self.ai.townhalls.amount == 1
             )
             and self.ai.minerals >= 350.0
+            # O279:首波预警期暂停扩张钉点 —— 波出门后往分矿点派工人/拍
+            # Nexus = 往波路径上送 400 矿(o262 白捐实证);预警解除(接触)
+            # 后波打主基,分矿空窗再开。
+            and not self._wave_incoming
             and (
                 self.ai.townhalls.amount >= 2
                 or (
@@ -3527,6 +3536,16 @@ class ProductionManager(Manager):
                 f"(开矿={has_expo},兵营={military},兵={army})",
             }
         )
+        # O279(A 方向):首波预警 —— 二判读到敌兵 ≥6(蟑螂群成型)且非 greedy
+        # → 置 _wave_incoming:扩张钉点暂停(不往波路径送 Nexus 工人),
+        # 死窗叉 cap 3→5(墙缝多两条命)。E9 接触(只剩 ~25s)不再等于
+        # 首次知情 —— 预警把防御反应提前 40-60s。接触即解除(交还威胁响应)。
+        if army >= 6 and verdict != "greedy" and not self._wave_incoming:
+            self._wave_incoming = True
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": f"O279:首波预警(敌兵{army}成型中,扩张暂停+叉增产)",
+            })
         if verdict == "rush":
             self._rush_active = True
             self._rush_clear_since = None
@@ -4803,13 +4822,15 @@ class ProductionManager(Manager):
             floor_count=self.manager_mediator.get_own_unit_count(unit_type_id=uid),
             # O255-③:unknown 死窗 floor 叉子上限压 3(300 矿,从常态 1300+
             # 银行出);常规 floor 通道(rush 确认/敌可见 ≥4)不受影响。
+            # O279:首波预警期(敌兵成型情报到手)叉 cap 3→5 —— 墙缝/塔阵
+            # 多两条命,波 40-60s 后到脸正好折跃完。
             floor_cap=(
                 min(
                     pre_fleet_cap(
                         pf.cap, pf.per_enemy, pf.max,
                         self._visible_enemy_army_count(),
                     ),
-                    3,
+                    5 if self._wave_incoming else 3,
                 )
                 if self._floor_unknown_zt
                 else pre_fleet_cap(
