@@ -1764,11 +1764,15 @@ class ProductionManager(Manager):
             if _zt_fortify_natural:
                 # O277-①(司令观察):分矿口塔 3→4 —— 3 塔+电池仍被 10+ 蟑螂
                 # 突进(o274 败局实证),分矿口是主防区,按主防区配塔。
-                _cannons_expansion = max(_cannons_expansion, 4)
-                # 主基降到 ≤2(坡口墙/叉子在,塔是补漏);威胁/rush 期不动
+                # O278(司令观察+36 局塔损顺序检索):分矿先拔 16/21(76%)
+                # —— 分矿是事实主战场。落成后主基塔只留 1 座补漏(威胁/
+                # rush 期不动),塔钱全给分矿:5 塔 + 2 电池 + 双兵营墙。
+                _cannons_expansion = max(_cannons_expansion, 5)
+                batt = max(batt, 2)
+                # 主基降到 ≤1(坡口墙/叉子在,塔是补漏);威胁/rush 期不动
                 # 主基目标(波打主基时塔照拉满)。
                 if cannons > 0 and not self._threat_active and not self._rush_active:
-                    cannons = min(cannons, 2)
+                    cannons = min(cannons, 1)
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
             # O207:非紧急状态下把 mor 压到 1，避免 PSD 一次派多个工人等钱
@@ -2072,6 +2076,10 @@ class ProductionManager(Manager):
             and self.manager_mediator.get_building_counter[UnitID.NEXUS] > 0
         ):
             self._expansion_predefense()
+        # O278:分矿口防御先于 Nexus(塔 250s 起铺,二矿窗 280s 跟进)——
+        # 波路径穿分矿,后建塔永远晚于波;与 Nexus 在途预派互补。
+        if self._flow.transition is not None:
+            self._natural_forward_defense()
 
         # O94-D(o93 局1 实证):rush 确认且主基无就绪炮塔 → 通用 2x2 槽的炮塔
         # 绕过实例。PSD 的 static_defence 槽(坡口锚点+要电)会静默返回 None
@@ -2657,7 +2665,8 @@ class ProductionManager(Manager):
             and (
                 self.ai.townhalls.amount >= 2
                 or (
-                    self.ai.time >= 320.0
+                    # O278-②:首扩窗 320→280,与分矿口预置塔(t≥250)联动
+                    self.ai.time >= 280.0
                     and self._cannons_ready_peak >= 1
                     and self._zt_enemy_near_natural() == 0
                 )
@@ -3728,6 +3737,73 @@ class ProductionManager(Manager):
                 self._dispatch_structure(
                     UnitID.SHIELDBATTERY, pos, closest_to=pos
                 )
+
+    def _natural_forward_defense(self) -> None:
+        """O278(司令观察②):分矿口防御先于 Nexus —— 波(305-320s)路径穿分矿,
+        后建的塔永远晚于波(o262 裸 Nexus 被白拆;36 局检索分矿先拔 76%)。
+        ZT + t≥250 + 主基就绪塔 ≥2 + 分矿点 35 格无敌 + 尚无分矿基地
+        → 提前在分矿口锚点铺 水晶→2 塔→电池;配合二矿窗 280s(O278-②),
+        二矿落在已设防的口子上,波到脸撞上的是塔阵不是建筑期 Nexus。
+        与 _expansion_predefense(Nexus 在途才预派)互补:本函数管 Nexus 之前。"""
+        if self._opp_race != "zerg" or self._ai_build != "timing":
+            return
+        if self.ai.time < 250.0 or self._cannons_ready_peak < 2:
+            return
+        if any(
+            th.position.distance_to(self.ai.start_location) > 5.0
+            for th in self.ai.townhalls
+        ):
+            return  # 已有分矿(含在建已落) → 交 F2/_expansion_predefense
+        if self._zt_enemy_near_natural() > 0:
+            return  # 波在踩点,不送建筑材料
+        free = [
+            el
+            for el in self.ai.expansion_locations_list
+            if not self.ai.townhalls.closer_than(5.0, el)
+        ]
+        if not free:
+            return
+        nat = min(
+            free, key=lambda el: min(el.distance_to(th) for th in self.ai.townhalls)
+        )
+        _enemy = self.ai.focused_enemy_start()
+        _anchor = base_defense_anchor(
+            False, (nat.x, nat.y), (_enemy.x, _enemy.y), forward=4.0
+        )
+        _at = Point2(_anchor) if _anchor is not None else nat
+        if (
+            sum(
+                1
+                for s in self.ai.structures
+                if s.type_id == UnitID.PYLON and s.position.distance_to(nat) < 9
+            )
+            + self._pending_near(UnitID.PYLON, nat, 9.0)
+        ) == 0:
+            self._dispatch_structure(
+                UnitID.PYLON, nat, closest_to=_at, needs_power=False
+            )
+            return
+        if (
+            sum(
+                1
+                for s in self.ai.structures
+                if s.type_id == UnitID.PHOTONCANNON
+                and s.position.distance_to(_at) < 12
+            )
+            + self._pending_near(UnitID.PHOTONCANNON, _at, 12.0)
+        ) < 2:
+            self._dispatch_structure(UnitID.PHOTONCANNON, nat, closest_to=_at)
+            return
+        if (
+            sum(
+                1
+                for s in self.ai.structures
+                if s.type_id == UnitID.SHIELDBATTERY
+                and s.position.distance_to(_at) < 12
+            )
+            + self._pending_near(UnitID.SHIELDBATTERY, _at, 12.0)
+        ) < 1:
+            self._dispatch_structure(UnitID.SHIELDBATTERY, nat, closest_to=_at)
 
     # O94-C 农民协防 role(E6 撤离=CONTROL_GROUP_ONE、B4 停气=TWO,均无框架消费者)
     _ESCORT_ROLE = UnitRole.CONTROL_GROUP_THREE

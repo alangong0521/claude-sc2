@@ -2777,11 +2777,11 @@ class TestO133TimingDefense(unittest.TestCase):
         self.assertFalse(fb_gate_f2_exempt_zt(False, False))
 
     def test_zerg_timing_expand_allowed(self):
-        # O265 已证伪回退 320s:t<320 或首塔未就绪 → 不开;t≥320 + 首塔 +
-        # 家无敌 + 分矿点无敌 → 放行;首舰已出/t≥620 硬门原样(不看塔)
+        # O278-②:t<280 或首塔未就绪 → 不开;t≥280 + 首塔 + 家无敌 +
+        # 分矿点无敌 → 放行;首舰已出/t≥620 硬门原样(不看塔)
         self.assertFalse(zerg_timing_expand_allowed(True, False, 250, 0, 0, 1))
-        self.assertFalse(zerg_timing_expand_allowed(True, False, 320, 0, 0, 0))
-        self.assertTrue(zerg_timing_expand_allowed(True, False, 320, 0, 0, 1))
+        self.assertFalse(zerg_timing_expand_allowed(True, False, 280, 0, 0, 0))
+        self.assertTrue(zerg_timing_expand_allowed(True, False, 280, 0, 0, 1))
         self.assertFalse(zerg_timing_expand_allowed(True, False, 400, 2, 0, 1))
         self.assertFalse(zerg_timing_expand_allowed(True, False, 400, 0, 1, 1))
         self.assertTrue(zerg_timing_expand_allowed(True, True, 400, 2, 1, 0))
