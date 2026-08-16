@@ -448,6 +448,15 @@ class CombatManager(Manager):
                 hot = self._hot_base_anchor(min_threat=3)
                 if hot is not None:
                     return hot
+            # O289-②(司令观察/A 案):坡口墙武装期守军锚点=缝位(gap 内侧
+            # 1.5 格)——_wall_gap_point 原无消费方(死代码),rush 窗外缝
+            # 无人把守,狗群从 1 格缝挤上高地;守军站缝=肉身堵件,农民
+            # 照常穿行。分矿告急(hot)仍优先接应,主基不被抽真空。
+            _wall_hold = getattr(
+                self.ai.production_manager, "_wall_hold_point", None
+            )
+            if _wall_hold is not None:
+                return _wall_hold
             return self._ground_defend_point()
         if tgt := order.get("target"):
             if (pt := self._resolve_steer_target(tgt)) is not None:

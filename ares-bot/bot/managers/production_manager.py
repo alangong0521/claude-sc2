@@ -1356,11 +1356,13 @@ class ProductionManager(Manager):
         # 死窗波(9蟑螂+11狗,~30 supply,305-320s 到脸)无墙可挡,塔/叉/追猎
         # 全组合实测守不住(o252-o256 累计 0-38)。物理封口 + 塔/电池墙后
         # 输出是 rush 局已验证的解;波到脸(threat)即停工转防守。
-        # O257-① 墙链已于 O261-② 再次关断(o258/o260 双系列实证):墙 400 矿
-        # (水晶/GW/forge 上墙)在 261-330s 资金窗挤死塔3与 SG,封口也从未在
-        # 波前(305-320s)完成 —— 墙在 ZT 死窗同样不成立,非只 rush 早期窗。
-        # 代码保留备查(_wall_build_chain/_wall_slots force 通道原样)。
-        if False and (  # noqa: SIM115 — 关断备查,勿删(见上行尸检证据)
+        # O257-① 墙链曾于 O261-② 关断(o258/o260 双系列实证:墙 400 矿在
+        # 261-330s 资金窗挤死塔3与 SG)。
+        # O289(2026-08-16 司令拍板 A 案重开)再证伪:o289 双 lane 0-10,
+        # 墙 GW 261-369s 反复「派→等→撤→再派」 churn(o289b-g01),
+        # one_base×2 —— 墙在资金窗抢钱、二矿开不出,o258 旧证据成立,
+        # 重新关断(缝位堵件 combat wall_hold 分支不花钱,保留)。
+        if False and (  # noqa: SIM115 — 关断备查,勿删(o289 尸检证据)
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and _unknown_defense
