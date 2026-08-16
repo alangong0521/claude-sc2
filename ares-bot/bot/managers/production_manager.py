@@ -1648,6 +1648,19 @@ class ProductionManager(Manager):
             # 持续抽干,二矿永远开不出;把塔目标压到 ec.min(1-2 座保命塔)。
             if self._expand_holding:
                 cannons = min(cannons, _ec_min)
+            # O290(B 案,司令 2026-08-16 拍板;o283dbg/o288 实证):口袋激活期
+            # 非急性塔/电池/siege 全封顶 —— threat/rush 例外条款让塔链在
+            # active=True 期间照长(塔 3→10、电池 1→6),银行振荡 25-315
+            # 永远攒不到 400,Nexus 拖 375-614s。激活且非急性 → 塔/电池
+            # 目标归 0(存量防御硬顶 20-40s 攒钱窗);急性(threat)不冻,
+            # 保命塔照拍。Nexus 派出后 active 翻假(O54 条款接管),链恢复。
+            # 与 o284 的 F2 整段冻结不同:不拦防御注册/电池奶/堵件,
+            # 且激活只覆盖首扩(townhalls==1),窗短,无裸奔链式扩张问题。
+            _pocket_saving = (
+                self._zt_pocket_expand_active() and not self._threat_active
+            )
+            if _pocket_saving:
+                cannons = 0
             # O216d(O216c 败局):FB 实体落成前,动态塔目标扩到 3-4 座/基地会反复
             # 抽干 300 矿 FB 资金窗,舰队继续空转。压回 ec.min(1-2 座保命塔),
             # 让 FB 优先落地。过渡期地面防御不动。
@@ -1674,6 +1687,10 @@ class ProductionManager(Manager):
                 self._structure_present_or_pending(UnitID.CYBERNETICSCORE),
                 batt,
             )
+            # O290(B 案):激活期电池同封顶(transition 流电池走手动派工,
+            # batt=0 即不派,见下方 O140-②)。
+            if _pocket_saving:
+                batt = 0
             # O140-②(o139 terran-rush 局2 实证):transition 流的电池从 PSD
             # 剥离 —— PSD/BuildStructure 无 can_afford 守卫,穷局电池工
             # 「驻车↔O11撤回」死循环(局2:batt=2 自 258 注册,280s 零落地)。
@@ -1830,6 +1847,9 @@ class ProductionManager(Manager):
                 and _fleet_total_now < 3
                 and not self._rush_active
             ):
+                siege = False
+            # O290(B 案):激活期 siege 12 塔链同封顶(o283dbg 塔 6→10 主嫌)。
+            if _pocket_saving:
                 siege = False
             if siege and ms is not None:
                 # 需求3:敌大军压上分矿(前线)→ 双实例(exclude 互补:只前线加强,
