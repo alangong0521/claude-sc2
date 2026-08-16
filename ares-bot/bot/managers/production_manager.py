@@ -1066,7 +1066,7 @@ class ProductionManager(Manager):
             # 475 矿(原 buffer=75 导致 150 矿触发后仍不派工,二矿永远落不了地)。
             # O281:ZT 首扩定点口袋矿(避 305-320s 死窗波路径,o280 基线 0-9
             # 实证 natural 拍进波路径);定点时 max_pending 钳 1,防同点双派。
-            _exp_loc = self._zt_first_expand_target()
+            _exp_loc = self._zt_pocket_expand_target()
             if _exp_loc is not None:
                 _pending = 1
             macro_plan.add(
@@ -2697,7 +2697,7 @@ class ProductionManager(Manager):
             if _free_exp:
                 # O281:ZT 首扩(townhalls==1)钉点目标 = 口袋矿(离敌最远);
                 # 多矿钉点(o251 原场景)仍取最近,行为不变。
-                _exp_target = self._zt_first_expand_target() or min(
+                _exp_target = self._zt_pocket_expand_target() or min(
                     _free_exp,
                     key=lambda el: min(el.distance_to(th) for th in self.ai.townhalls),
                 )
@@ -4959,13 +4959,15 @@ class ProductionManager(Manager):
             and u.position.distance_to(nat) < 35
         )
 
-    def _zt_first_expand_target(self):
-        """O281(o280 基线复测 0-9 裁决打法上限):ZT 首扩远位口袋矿选址。
+    def _zt_pocket_expand_target(self):
+        """O281(o280 基线复测 0-9 裁决打法上限):ZT 口袋矿选址。
 
         natural 在 305-320s 死窗波行进路径上,Nexus 建筑期被首波打断/白捐
         (o280 复盘 one_base×2:420s 仍单矿)。首扩(townhalls==1)目标改取
         离敌出生点最远的空闲扩张点;非 ZT / bases>=2 / 敌点未知 / 无空闲点
-        → None(调用方退回原 natural 逻辑)。空集合守卫同 O263b。"""
+        → None(调用方退回原 natural 逻辑)。空集合守卫同 O263b。
+        O283 推广到 1..max_bases-1 已证伪回退(o283/o284/o285 三个 0-10:
+        首扩行为不变、三矿早落但新矿裸奔被小股轮抄,胜场反消失)。"""
         if not (self._opp_race == "zerg" and self._ai_build == "timing"):
             return None
         if self.ai.townhalls.amount != 1:
@@ -4980,12 +4982,12 @@ class ProductionManager(Manager):
         return pick_pocket_expansion(free, self.ai.enemy_start_locations[0])
 
     def _zt_enemy_near_expand_target(self) -> int:
-        """O281:首扩目标点(口袋矿)35 格内敌作战单位数。
+        """O281:扩张目标点(口袋矿)35 格内敌作战单位数。
 
         波压在 natural(波路径)上时口袋矿仍安全,开矿闸应看目标点而不是
         natural —— 否则波一到 natural 开矿永被锁死(o280 one_base 死法)。
-        非首扩场景退回 _zt_enemy_near_natural(行为不变)。"""
-        target = self._zt_first_expand_target()
+        非 ZT 场景退回 _zt_enemy_near_natural(行为不变)。"""
+        target = self._zt_pocket_expand_target()
         if target is None:
             return self._zt_enemy_near_natural()
         return sum(
@@ -5004,7 +5006,7 @@ class ProductionManager(Manager):
         无敌+无 Nexus 在途)直接想开,holding 锁死攒钱,目标落成 ≤400s
         (O236 胜负线)。Nexus 一旦在途,holding 由 O54 的 counter/tracker
         条款接管,本判据退出。"""
-        if self._zt_first_expand_target() is None:
+        if self._zt_pocket_expand_target() is None:
             return False
         if self.ai.time < 280.0 or self._cannons_ready_peak < 1:
             return False
@@ -5016,9 +5018,46 @@ class ProductionManager(Manager):
             return False
         return True
 
+    def _zt_pocket_expand_debug(self) -> None:
+        """O283d(o283 双 lane 0-10 排查):口袋激活判据逐子条件节流记账。
+
+        o283 实证:激活旁路整局未触发(二矿走 O251 硬饱和钉点 584s),
+        静态读码定位不到哪个子条件为假 —— 运行时记账,10s 一条。"""
+        if not (self._opp_race == "zerg" and self._ai_build == "timing"):
+            return
+        if not (1 <= self.ai.townhalls.amount <= 2):
+            return
+        if not (270.0 < self.ai.time < 700.0):
+            return
+        _last = getattr(self, "_o283_dbg_ts", 0.0)
+        if self.ai.time - _last < 10.0:
+            return
+        self._o283_dbg_ts = self.ai.time
+        _near_main = sum(
+            1 for s in self.ai.structures.ready
+            if s.type_id == UnitID.PHOTONCANNON
+            and s.position.distance_to(self.ai.start_location) < 25
+        )
+        self.ai._events.append({
+            "t": round(self.ai.time, 1),
+            "msg": (
+                f"O283d: target={self._zt_pocket_expand_target() is not None}"
+                f" cannons_peak={self._cannons_ready_peak}"
+                f" near={self._zt_enemy_near_expand_target()}"
+                f" counter={self.manager_mediator.get_building_counter[UnitID.NEXUS]}"
+                f" tracker={self.ai.not_started_but_in_building_tracker(UnitID.NEXUS)}"
+                f" active={self._zt_pocket_expand_active()}"
+                f" cn_main={_near_main}"
+                f" rush={self._rush_active}/{self._rush_confirmed}"
+                f" threat={self._threat_active}"
+                f" m={round(self.ai.minerals)}"
+            ),
+        })
+
     def _want_dynamic_expand(self) -> bool:
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
+        self._zt_pocket_expand_debug()  # O283d:激活判据节流记账(排查期)
         # O168:8 农民 carrier 核心科技缺失期间禁扩张，避免 Nexus 把
         # CYBERNETICCORE/STARGATE/FLEETBEACON 的资金窗吸干。
         # O216:Zerg Timing 下二矿是生存前提,150s 触发不能被 early_core_missing
@@ -6383,13 +6422,13 @@ class ProductionManager(Manager):
                 self._defense_score(),  # O105-①:防御达标豁免首舰门
             )
         ):
-            # O281:ZT 首扩定点口袋矿;_zt_first_expand_target 非首扩返回
+            # O281:ZT 定点口袋矿;_zt_pocket_expand_target 非 ZT 返回
             # None,ExpansionController 走原 own_expansions 排序,行为不变。
             self.ai.register_behavior(
                 ExpansionController(
                     to_count=self.ai.townhalls.amount + 1,
                     max_pending=1,
-                    location=self._zt_first_expand_target(),
+                    location=self._zt_pocket_expand_target(),
                 )
             )
             return
