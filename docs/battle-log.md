@@ -7438,3 +7438,34 @@ ares `ResourceManager._assign_workers_to_mineral_patches` 只给**未指派**农
    presumed 首塔时点提前。
 4. 环境另账:o281a-g04 ERROR(671s 连接中断),三轮累计 8 例,SC2 进程
    中途死亡,与打法无关。
+
+## o282 口袋矿首扩激活旁路:1-9,打出 o263 后首胜,输局瓶颈=三矿不开
+
+**日期**：2026-08-16
+
+### 改动(O282)
+
+- `_zt_pocket_expand_active`:ZT+townhalls==1+t≥280+首塔+口袋点无敌+无 Nexus
+  在途 → `_want_dynamic_expand` 直接 True(旁路 enemy_home/rush/transition 闸),
+  holding 锁死攒 400。波 305-660s 前线闸常闭导致 holding 翻板、矿被塔/地面
+  吃干(o281 二矿 442-671s 的直接原因)。
+
+### 结果
+
+- lane1 **1-4**,lane2 0-5 → 1-9。o263 后首胜。
+- 胜局(o282a-g02,Victory 1115s)教科书复现赢面剖面:281s 矿 730(holding
+  锁住)→ **二矿 309s** → 三矿 602s → 四矿 871s → 68 农/195 人口/
+  TEMPEST×17+STALKER×13。
+- 输局:二矿 413-562s 还是偏晚(窗开时银行被塔吃空,312s 才派工等钱),
+  且**三矿被锁死**(rush latch 常闭 → should_expand_dynamic 整局不开,
+  o282a-g04 卡 2 基地到 960s),经济 2 矿封顶 → 舰队矿被地面磨干 →
+  终局 ORACLE×1。
+
+### 尸检三个改进点
+
+1. **口袋逻辑只覆盖首扩,townhalls≥2 回落旧闸** —— 三矿/四矿被 rush
+   latch 锁死是输局主因。→ O283:口袋选址+激活旁路推广到 1..max_bases-1。
+2. **窗开瞬间银行≈0 的局扩张仍拖到 413s+** —— 280s 前塔链无节制。
+   观察项:O283 后若仍晚,考虑 250s 起塔链让位 Nexus 预留。
+3. **环境**:两轮又 2 例崩溃重试(o282a-g02/o282b-g03 首跑无结果),
+   ERROR 频率仍高,与打法无关,另账。

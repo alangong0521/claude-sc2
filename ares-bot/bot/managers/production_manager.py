@@ -4994,6 +4994,28 @@ class ProductionManager(Manager):
             and u.position.distance_to(target) < 35
         )
 
+    def _zt_pocket_expand_active(self) -> bool:
+        """O282(o281 双 lane 0-9 尸检):口袋矿首扩激活判据。
+
+        o281 实证:口袋矿机制成立(死窗波不再收割,存活 697-949s)但扩张
+        拖到 442-671s —— enemy_home/rush 闸在波 305-660s 常闭,holding 随闸
+        翻板,矿被塔/地面吃干,窗开放后永远攒不到 400。口袋矿远离主基前线,
+        敌压主基正是口袋空窗(塔阵接敌):激活期(窗开放+首塔就绪+口袋点
+        无敌+无 Nexus 在途)直接想开,holding 锁死攒钱,目标落成 ≤400s
+        (O236 胜负线)。Nexus 一旦在途,holding 由 O54 的 counter/tracker
+        条款接管,本判据退出。"""
+        if self._zt_first_expand_target() is None:
+            return False
+        if self.ai.time < 280.0 or self._cannons_ready_peak < 1:
+            return False
+        if self._zt_enemy_near_expand_target() > 0:
+            return False
+        if self.manager_mediator.get_building_counter[UnitID.NEXUS] > 0:
+            return False
+        if self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0:
+            return False
+        return True
+
     def _want_dynamic_expand(self) -> bool:
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
@@ -5017,6 +5039,12 @@ class ProductionManager(Manager):
             and self._cannons_ready_peak < 1
         ):
             return False
+        # O282(o281 双 lane 0-9 尸检):口袋矿首扩激活 → 不看主基前线
+        # (enemy_home/rush/transition 闸在波 305-660s 常闭,holding 翻板,
+        # 矿被塔/地面吃干,Nexus 拖 442-671s 全在 O236 负侧)。口袋矿远离
+        # 前线,敌压主基正是口袋空窗,塔阵接敌与开矿并行。
+        if self._zt_pocket_expand_active():
+            return True
         # O247(o246 系列 0-15 实证):二矿 400-500s 落成即被 10-27 地面波轮抄,
         # 经济永远起不来;改舰队先行 —— 首舰(Tempest)出场前不开二矿,
         # 舰队掩护下再扩(600s 前后),单矿期矿全给塔/地面/舰队科技。
