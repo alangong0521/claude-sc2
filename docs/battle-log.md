@@ -7380,3 +7380,29 @@ ares `ResourceManager._assign_workers_to_mineral_patches` 只给**未指派**农
   分矿先拔局的分矿存活率、胜率回归线 3/5。
 
 ---
+
+## o280 基线复测裁决：环境 or 打法上限 → **打法上限**
+
+**日期**：2026-08-15
+
+### 实验设计
+
+- 工作区 `git checkout 504fe26 -- ares-bot/bot ares-bot/flows.yml`（o263 打穿当天原封代码），双 lane headless 各 5 局 Zerg Timing / AbyssalReefLE。
+- 目的：打穿后 ~80 局各配置胜率 0-40%，裁决是「重启后环境劣化」还是「o263 lane2 的 3-1 是波幅 RNG 侥幸」。
+
+### 结果
+
+- lane1(o280a)：0胜 2负 3异常；lane2(o280b)：0胜 2负 3异常。**合计 0-9 + 6 ERROR**。
+- 4 局 decisive 全败：249s / 326s / 162s / 387s，剖面 one_base(420s 仍单矿) + overrun(终局 25 vs 0 / 71 vs 2) —— 死窗波（305-320s）原样收割，与打穿前死法一致。
+- 6 局 ERROR 无 traceback，run.log 止于 "Closing connection / Cleaning up"（293-364s 游戏中连接中断），SC2 进程中途死亡——环境稳定性问题另账处理（重启后 Agent/进程管理）。
+
+### 裁决
+
+- 基线代码在相同环境下 0 胜 ⇒ **o263 lane2 的 3-1 主要是波幅 RNG 侥幸（首波 14 vs 21 supply 分水岭），当前打法无法稳定复现 3 胜**。连败主因是打法上限，不是环境。
+- 恢复 HEAD（`git checkout HEAD -- ares-bot/bot ares-bot/flows.yml`），打穿链改进（O255-O279）全部保留。
+
+### 3 个改进点（下一迭代 O281「远位口袋矿」）
+
+1. **首扩选址避开波路径**：二矿不开在默认 natural（波进攻路径上，305-320s 波撞上建筑期 Nexus），改开**离敌最远的扩张点（口袋矿）**，Nexus 落成前不承受首波。
+2. **环境稳定性**：ERROR 局 SC2 中途死亡占 60%，bench 层对「连接中断无结果」加重试上限并记录进程退出码，避免异常局污染胜率样本。
+3. **复测基线作对照**：后续每轮打法迭代，若胜率异常塌陷，先重跑 o280 式基线复测 1 lane 区分环境/打法，再动代码。

@@ -5,7 +5,8 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 ## 环境红线（2026-08-12 司令确认 + 事故教训）
 
 > **单机版不更新 SC2**：本机玩的是单机版（bot vs 内置 AI），永远不需要更新客户端。
-> - **不要启动 Battle.net App / Agent**——Agent 联网查版本后会给 SC2 打「需要更新」标记（2026-08-10 排障时启动过一次 Agent，次日客户端即被要求更新）。战网若被打开要完全退出。
+> - **不要打开 Battle.net App 并点更新**——联网查版本后会给 SC2 打「需要更新」标记（2026-08-10 排障时启动过一次，次日客户端即被要求更新）。战网 App 若被打开要完全退出。
+> - **但 Battle.net Agent 后台进程必须运行**：2026-08-15 重启后实测，Agent 不在时 SC2 二进制挂起（93-303MB 内存、不进游戏、无 API 端口）；`open -a "/Users/Shared/Battle.net/Agent/Agent.app"` 启动 Agent 后立刻恢复。Agent 常驻 ≠ 点更新，两者不冲突。重启 Mac 后 bench 前先确认 Agent 在跑。
 > - bench 直启版本化二进制（`Versions/Base97563/SC2.app`），绕过战网，与更新标记无关。
 > - **系统代理与 SC2 互斥**：系统代理开着但节点失效时，SC2 启动校验卡死（websocket 180s 超时）；bench 前确认 `scutil --proxy` 关闭或节点可用。
 
