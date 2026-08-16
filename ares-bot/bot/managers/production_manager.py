@@ -2098,14 +2098,19 @@ class ProductionManager(Manager):
         # (局1:forge t≈185 就绪、矿 435、F2 注册正常,炮塔零派出败亡)——
         # O78c 在分矿绕过同类失败的同思路:槽池大、有电即可,锚点优先。
         # BuildStructure 自带 tech 闸(forge 未就绪不派工),首座就绪后退出。
-        if rush_cannon_bypass(
-            self._rush_confirmed,
-            self._flow.transition is not None,
-            sum(
-                1 for s in self.ai.structures.ready
-                if s.type_id == UnitID.PHOTONCANNON
-                and s.position.distance_to(self.ai.start_location) < 25
-            ),
+        # O286:在途驻点条目计入去重(与 presumed 链同口径),
+        # 防「派→等→撤→再派」多工人钉点。
+        if (
+            rush_cannon_bypass(
+                self._rush_confirmed,
+                self._flow.transition is not None,
+                sum(
+                    1 for s in self.ai.structures.ready
+                    if s.type_id == UnitID.PHOTONCANNON
+                    and s.position.distance_to(self.ai.start_location) < 25
+                ),
+            )
+            and self.ai.not_started_but_in_building_tracker(UnitID.PHOTONCANNON) == 0
         ):
             _ramp = getattr(self.ai, "main_base_ramp", None)
             _anchor = None
@@ -3189,6 +3194,31 @@ class ProductionManager(Manager):
                 self._dispatch_structure(UnitID.FORGE, home, wall=True),
             )
             return True
+        # O288-②(司令观察「彻底堵口+折射出门」):缝不用建筑封 —— 农民
+        # 开矿/调拨必须步行出缝,建筑封死=自囚(口袋矿经济链断)。
+        # 缝的防守交给 O136 武装的站位/堵件逻辑(_wall_gap_point 消费方),
+        # 这里补墙外折射水晶:地面部队出门靠折射到低地水晶能量场
+        # (缝朝坡底 5 格),同时给墙后塔阵供电。
+        _ramp = getattr(self.ai, "main_base_ramp", None)
+        if _ramp is not None and getattr(_ramp, "bottom_center", None) is not None:
+            _out = Point2(_gap).towards(Point2(_ramp.bottom_center), 5.0)
+            if (
+                sum(
+                    1 for s in self.ai.structures
+                    if s.type_id == UnitID.PYLON
+                    and s.position.distance_to(_out) < 4.0
+                )
+                + self._pending_near(UnitID.PYLON, _out, 4.0)
+            ) == 0:
+                if not self.ai.can_afford(UnitID.PYLON):
+                    return True
+                self._wall_track(
+                    UnitID.PYLON,
+                    self._dispatch_structure(
+                        UnitID.PYLON, home, closest_to=_out, needs_power=False,
+                    ),
+                )
+                return True
         return False
 
     async def _presumed_defense_chain(self) -> None:
@@ -3241,6 +3271,11 @@ class ProductionManager(Manager):
                 and s.position.distance_to(home) < 25
             )
             + self.manager_mediator.get_building_counter[UnitID.PHOTONCANNON]
+            # O286(o285b-g03 实证):驻点等钱的在途条目必须计入 —— 原口径漏
+            # not_started tracker,派工下帧即「0 塔」再派,126s 三农民钉点
+            # 干等(派→等→撤→再派循环),forge/首塔资金被钉穿,首波 236s
+            # 到脸 0 塔。计入后单一驻点,O212 熔断正常收尾。
+            + self.ai.not_started_but_in_building_tracker(UnitID.PHOTONCANNON)
         )
         # O168:核心科技缺失期间 presumed 链已在上游跳过 forge；这里再拦一次
         # 首塔/首叉，确保非 rush 运营局不把矿投进防御链。
@@ -3750,8 +3785,10 @@ class ProductionManager(Manager):
                 + self._pending_near(UnitID.PHOTONCANNON, pos, 12.0)
             )
             if _can < 2:
+                # O288-①:塔贴电池(电池幸存/塔战损重建时塔阵不散)
+                _canchor = self._cannon_anchor_near_battery(pos, pos)
                 self._dispatch_structure(
-                    UnitID.PHOTONCANNON, pos, closest_to=pos
+                    UnitID.PHOTONCANNON, pos, closest_to=_canchor
                 )
                 continue
             _bat = (
@@ -3766,6 +3803,24 @@ class ProductionManager(Manager):
                 self._dispatch_structure(
                     UnitID.SHIELDBATTERY, pos, closest_to=pos
                 )
+
+    def _cannon_anchor_near_battery(self, base_pos, fallback):
+        """O288-①(司令观察):塔贴着电池建 —— 电池奶射程(6)内的塔阵才是
+        完整防线,塔散在电池奶不到的地方是废铁。基地 15 格内有就绪电池
+        且其 6 格内尚无就绪塔 → 下一座塔锚到电池位;否则回落原锚点。"""
+        for s in self.ai.structures.ready:
+            if s.type_id != UnitID.SHIELDBATTERY:
+                continue
+            if s.position.distance_to(base_pos) > 15.0:
+                continue
+            if any(
+                c.type_id == UnitID.PHOTONCANNON
+                and c.position.distance_to(s.position) < 6.0
+                for c in self.ai.structures.ready
+            ):
+                continue
+            return s.position
+        return fallback
 
     def _natural_forward_defense(self) -> None:
         """O278(司令观察②):分矿口防御先于 Nexus —— 波(305-320s)路径穿分矿,
@@ -3823,7 +3878,9 @@ class ProductionManager(Manager):
             )
             + self._pending_near(UnitID.PHOTONCANNON, _at, 12.0)
         ) < 2:
-            self._dispatch_structure(UnitID.PHOTONCANNON, nat, closest_to=_at)
+            # O288-①:塔贴电池(电池奶射程内的塔阵才是完整防线)
+            _cat = self._cannon_anchor_near_battery(nat, _at)
+            self._dispatch_structure(UnitID.PHOTONCANNON, nat, closest_to=_cat)
             return
         if (
             sum(
@@ -5008,7 +5065,12 @@ class ProductionManager(Manager):
         条款接管,本判据退出。"""
         if self._zt_pocket_expand_target() is None:
             return False
-        if self.ai.time < 280.0 or self._cannons_ready_peak < 1:
+        # O287(跨 60 局胜/败局支出结构对照):激活窗 280→200 —— 唯一胜局
+        # (o282a-g02)的赢面轨迹是 ~180s 起零新增建筑、硬攒到 790 银行,
+        # 窗开即拍 Nexus(309s);败局共同点是 190-280s 零星支出(水晶 5-6/
+        # 二 forge/塔 2-3)把银行滴干,窗开时 m=20-90。早激活 = 早 holding =
+        # 非威胁开销全让位;威胁/rush 例外不变,真波来仍放塔。
+        if self.ai.time < 200.0 or self._cannons_ready_peak < 1:
             return False
         if self._zt_enemy_near_expand_target() > 0:
             return False

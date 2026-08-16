@@ -551,6 +551,81 @@ def update_worker_transfer(ai) -> None:
                 src_count -= moved
 
 
+def update_gas_topup(ai) -> None:
+    """O288-⑤(司令观察):矿线红色超饱和(>2×矿点)而气矿 <3 人 → 超额农民上气。
+
+    前 7 分钟常见:钱矿 20+ 农民(红色,边际零产出)气矿却 1-2 人 —— ares
+    每帧只补 1 个气工且 select_worker 常被建造/协防抽干,气常年欠员。
+    3s 节流:某基地矿线农民 > 2×矿点 且其就绪气矿某座 <3 人 → 超额农民
+    从矿线簿记摘除、同步写入 ares 气矿簿记再 gather 上气(簿记一致,
+    Mining 下帧不会把人拽回)。守卫:停气台账非空(rush/O157 停气激活,
+    不打架)/气银行 ≥600(气在烂银行就别再采,与 O157 语义一致)/急性窗
+    不动;跳过建造中/司令接管/撤离农民,每农民 30s 冷却(与 O266 共用)。"""
+    if ai.time - getattr(ai, "_last_gas_topup_scan", 0.0) < 3.0:
+        return
+    ai._last_gas_topup_scan = ai.time
+    pm = ai.production_manager
+    if pm.rush_active or getattr(pm, "_threat_active", False):
+        return
+    if getattr(pm, "_gas_stopped_tags", None):
+        return
+    if ai.vespene >= 600:
+        return
+    if not ai.gas_buildings or not ai.mineral_field or not ai.townhalls:
+        return
+    rm = ai.manager_hub.resource_manager
+    th_of_worker = ai.mediator.get_worker_tag_to_townhall_tag
+    on_minerals = ai.mediator.get_worker_to_mineral_patch_dict
+    tracker = ai.mediator.get_building_tracker_dict
+    cd: dict = ai._transfer_cd
+    gathering = set(ai.mediator.get_unit_role_dict[UnitRole.GATHERING])
+    for gas in ai.gas_buildings.ready:
+        th = ai.townhalls.closest_to(gas.position)
+        if th is None or th.position.distance_to(gas.position) > 12:
+            continue
+        assigned = sum(
+            1 for g in rm.worker_to_geyser_dict.values() if g == gas.tag
+        )
+        need = 3 - assigned
+        if need <= 0:
+            continue
+        patches = ai.mineral_field.closer_than(10, th).amount
+        if patches == 0:
+            continue
+        mineral_workers = sum(
+            1 for tag, th_tag in th_of_worker.items()
+            if th_tag == th.tag and tag in on_minerals
+        )
+        surplus = mineral_workers - patches * 2
+        if surplus <= 0:
+            continue
+        moved = 0
+        for w in ai.workers:
+            if moved >= min(need, surplus):
+                break
+            if th_of_worker.get(w.tag) != th.tag or w.tag not in on_minerals:
+                continue
+            if w.tag in tracker or w.tag in ai._player_ctrl:
+                continue
+            if cd.get(w.tag, 0.0) > ai.time or w.tag not in gathering:
+                continue
+            rm.remove_worker_from_mineral(w.tag)
+            rm.geyser_to_list_of_workers.setdefault(gas.tag, set()).add(w.tag)
+            rm.worker_to_geyser_dict[w.tag] = gas.tag
+            w.gather(gas)
+            cd[w.tag] = ai.time + 30.0
+            moved += 1
+        if moved:
+            ai._events.append({
+                "t": round(ai.time, 1),
+                "msg": (
+                    f"O288:气矿补员 {moved} 人"
+                    f"(矿线 {mineral_workers}/{patches * 2} 超饱和,"
+                    f"气工 {assigned}→{assigned + moved})"
+                ),
+            })
+
+
 # 人机共驾：司令一旦亲手操作某单位，bot 让权 N 游戏秒；期间不再自动指挥它，
 # N 秒内没有新手操 → 自动收回控制权。停放在 PERSISTENT_BUILDER（"不自动重指派"）role，
 # combat/oracle/mining 都按 role 选单位，自然全部跳过它；唯一例外是 ares
@@ -688,6 +763,9 @@ class MyBot(AresBot):
         # O266(司令观察):满载基地 → 欠饱和新矿的农民调拨(ares 只派未指派
         # 农民,新矿靠新训慢慢填的缺口)。E6/决死之后跑,3s 节流。
         update_worker_transfer(self)
+        # O288-⑤(司令观察):矿线红色超饱和而气矿欠员 → 超额农民上气,
+        # 簿记同步 ares 气矿台账;停气/气烂银行/急性窗不动。
+        update_gas_topup(self)
         # O39:敌主力盘踞的矿线摘掉农民资源指派(基地被推平后持旧指派回流送死),
         # 1s 节流;摘除后 ResourceManager 把人重派到活着基地
         if self.time - self._last_contested_scan >= 1.0:

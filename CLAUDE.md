@@ -4,6 +4,8 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 
 ## 环境红线（2026-08-12 司令确认 + 事故教训）
 
+> **2026-08-16 司令确认（O288 起）**：每轮验证改为 **单 lane 5 局快验**（headless `REALTIME=False` 不变），不再默认双 lane 10 局；双 lane 只在需要大样本裁决（基线复测/证伪仲裁）时临时开。
+
 > **单机版不更新 SC2**：本机玩的是单机版（bot vs 内置 AI），永远不需要更新客户端。
 > - **不要打开 Battle.net App 并点更新**——联网查版本后会给 SC2 打「需要更新」标记（2026-08-10 排障时启动过一次，次日客户端即被要求更新）。战网 App 若被打开要完全退出。
 > - **但 Battle.net Agent 后台进程必须运行**：2026-08-15 重启后实测，Agent 不在时 SC2 二进制挂起（93-303MB 内存、不进游戏、无 API 端口）；`open -a "/Users/Shared/Battle.net/Agent/Agent.app"` 启动 Agent 后立刻恢复。Agent 常驻 ≠ 点更新，两者不冲突。重启 Mac 后 bench 前先确认 Agent 在跑。
