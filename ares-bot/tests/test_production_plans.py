@@ -2806,6 +2806,20 @@ class TestO133TimingDefense(unittest.TestCase):
         self.assertIs(pick_pocket_expansion([near], enemy), near)
         self.assertIsNone(pick_pocket_expansion([], enemy))
         self.assertIsNone(pick_pocket_expansion([near], None))
+        # O291:背靠图缘加分 —— 同等离敌距离下贴缘点胜出;纯距离点
+        # 优势 >0.5×贴缘差时仍选纯距离点
+        rect = (0, 0, 100, 100)
+        edge_pt = _P(45, 2)   # 离敌 45.04,贴缘(edge=2)
+        open_pt = _P(45, 40)  # 离敌 60.2? 不,用同距离对照:离敌 45,edge=40
+        open_pt = _P(32, 32)  # 离敌 45.25(≈同距),edge=32
+        # edge_pt score=45.04-1=44.04;open_pt score=45.25-16=29.25 → 贴缘胜
+        self.assertIs(pick_pocket_expansion([open_pt, edge_pt], enemy, rect), edge_pt)
+        # 纯距离优势明显(60 vs 45.04,差 15>0.5×(40-2)=19? 差14.96<19) → 贴缘仍胜
+        far_open = _P(60, 0)  # 离敌 60,edge=40(图缘 x 右缘 100-60=40,y 缘 0) → edge=0!
+        far_open = _P(55, 50)  # 离敌 74.3,edge=min(55,45,50,50)=45 → score 51.8 胜
+        self.assertIs(pick_pocket_expansion([edge_pt, far_open], enemy, rect), far_open)
+        # rect=None → 纯距离(向后兼容)
+        self.assertIs(pick_pocket_expansion([open_pt, edge_pt], enemy, None), open_pt)
 
     def test_rush_blocks_reserve(self):
         # O151-①:rush 但家 40 格无敌(波间隙)→ 不挡攒钱预留;

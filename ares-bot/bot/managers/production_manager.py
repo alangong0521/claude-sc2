@@ -5058,7 +5058,13 @@ class ProductionManager(Manager):
             for el in self.ai.expansion_locations_list
             if not self.ai.townhalls.closer_than(5.0, el)
         ]
-        return pick_pocket_expansion(free, self.ai.enemy_start_locations[0])
+        # O291(司令观察):传 playable 区域 → 选址加地形分(背靠图缘的
+        # 矿点背后墙体天然封口,只需封正面 1-2 个口)。
+        _pa = getattr(self.ai.game_info, "playable_area", None)
+        _rect = (_pa.x, _pa.y, _pa.width, _pa.height) if _pa is not None else None
+        return pick_pocket_expansion(
+            free, self.ai.enemy_start_locations[0], _rect
+        )
 
     def _zt_enemy_near_expand_target(self) -> int:
         """O281:扩张目标点(口袋矿)35 格内敌作战单位数。

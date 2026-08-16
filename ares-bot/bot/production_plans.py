@@ -2373,16 +2373,28 @@ def zerg_timing_expand_allowed(
     )
 
 
-def pick_pocket_expansion(free_expansions, enemy_start):
+def pick_pocket_expansion(free_expansions, enemy_start, playable_rect=None):
     """O281(o280 基线复测 0-9 裁决打法上限):ZT 首扩远位口袋矿。纯逻辑,可单测。
 
     natural 在 305-320s 死窗波行进路径上,Nexus 建筑期被首波打断/白捐
     (o280 复盘 one_base×2:420s 仍单矿)。首扩改取**离敌出生点最远**的空闲
     扩张点 —— 波打主基/natural 塔阵时口袋矿零压力落成,经济曲线不断。
-    入参任一为空 → None(调用方退回原 natural 选址)。"""
+    入参任一为空 → None(调用方退回原 natural 选址)。
+    O291(司令观察):选址加地形分 —— 优先「背靠地图边缘」的矿点(背后
+    墙体天然封口,防御只需封正面 1-2 个口);score = 离敌距离 -
+    0.5×离图缘距离,贴缘矿点在同等离敌距离下胜出。playable_rect=
+    (x, y, w, h),None 时退化为纯离敌距离。"""
     if not free_expansions or enemy_start is None:
         return None
-    return max(free_expansions, key=lambda el: el.distance_to(enemy_start))
+    if playable_rect is None:
+        return max(free_expansions, key=lambda el: el.distance_to(enemy_start))
+    rx, ry, rw, rh = playable_rect
+
+    def _score(el):
+        edge = min(el.x - rx, rx + rw - el.x, el.y - ry, ry + rh - el.y)
+        return el.distance_to(enemy_start) - 0.5 * edge
+
+    return max(free_expansions, key=_score)
 
 
 def unknown_verdict_defense(
