@@ -2373,6 +2373,18 @@ def zerg_timing_expand_allowed(
     )
 
 
+def pick_pocket_expansion(free_expansions, enemy_start):
+    """O281(o280 基线复测 0-9 裁决打法上限):ZT 首扩远位口袋矿。纯逻辑,可单测。
+
+    natural 在 305-320s 死窗波行进路径上,Nexus 建筑期被首波打断/白捐
+    (o280 复盘 one_base×2:420s 仍单矿)。首扩改取**离敌出生点最远**的空闲
+    扩张点 —— 波打主基/natural 塔阵时口袋矿零压力落成,经济曲线不断。
+    入参任一为空 → None(调用方退回原 natural 选址)。"""
+    if not free_expansions or enemy_start is None:
+        return None
+    return max(free_expansions, key=lambda el: el.distance_to(enemy_start))
+
+
 def unknown_verdict_defense(
     enemy_is_zerg: bool,
     has_transition: bool,

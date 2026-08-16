@@ -41,6 +41,9 @@ class ExpansionController(MacroBehavior):
             This is useful in a MacroPlan as it will prevent other
             spending actions occurring.
             Default is False
+        location: Optional fixed expansion target. When set, skip the
+            `get_own_expansions` ordering and expand at this exact point
+            (safety/blocked checks still apply). Default is None.
     """
 
     to_count: int
@@ -48,6 +51,7 @@ class ExpansionController(MacroBehavior):
     check_location_is_safe: bool = True
     max_pending: int = 1
     prioritize: bool = False
+    location: Optional[Point2] = None
 
     def execute(self, ai: "AresBot", config: dict, mediator: ManagerMediator) -> bool:
         # already have enough / or enough pending
@@ -77,6 +81,13 @@ class ExpansionController(MacroBehavior):
         self, mediator: ManagerMediator
     ) -> Optional[Point2]:
         grid: np.ndarray = mediator.get_ground_grid
+        if self.location is not None:
+            if (
+                self.check_location_is_safe
+                and not mediator.is_position_safe(grid=grid, position=self.location)
+            ) or self._location_is_blocked(mediator, self.location):
+                return None
+            return self.location
         for el in mediator.get_own_expansions:
             location: Point2 = el[0]
             if (

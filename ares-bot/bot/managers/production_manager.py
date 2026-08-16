@@ -173,6 +173,7 @@ from bot.production_plans import (
     unknown_verdict_defense,
     zerg_timing_unknown_floor,
     zerg_timing_expand_allowed,
+    pick_pocket_expansion,
     upgrade_tech_buildings,
     wall_disabled_after,
     wall_escort_needed,
@@ -1063,11 +1064,17 @@ class ProductionManager(Manager):
             )
             # O210:O189 强制开二矿时立即预走位,不等 dispatch_viable 凑够
             # 475 矿(原 buffer=75 导致 150 矿触发后仍不派工,二矿永远落不了地)。
+            # O281:ZT 首扩定点口袋矿(避 305-320s 死窗波路径,o280 基线 0-9
+            # 实证 natural 拍进波路径);定点时 max_pending 钳 1,防同点双派。
+            _exp_loc = self._zt_first_expand_target()
+            if _exp_loc is not None:
+                _pending = 1
             macro_plan.add(
                 ExpansionController(
                     to_count=self.ai.townhalls.amount + _pending,
                     max_pending=_pending,
                     prioritize=_preposition or self._o189_forced_expand,
+                    location=_exp_loc,
                 )
             )
         # 升级(O1/O8/O10):研究交 UpgradeController 并进 MacroPlan 且 prioritize=True ——
@@ -2675,9 +2682,10 @@ class ProductionManager(Manager):
                 self.ai.townhalls.amount >= 2
                 or (
                     # O278-②:首扩窗 320→280,与分矿口预置塔(t≥250)联动
+                    # O281:踩点检查对着首扩目标点(口袋矿),不是 natural
                     self.ai.time >= 280.0
                     and self._cannons_ready_peak >= 1
-                    and self._zt_enemy_near_natural() == 0
+                    and self._zt_enemy_near_expand_target() == 0
                 )
             )
         ):
@@ -2687,7 +2695,9 @@ class ProductionManager(Manager):
                 if not self.ai.townhalls.closer_than(5.0, el)
             ]
             if _free_exp:
-                _exp_target = min(
+                # O281:ZT 首扩(townhalls==1)钉点目标 = 口袋矿(离敌最远);
+                # 多矿钉点(o251 原场景)仍取最近,行为不变。
+                _exp_target = self._zt_first_expand_target() or min(
                     _free_exp,
                     key=lambda el: min(el.distance_to(th) for th in self.ai.townhalls),
                 )
@@ -4949,6 +4959,41 @@ class ProductionManager(Manager):
             and u.position.distance_to(nat) < 35
         )
 
+    def _zt_first_expand_target(self):
+        """O281(o280 基线复测 0-9 裁决打法上限):ZT 首扩远位口袋矿选址。
+
+        natural 在 305-320s 死窗波行进路径上,Nexus 建筑期被首波打断/白捐
+        (o280 复盘 one_base×2:420s 仍单矿)。首扩(townhalls==1)目标改取
+        离敌出生点最远的空闲扩张点;非 ZT / bases>=2 / 敌点未知 / 无空闲点
+        → None(调用方退回原 natural 逻辑)。空集合守卫同 O263b。"""
+        if not (self._opp_race == "zerg" and self._ai_build == "timing"):
+            return None
+        if self.ai.townhalls.amount != 1:
+            return None
+        if not self.ai.enemy_start_locations:
+            return None
+        free = [
+            el
+            for el in self.ai.expansion_locations_list
+            if not self.ai.townhalls.closer_than(5.0, el)
+        ]
+        return pick_pocket_expansion(free, self.ai.enemy_start_locations[0])
+
+    def _zt_enemy_near_expand_target(self) -> int:
+        """O281:首扩目标点(口袋矿)35 格内敌作战单位数。
+
+        波压在 natural(波路径)上时口袋矿仍安全,开矿闸应看目标点而不是
+        natural —— 否则波一到 natural 开矿永被锁死(o280 one_base 死法)。
+        非首扩场景退回 _zt_enemy_near_natural(行为不变)。"""
+        target = self._zt_first_expand_target()
+        if target is None:
+            return self._zt_enemy_near_natural()
+        return sum(
+            1 for u in self.ai.enemy_units
+            if not u.is_structure and is_combat_type(u.type_id)
+            and u.position.distance_to(target) < 35
+        )
+
     def _want_dynamic_expand(self) -> bool:
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
@@ -4992,7 +5037,7 @@ class ProductionManager(Manager):
                 if not u.is_structure and is_combat_type(u.type_id)
                 and u.position.distance_to(self.ai.start_location) < 40
             ),
-            self._zt_enemy_near_natural(),
+            self._zt_enemy_near_expand_target(),  # O281:对着首扩目标点(口袋矿)
             self._cannons_ready_peak,
         ):
             return False
@@ -6301,7 +6346,7 @@ class ProductionManager(Manager):
                     if not u.is_structure and is_combat_type(u.type_id)
                     and u.position.distance_to(self.ai.start_location) < 40
                 ),
-                self._zt_enemy_near_natural(),
+                self._zt_enemy_near_expand_target(),  # O281:对着首扩目标点(口袋矿)
                 self._cannons_ready_peak,
             )
             and not fleet_expand_holds(
@@ -6310,9 +6355,13 @@ class ProductionManager(Manager):
                 self._defense_score(),  # O105-①:防御达标豁免首舰门
             )
         ):
+            # O281:ZT 首扩定点口袋矿;_zt_first_expand_target 非首扩返回
+            # None,ExpansionController 走原 own_expansions 排序,行为不变。
             self.ai.register_behavior(
                 ExpansionController(
-                    to_count=self.ai.townhalls.amount + 1, max_pending=1
+                    to_count=self.ai.townhalls.amount + 1,
+                    max_pending=1,
+                    location=self._zt_first_expand_target(),
                 )
             )
             return
