@@ -4102,7 +4102,12 @@ class ProductionManager(Manager):
                 else 3
             ),
             # O309-②:白送上界(同 O306-③口径),超线不拉,留经济火种
-            hopeless=worker_last_stand_hopeless(enemy_near, cannons_ready),
+            # O310-②(o309a game_01/02/05 实证):0 塔时白送线 14→8 ——
+            # 敌 8-9 地面塔未就绪照拉 ×6,10s 骤减 4-6,纯喂。
+            hopeless=worker_last_stand_hopeless(
+                enemy_near, cannons_ready,
+                hopeless_base=(8 if cannons_ready == 0 else 14),
+            ),
         )
         # O136-③:坡口墙模式未封口 + 敌地面近家 ≥2 → 协防去墙缝肉身填缝
         # (墙建筑完工前的空窗 = 速骰局死刑窗;封口/敌退自动归队)

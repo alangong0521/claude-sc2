@@ -21,6 +21,7 @@ from bot.production_plans import (
     should_release_waiting_builder,
     worker_last_stand,
     worker_last_stand_hopeless,
+    last_stand_pull_cap,
     worker_transfer_count,
 )
 from bot.shield_battery import restore_with_batteries
@@ -458,8 +459,12 @@ def update_worker_last_stand(ai) -> None:
     _can_pull = not stand and (
         ai.time - getattr(ai, "_last_stand_pulled_at", -9999.0) > 30.0
     )
+    # O310-①(o309a game_01/02/05 实证):首批拉人封顶 2+4×塔 —— 无上限
+    # 拉出 11-17 农民 vs 蟑螂海,10s 骤减 9-10;第 ~8 人后边际输出归零,
+    # 超出部分纯喂。
+    _pull_cap = last_stand_pull_cap(cannons)
     for w in ai.workers:
-        if not _can_pull:
+        if not _can_pull or pulled >= _pull_cap:
             break
         if w.tag in stand or w.tag not in gathering:
             continue

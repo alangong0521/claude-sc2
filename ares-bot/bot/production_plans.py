@@ -569,7 +569,7 @@ def worker_last_stand(
     cannons_near: int,
     ready_townhalls: int,
     threat_or_rush: bool,
-    overwhelm_base: int = 6,
+    overwhelm_base: int = 10,
     overwhelm_per_cannon: int = 4,
 ) -> bool:
     """O256-①/O268-④:主基决死协防判据。纯逻辑,可单测。
@@ -581,6 +581,11 @@ def worker_last_stand(
     (≥overwhelm)且无处可撤时,农民拉去塔下协战比站着被屠强。
     O268-④(4+2×塔 放宽)o269 双 lane 0-10 速败实证**回退 6+4×塔**:
     协战触发太早 = 农民提前离矿送死,崩得比不协战还快。
+    O310-③(o309a game_01/02/05 实证):收紧到 10+4×塔 —— 塔1-2 对
+    敌 14-18 地面的拉人局(o307a 拉9-11、o309a 拉11-17)全败,
+    战损 9-10 农民/场;o255 的赢面算术前提是 4 塔。塔 <3 时农民
+    冲锋改变不了结局,不如留矿(白死=ares keep_safe 个体避险,
+    基地真丢再被屠,早死晚死一样,活着多采 10s 是 10s)。
     """
     return (
         threat_or_rush
@@ -589,6 +594,17 @@ def worker_last_stand(
         and enemy_ground_near
         >= overwhelm_base + overwhelm_per_cannon * cannons_near
     )
+
+
+def last_stand_pull_cap(cannons_near: int) -> int:
+    """O310-①(o309a game_01/02/05 实证):决死协防首批拉人封顶。纯逻辑,可单测。
+
+    首批无上限拉出 11-17 农民 vs 14-15 蟑螂,10s 内骤减 9-10 ——
+    农民对蟑螂的边际输出在第 ~8 人后归零(包围圈就那么大),
+    超出的部分是纯喂。封顶 2+4×塔:塔2→10、塔1→6,与压垮线
+    同节奏(塔越多农民输出环境越好,才值得多拉)。
+    """
+    return 2 + 4 * cannons_near
 
 
 def worker_last_stand_hopeless(
