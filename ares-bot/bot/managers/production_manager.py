@@ -737,6 +737,9 @@ class ProductionManager(Manager):
             self.ai.time,
             scout_lost=self._scout_lost(),
         )
+        # O300-②:_build_flow_structures 的停气闸也读 presumed(局部变量
+        # 不出 update 作用域),存属性供跨方法读。
+        self._presumed_rush = _presumed_rush
         # O133-③(o132 timing 局1/2/5 实证):vs Zerg 二判仍 unknown 且 t≥200
         # → 按 presumed 同等级拉防御(F2 target 2 塔)——unknown ≠ 等到接触
         # O207:Zerg Timing 局若首判/二判仍是 unknown，t≥200 起按 presumed
@@ -2566,7 +2569,11 @@ class ProductionManager(Manager):
             and self._first_fleet_seen()
             and _sg_total_o218 < min(8, 1 + self.ai.townhalls.ready.amount)
             and self.ai.vespene >= 400.0
-            and self.ai.can_afford(UnitID.STARGATE)
+            # O301-③(o300b game_03 实证):can_afford 门挡在钉点之外 —— 矿
+            # 振荡 0-175 时闸不开,钉点永远不成立,SG1 整局、气 1060 烂。
+            # ZT 走 critical 钉点(驻点等钱=钱到即开工,O229),不需要帧判
+            # 钱够;非 ZT 路径 _build_core_structure 内部自带 can_afford
+            # 守卫(5823),本门移除两侧都安全。
             # O233(o232-lane1 game_01 实证):rush latch 长期化把追加 SG 闸死,
             # 舰队 280s 卡 1 艘;放宽为「急性 rush(家 40 格敌 ≥4)」才闸,
             # 波间隙 latch 不挡产能。
@@ -2668,10 +2675,13 @@ class ProductionManager(Manager):
         # ≥500 → 空闲星门先点暴风。save_up 截断(航母占比落后只留航母)把
         # 星门押给永远凑不齐的 350 矿,气 1000+ 烂 300s 只产 1 暴风 1 航母;
         # 舰队数量 > 完美配比,暴风落地即战力。
+        # O301-②(o300b game_03 实证):气门 500 太高 —— 气 365-507 窗星门
+        # 全闲(G1 整局),暴风 175/125 本可负担却一艘不点,追猎洪水抢矿。
+        # 300 以上即点(暴风气耗 125,留 175 余量给 FB/航母接力)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and self.ai.vespene >= 500.0
+            and self.ai.vespene >= 300.0
             and self._fb_entities_now > 0
             and not self.ai.can_afford(UnitID.CARRIER)
             and self.ai.can_afford(UnitID.TEMPEST)
@@ -4823,10 +4833,22 @@ class ProductionManager(Manager):
             and u.type_id not in (UnitID.OBSERVER, UnitID.WARPPRISM,
                                   UnitID.MEDIVAC, UnitID.OVERSEER)
         )
+        # O301-①(o300a game_01 实证):pivot 追猎 p0/0.3 在 freeflow 下无上限
+        # —— 兵营快(30s/125 矿)对星门(43s/175 矿+125 气)速度碾压,追猎
+        # 洪水 28 只(3500 矿+1400 气)把暴风挤到 4 艘(胜局配方 14-17)。
+        # 追猎混入加上限:现有 <12 才混(防空保险够用的量,矿留给暴风)。
         if air_threat >= pv.anti_air_trigger and pv.anti_air_units:
             for name in pv.anti_air_units:
                 uid = getattr(UnitID, name, None)
                 if uid is not None:
+                    if (
+                        uid == UnitID.STALKER
+                        and self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.STALKER
+                        )
+                        >= 12
+                    ):
+                        continue
                     spawn[uid] = {
                         "proportion": pv.anti_air_proportion, "priority": 0,
                     }
@@ -6088,10 +6110,14 @@ class ProductionManager(Manager):
         # 气矿(75 矿/个)抢 —— forge 220s 等钱、首塔 249s 才落成,249s
         # 农民 24→7 崩盘。ZT rush 确认且 forge 未就绪 → 暂停新气矿
         # (75 矿=半个塔/半个 forge),forge 就绪自动恢复。
+        # O300-②(o299a game_01 实证):接触确认(~290s)太晚 —— 首塔 203.6s
+        # 等钱时双气已在跑(气 444+),确认前资金窗早被吃。扩到 presumed
+        # (55s 起):forge 准点(95-110s)时气矿窗本来就在 100s+,误伤极小;
+        # forge 晚点时新气矿让位正是本意。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and self._rush_confirmed
+            and (self._rush_confirmed or getattr(self, "_presumed_rush", False))
             and not any(
                 s.is_ready
                 for s in self.manager_mediator.get_own_structures_dict[UnitID.FORGE]

@@ -142,6 +142,36 @@ class TempestOffensive(BaseUnit):
                 self.ai.register_behavior(offensive_maneuver)
                 continue
 
+            # O300-①(o291-o299 系列「损失暴风舰×2」连发实证):敌地对空群
+            # (刺蛇/皇后,can_attack_air 的地面单位)≥4 进 15 格且有掩体时,
+            # 通用分支的 StutterUnitBack 倒飞 = 被 4.09 速(on-creep)蛇群
+            # 追出塔阵单独追死(暴风 2.8 速跑不过)。改撤到最近塔/电池上空
+            # 站定输出:塔阵接敌+电池奶盾,暴风射程 10 在掩体上空白打;
+            # 掩体 6 格内即站定 AMove 集火,不再倒飞。commit_push 行军纪律
+            # 不变(推进期照原分支)。
+            _ground_aa = [
+                u for u in enemy_near_tempest
+                if not u.is_structure and not u.is_flying
+                and getattr(u, "can_attack_air", False)
+            ]
+            if (
+                not commit_push
+                and len(_ground_aa) >= 4
+                and _cover_points
+            ):
+                _fallback = min(
+                    _cover_points, key=lambda p: p.distance_to(unit.position)
+                )
+                if unit.position.distance_to(_fallback) > 6.0:
+                    offensive_maneuver.add(
+                        PathUnitToTarget(unit, self.mediator.get_air_grid, _fallback)
+                    )
+                else:
+                    _tgt = _pick_focus(_ground_aa, focus, origin=unit)
+                    offensive_maneuver.add(AMove(unit, _tgt.position))
+                self.ai.register_behavior(offensive_maneuver)
+                continue
+
             in_attack_range: list[Unit] = cy_in_attack_range(unit, enemy_near_tempest)
 
             if len(in_attack_range) > 0 and commit_push:
