@@ -7982,3 +7982,25 @@ ares `ResourceManager._assign_workers_to_mineral_patches` 只给**未指派**农
 
 **降档标定验证**:同配置跑 Harder Zerg Timing 双 lane —— Harder 稳赢
 = 14 轮迭代有效、VeryHard 继续爬;Harder 也输 = 有更深基础问题。
+
+## o305 Harder 降档标定(司令拍板):**2 胜**,标定成功
+
+**日期**：2026-08-17
+
+### 结果
+
+- **o305b 2/5 胜**(game_01 1130.9s / game_02 1176.5s),o305a 0/5。
+- 胜局终局编成 = 胜局配方复现:game_01 TEMPEST×15+STALKER×11+
+  CARRIER×1(149 supply);game_02 TEMPEST×22+STALKER×11(195 supply,
+  69 农 4 矿)。
+- 标定结论:**o291-o304 十四轮迭代有效** —— bot 当前水位 =
+  Harder 可复现胜(配方达成),VeryHard 差一档经济压强。
+- game_01 备注:二矿 526s(晚于 VH 配方窗)在 Harder 仍能赢 ——
+  VH 的差距本质是波次压强逼出更多防御开销 → 扩张晚 → 850s 舰队
+  质量差。
+
+### 后续协议(本轮起)
+
+- **双 lane 分工**:lane1 = VeryHard 主攻(不变),lane2 = Harder
+  回归基线 —— 防 VH 迭代码改动破坏已验证的 Harder 胜场能力;
+  Harder 胜率应随迭代单调不降(当前基线 2/5,目标 ≥3/5)。
