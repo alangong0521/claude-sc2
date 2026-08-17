@@ -2371,8 +2371,22 @@ class ProductionManager(Manager):
         _econ_floor = self.ai.supply_workers < min(
             16, 22 * max(1, self.ai.townhalls.amount)
         )
+        # O311-①(o309a/o310b 尸检,司令「26/4 浪费人口」观察):ZT 单矿期
+        # 农民生产上限 20 —— 单矿饱和 ~16-22,超出部分零边际采矿收益,
+        # 24-28 农 = 250-400 矿死在人口里 ≈ 2-3 座塔/4 个叉(首波 280-330s
+        # 到脸时正是缺这批防御钱)。二矿在途(含钉点等钱)即解除:预产
+        # 农民填新矿。econ_floor(<16)优先级更高不受影响。
+        _zt_probe_capped = (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.townhalls.amount <= 1
+            and self.ai.supply_workers >= 20
+            and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) == 0
+            and self.manager_mediator.get_building_counter[UnitID.NEXUS] == 0
+        )
         if _probe_floor or _econ_floor or (
-            (not self._rush_active or _rush_hold)
+            not _zt_probe_capped
+            and (not self._rush_active or _rush_hold)
             and not _probe_yield
             # O130-①:农民 <8 豁免冲刺闸(经济活命优先于链纯洁)
             and not (_sprint and sprint_blocks_probes(self.ai.supply_workers))
@@ -2815,6 +2829,10 @@ class ProductionManager(Manager):
         # O262-②(o261 双 lane 0-10 尸检,复盘 one_base×5):钉点开矿从三矿
         # 起(2<=bases)扩到首扩(1<=bases)——单矿硬饱和(≥24 农)时同样钉点,
         # 治「主闸已放行但 Nexus 排不出/被波次打断」。
+        # O311-③(o309a/o310b 尸检):首扩钉点农民门 24→20(+8→+4)——
+        # 首波后农民常被打到 12-20,24 门永假;20 已超单矿饱和(16),
+        # 余 4 农的采矿量换二矿早 30-60s 落地是赚的二矿时点
+        # (胜局 309s vs 败局 478-546s 是胜负线)。
         # O262-③:钉点派工加近可负担门(矿 ≥350)——驻点等钱从 100s+ 压到
         # <10s,暴露窗与 idle_builder 等钱同步收敛(o261a-g01 两次钉点
         # 各等 100s+ 被波次打断)。
@@ -2830,7 +2848,7 @@ class ProductionManager(Manager):
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and 1 <= self.ai.townhalls.amount < 5
-            and self.ai.supply_workers >= 16 * self.ai.townhalls.amount + 8
+            and self.ai.supply_workers >= 16 * self.ai.townhalls.amount + 4
             and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) == 0
             and (
                 not self._rush_active or self.ai.townhalls.amount == 1

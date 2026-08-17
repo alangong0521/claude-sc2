@@ -30,7 +30,6 @@ from bot.main import (  # noqa: E402
 )
 from bot.production_plans import (  # noqa: E402
     evacuation_clear,
-    last_stand_pull_cap,
     pick_evacuation_base,
     should_evacuate_workers,
     worker_last_stand,
@@ -62,29 +61,19 @@ class TestWorkerLastStand(unittest.TestCase):
     def test_triggers_only_when_overwhelmed_single_base_with_cover(self):
         # o256 现场:20 敌地面(9蟑螂+11狗)、2 塔、单基地、rush → 触发
         self.assertTrue(worker_last_stand(20, 2, 1, True))
-        # O310-③(o309a 三局实证):压垮线 6+4×塔收紧到 10+4×塔 ——
-        # 塔1-2 对敌 14-18 地面的拉人局全败,o255 赢面算术前提是 4 塔
-        self.assertTrue(worker_last_stand(18, 2, 1, True))
-        self.assertFalse(worker_last_stand(17, 2, 1, True))
-        self.assertFalse(worker_last_stand(14, 2, 1, True))
+        # O268-④ 放宽已回退(o269 0-10 实证):压垮线 6+4×塔
+        # O310-③ 收紧 10+4×塔亦回退(o310b Harder 0/5:少拉=基地更快掉)
+        self.assertTrue(worker_last_stand(14, 2, 1, True))
+        self.assertFalse(worker_last_stand(13, 2, 1, True))
         # 无塔可依 → 不触发(纯送死,交 keep_safe/E6 语义)
         self.assertFalse(worker_last_stand(20, 0, 1, True))
         # 多基地 → 不触发(E6 撤离更稳)
         self.assertFalse(worker_last_stand(20, 2, 2, True))
         # 非急性窗 → 不触发(不扰动运营)
         self.assertFalse(worker_last_stand(20, 2, 1, False))
-        # 1 塔压垮线 14
-        self.assertTrue(worker_last_stand(14, 1, 1, True))
-        self.assertFalse(worker_last_stand(13, 1, 1, True))
-        # 4 塔压垮线 26(o255 赢面现场仍触发)
-        self.assertTrue(worker_last_stand(26, 4, 1, True))
-        self.assertFalse(worker_last_stand(25, 4, 1, True))
-
-    def test_last_stand_pull_cap(self):
-        # O310-①:首批拉人封顶 2+4×塔(第 ~8 人后边际输出归零)
-        self.assertEqual(last_stand_pull_cap(1), 6)
-        self.assertEqual(last_stand_pull_cap(2), 10)
-        self.assertEqual(last_stand_pull_cap(4), 18)
+        # 1 塔压垮线 10
+        self.assertTrue(worker_last_stand(10, 1, 1, True))
+        self.assertFalse(worker_last_stand(9, 1, 1, True))
 
     def test_last_stand_hopeless(self):
         # O306-③:白送上界 14+6×塔 —— 2 塔:26 及以下冲,27+ 游走保命
