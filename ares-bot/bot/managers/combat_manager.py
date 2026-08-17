@@ -547,7 +547,10 @@ class CombatManager(Manager):
                 # (波间隙)且舰队 ≥3 → 压向敌最远端已知基地(新矿防御最薄),
                 # 狙 Nexus/农民拖慢 Zerg 90-supply 成型;全程蹲守=敌自由运营
                 # 到 2 倍兵力(近 20 局复盘共同特征)。暴风射程 10 压孢子/皇后。
-                if _is_zerg_timing and _fleet_count >= 3:
+                # O297-③(o296b game_02 实证):舰队 3-7 艘正是出门骚扰档 —
+                # 小舰队在外,82-supply 波换家时回防不及(952s 损失暴风×2);
+                # 骚扰是成型舰队(≥8)的特权,小舰队蹲守锚点保家优先。
+                if _is_zerg_timing and _fleet_count >= 8:
                     _known = self._known_enemy_townhalls()
                     if _known:
                         return _known[-1].position

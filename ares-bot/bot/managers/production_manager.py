@@ -1159,6 +1159,13 @@ class ProductionManager(Manager):
             ),
             minerals=self.ai.minerals,
             nexus_price=self.ai.calculate_cost(UnitID.NEXUS).minerals,
+            # O298-②:expand_reserve 敌情闸(与 O296-① carrier 闸同口径)
+            enemy_supply=sum(
+                self.ai.calculate_supply_cost(u.type_id)
+                for u in self.ai.enemy_units
+                if not u.is_structure and is_combat_type(u.type_id)
+            ),
+            own_supply=float(self.ai.supply_army),
             # O224:transition 期 zealot 吃光 SG/FB 资金窗(SG ~500s/首舰 620+)。
             # 防御已立(t≥240+塔≥2)且 SG/FB 缺失 → 停产攒钱,买得起即恢复。
             # O226(o222-lane2 game_04 实证):塔≥2 门太严(本局塔 1 拖到 281s,
@@ -2195,6 +2202,20 @@ class ProductionManager(Manager):
                     self.ai.start_location if self._defense_urgent else None
                 ),
             )
+            # O296-③(o295a game_02/o292b 多局实证):首塔 no_placement 多为
+            # 主基带电 2x2 槽归零(带电余=0 反复出现)——塔链无电自救,
+            # 防御窗干等死。no_placement 且带电槽 0 → 钉点补电(O55/O295-①
+            # 同构;critical 钉点等钱=钱到即开工,can_afford 守卫防穷局钉死)。
+            if (
+                _dispatch == "no_placement"
+                and self._slot_counts_at(
+                    self.ai.start_location, BuildingSize.TWO_BY_TWO
+                )[0] == 0
+                and self.ai.can_afford(UnitID.PYLON)
+            ):
+                self._dispatch_structure(
+                    UnitID.PYLON, self.ai.start_location, critical=True
+                )
             # O118-①:防御紧急窗内派工即时簿记(结果变化或 5s 节流)——
             # forge 就绪 → 首塔落地的静默段逐帧可见,不等 15s 停滞
             if self._defense_urgent and (
@@ -2838,10 +2859,13 @@ class ProductionManager(Manager):
         # 每帧让位暴风,零产出。机械台就绪且敌地面 ≥6 且不朽 <4 且买得起
         # → 空闲机械台直接点不朽(与 O239 航母同机制,绕过配比竞争);
         # 买不起时由 spawn_pause_reason 的 immortal_reserve 攒钱。
+        # O297-②(o296b game_02 实证):舰队基建已活后不朽 275 矿/个与暴风
+        # 抢矿(2 不朽 ≈ 3 暴风的矿,94 人口杂牌军被 82 波碾)——让位舰队。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and self._visible_enemy_army_count() >= 6
+            and not self._zt_fleet_infra_live()
             and self.ai.can_afford(UnitID.IMMORTAL)
             and (
                 self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.IMMORTAL)
@@ -4003,7 +4027,17 @@ class ProductionManager(Manager):
             and s.position.distance_to(home) < 25
         )
         zealots = self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.ZEALOT)
-        need = rush_worker_escort_needed(enemy_near, cannons_ready, zealots)
+        # O299-②(o298b game_03 实证):164s 1-2 狗进矿线时 min_enemy=3 不触发,
+        # 无人应答 → 狗群 234s 滚到 4+ 才协防,249s 农民 24→7 崩盘。
+        # ZT 首波窗触发收到 2(协防池 O130 采矿底线不变,过度拉人自有 cap)。
+        need = rush_worker_escort_needed(
+            enemy_near, cannons_ready, zealots,
+            min_enemy=(
+                2
+                if (self._opp_race == "zerg" and self._ai_build == "timing")
+                else 3
+            ),
+        )
         # O136-③:坡口墙模式未封口 + 敌地面近家 ≥2 → 协防去墙缝肉身填缝
         # (墙建筑完工前的空窗 = 速骰局死刑窗;封口/敌退自动归队)
         _wall_plug = wall_escort_needed(
@@ -4690,7 +4724,15 @@ class ProductionManager(Manager):
         # rush 响应:叉子还没顶够数,全力补叉
         # O203:舰队已转型成功 → 不再走 rush_zealots 分支,避免 zealot 持续吞矿、
         # gas 烂银行。fleet 成型后的赢法是舰队规模,不是填叉子。
-        if self._rush_active and pv.rush_zealots and not self._fleet_transitioned:
+        # O297-①(o296b game_02 实证):ZT 的 _fleet_transitioned 永假 → rush
+        # 纯叉分支整局有效,舰队基建已活仍波后叉子回填(5×100 矿/波 ≈ 2.5
+        # 暴风的矿);与 O203 同语义,舰队基建活即退出本分支。
+        if (
+            self._rush_active
+            and pv.rush_zealots
+            and not self._fleet_transitioned
+            and not self._zt_fleet_infra_live()
+        ):
             zealots = self.manager_mediator.get_own_unit_count(
                 unit_type_id=UnitID.ZEALOT
             )
@@ -4741,15 +4783,7 @@ class ProductionManager(Manager):
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and zt_prewave_trickle_needed(
-                fleet_infra_live=(
-                    any(
-                        s.is_ready
-                        for s in self.manager_mediator.get_own_structures_dict[
-                            UnitID.STARGATE
-                        ]
-                    )
-                    and self._structure_present_or_pending(UnitID.FLEETBEACON)
-                ),
+                fleet_infra_live=self._zt_fleet_infra_live(),
                 gateway_ready=any(
                     g.is_ready
                     for g in self.manager_mediator.get_own_structures_dict[
@@ -4802,9 +4836,11 @@ class ProductionManager(Manager):
         # (p0/proportion 1.0):275 矿可付时优先于暴风,250-274 时暴风照产
         # (O245e 的 reserve 停产实证:其他开销照抽,275 永远攒不出,地面 0
         # 败亡——用优先序而不是停产解决)。
+        # O297-②:舰队基建已活 → 不朽让位(矿集中灌暴风,对齐胜局配方)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
+            and not self._zt_fleet_infra_live()
             and any(
                 s.is_ready
                 for s in self.manager_mediator.get_own_structures_dict[
@@ -4905,6 +4941,17 @@ class ProductionManager(Manager):
         舰队科技链(无差别 floor 挤 SG/FB 的钱,非 rush 局全慢半拍)。"""
         pf = self._flow.pre_fleet
         if pf is None or not self._floor_active:
+            return spawn
+        # O298-③(o297a game_03 实证):重建二矿钉点期(707-791s)叉子 floor
+        # 回填(100 矿/个,波后 3→7 只)把 400 矿 Nexus 资金窗磨穿,
+        # expand_reserve 三连停仍开不出 —— 叉子 floor 与追猎 cap2(O236)
+        # 同口径:bases<2 且 Nexus 钉点未开工 → floor 全停;解除自动恢复。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.townhalls.amount < 2
+            and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
+        ):
             return spawn
         uid = getattr(UnitID, pf.id_name, None)
         if uid is None:
@@ -5171,14 +5218,36 @@ class ProductionManager(Manager):
 
         波压在 natural(波路径)上时口袋矿仍安全,开矿闸应看目标点而不是
         natural —— 否则波一到 natural 开矿永被锁死(o280 one_base 死法)。
-        非 ZT 场景退回 _zt_enemy_near_natural(行为不变)。"""
+        非 ZT 场景退回 _zt_enemy_near_natural(行为不变)。
+        O296-②(o295a game_02 实证):35 格半径把主基交战圈也罩进来
+        (口袋-主基仅 ~28 格)——敌一波主基,口袋开矿就被锁,激活拖到
+        600s 错过 ≤413s 配方窗。收到 20 格:只看口袋矿线/逼近路口的敌,
+        主基交战(塔阵接敌)不再锁口袋(O282「敌压主基正是口袋空窗」本意)。"""
         target = self._zt_pocket_expand_target()
         if target is None:
             return self._zt_enemy_near_natural()
         return sum(
             1 for u in self.ai.enemy_units
             if not u.is_structure and is_combat_type(u.type_id)
-            and u.position.distance_to(target) < 35
+            and u.position.distance_to(target) < 20
+        )
+
+    def _zt_fleet_infra_live(self) -> bool:
+        """O297:ZT 舰队基建是否已活(SG 就绪 + FB 在场/在建)。
+
+        ZT 的 _fleet_transitioned 永假(transition 禁入,O249b),凡以
+        「已转型」为闸的逻辑(O203 rush 纯叉退出/O292 trickle 关闸)对 ZT
+        都失效 —— 本方法提供统一的 ZT 实况口径。"""
+        return (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and any(
+                s.is_ready
+                for s in self.manager_mediator.get_own_structures_dict[
+                    UnitID.STARGATE
+                ]
+            )
+            and self._structure_present_or_pending(UnitID.FLEETBEACON)
         )
 
     def _zt_pocket_expand_active(self) -> bool:
@@ -6015,6 +6084,20 @@ class ProductionManager(Manager):
         _gas_paused = transition_pauses_gas(self._transition_active) and not (
             self._opp_race == "zerg" and self._ai_build in ("rush", "timing")
         )
+        # O299-③(o298b game_03 实证):rush 确认后 forge/首塔资金窗仍被新
+        # 气矿(75 矿/个)抢 —— forge 220s 等钱、首塔 249s 才落成,249s
+        # 农民 24→7 崩盘。ZT rush 确认且 forge 未就绪 → 暂停新气矿
+        # (75 矿=半个塔/半个 forge),forge 就绪自动恢复。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self._rush_confirmed
+            and not any(
+                s.is_ready
+                for s in self.manager_mediator.get_own_structures_dict[UnitID.FORGE]
+            )
+        ):
+            _gas_paused = True
         if (
             self.ai.gas_buildings.amount < max_gas_buildings
             and not _gas_paused

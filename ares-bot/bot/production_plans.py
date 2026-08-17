@@ -2803,6 +2803,8 @@ def spawn_pause_reason(
     carrier_price: float = 350.0,
     immortal_saving: bool = False,
     immortal_price: float = 275.0,
+    enemy_supply: float = 0.0,
+    own_supply: float = 9999.0,
 ) -> str | None:
     """O135(o134-vh-zerg-timing 0-5 尸检):产出永不暂停 —— 暂停型预留体系
     整体证伪。纯逻辑,可单测。
@@ -2837,6 +2839,11 @@ def spawn_pause_reason(
         and expand_holding
         and nexus_unstarted > 0
         and minerals < nexus_price
+        # O298-②(o297a game_03 实证):742s 45-supply 波在途,expand_reserve
+        # 仍停产攒 Nexus(707/761/791s 三连停)——波到脸时地面兵 3。
+        # 与 O296-① carrier 闸同口径:敌可见 supply ≥ 我方时产线永不停
+        # (开矿攒钱是波间隙特权), Nexus 资金由 O298-③ 的开销让位解决。
+        and enemy_supply < own_supply
     ):
         return "zerg_timing_expand_reserve"
     if (
@@ -2920,8 +2927,11 @@ def carrier_reserve_ok(
     O295-②(o294a game_02 实证):threat 侦测滞后 —— 911s 停产时 76-supply
     死亡波已在途(E9 到 915.5 才翻 threat);加敌我可见兵力对比闸:
     敌可见 supply > 我方军队 supply 时产线永不停(攒钱是波间隙特权)。
+    O296-①(o295b game_02 实证):地面 0 + 敌不可见 0 时 0<=0 仍停产
+    (791-851s 三连停)——改严格闸:敌 < 我才停,敌我同为 0 也不停
+    (未知敌情下停产是赌博,波随时在盲区里)。
     """
-    return sg_ready and not threat_active and enemy_supply <= own_supply
+    return sg_ready and not threat_active and enemy_supply < own_supply
 
 
 def fleet_infra_rebuild_active(

@@ -211,6 +211,7 @@ class TestPivotRushCannons(unittest.TestCase):
         ])
         # E3e/E3f:舰队成型前地面保底;O47:vs Harder 波次加厚(O33 的 3/0.3/8 太薄);
         # O216e:exit_ground 8→6,首舰出生后更快退出地面 floor,省矿给舰队产能
+        # O298-① 6→3 证伪回退(o298 早波死亡 3/10,地板太薄,o299 恢复 6)
         # O134-①(o133 局2 实证):cap 4→5 + 第二保底追猎×2(吃烂在银行的气)
         # O197(o196-vh-zerg-rush game_01):pre_fleet.max 12→8,transition 期地面已够,
         # 避免 15 叉把 FB/二矿资金吃光。

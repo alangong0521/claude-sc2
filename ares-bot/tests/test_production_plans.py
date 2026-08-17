@@ -1799,6 +1799,9 @@ class TestO94FirstWaveDefense(unittest.TestCase):
     def test_worker_escort_params(self):
         self.assertTrue(rush_worker_escort_needed(5, 0, 0, min_enemy=5))
         self.assertFalse(rush_worker_escort_needed(4, 0, 0, min_enemy=5))
+        # O299-②:ZT 首波窗 min_enemy=2 —— 1-2 狗进矿线即协防
+        self.assertTrue(rush_worker_escort_needed(2, 0, 0, min_enemy=2))
+        self.assertFalse(rush_worker_escort_needed(1, 0, 0, min_enemy=2))
 
     def test_zt_prewave_trickle(self):
         # O292(D1):GW 就绪 + 地面 <cap + 舰队基建未活 → 预备产兵
@@ -1849,8 +1852,10 @@ class TestO94FirstWaveDefense(unittest.TestCase):
         # O295-②:敌可见 supply > 我方 → 产线永不停(threat 滞后兜底)
         self.assertFalse(carrier_reserve_ok(True, False, enemy_supply=76.0, own_supply=48.0))
         self.assertTrue(carrier_reserve_ok(True, False, enemy_supply=30.0, own_supply=48.0))
-        # 敌我相等不算落后(闸语义=严格大于才停)
-        self.assertTrue(carrier_reserve_ok(True, False, enemy_supply=48.0, own_supply=48.0))
+        # O296-①:严格闸 —— 敌我相等(含地面0+敌不可见的 0v0)不停产
+        self.assertFalse(carrier_reserve_ok(True, False, enemy_supply=48.0, own_supply=48.0))
+        self.assertFalse(carrier_reserve_ok(True, False, enemy_supply=0.0, own_supply=0.0))
+        self.assertTrue(carrier_reserve_ok(True, False, enemy_supply=0.0, own_supply=5.0))
         # 默认参数(无敌情)维持 O294-② 语义
         self.assertTrue(carrier_reserve_ok(True, False))
 
@@ -2624,6 +2629,28 @@ class TestO126SpawnArbiter(unittest.TestCase):
                 nexus_unstarted=1,
                 minerals=350.0,
             ),
+            "zerg_timing_expand_reserve",
+        )
+
+    def test_zerg_timing_expand_reserve_enemy_gate(self):
+        # O298-②:敌可见 supply ≥ 我方时 expand_reserve 不停产(波间隙特权)
+        _kw = dict(
+            rebuild_nexus=False,
+            expand_holding=True,
+            is_zerg_timing=True,
+            nexus_unstarted=1,
+            minerals=350.0,
+        )
+        self.assertIsNone(
+            spawn_pause_reason(enemy_supply=45.0, own_supply=29.0, **_kw)
+        )
+        # 敌我相等也不停(严格闸)
+        self.assertIsNone(
+            spawn_pause_reason(enemy_supply=29.0, own_supply=29.0, **_kw)
+        )
+        # 敌 < 我 → 维持暂停
+        self.assertEqual(
+            spawn_pause_reason(enemy_supply=10.0, own_supply=29.0, **_kw),
             "zerg_timing_expand_reserve",
         )
 

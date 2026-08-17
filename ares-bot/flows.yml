@@ -117,7 +117,7 @@ flows:
     rally_min_army: 16              # O213:减少 trickle——小股部队(<16)分批送死;攒到临界质量再压上
     freeflow: true
     save_up: 0                      # O96(o95-vh-zerg-rush 局3/局4 实证):O62 把配方翻成 TEMPEST p0/CARRIER p1 后,save_up 250 把 CARRIER 永久摘出 spawn(p0 缺口恒 ≤175<250 → 恒截断到 {p0}+豁免) —— FB 就绪后 160s 零航母;p0 是便宜兵时 freeflow 的自然 fall-through 就是正确行为(暴风先行,富余才航母),憋气机制在此配方下是纯负资产
-    pre_fleet: {id: ZEALOT, cap: 5, per_enemy: 0.5, max: 8, exit_ground: 6, id2: STALKER, cap2: 2}   # O197(o196-vh-zerg-rush game_01 实证):max 12 让 bot 在 transition 期造出 15 叉,把 FB/二矿资金吃光、舰队转型彻底失败;降到 8 保基本地面,余矿给 FB/Stargate/扩张。O47(Harder 连败):兜底叉加厚到 12 的前提是当时无 transition;现 transition 期已承担地面主力,pre_fleet 只作 floor。O216e(o216d-vh-zerg-timing game_01 实证):exit_ground 8→6,首舰(Tempest)出生后地面 floor 更快退出,省矿给后续舰队产能。
+    pre_fleet: {id: ZEALOT, cap: 5, per_enemy: 0.5, max: 8, exit_ground: 6, id2: STALKER, cap2: 2}   # O197(o196-vh-zerg-rush game_01 实证):max 12 让 bot 在 transition 期造出 15 叉,把 FB/二矿资金吃光、舰队转型彻底失败;降到 8 保基本地面,余矿给 FB/Stargate/扩张。O47(Harder 连败):兜底叉加厚到 12 的前提是当时无 transition;现 transition 期已承担地面主力,pre_fleet 只作 floor。O216e(o216d-vh-zerg-timing game_01 实证):exit_ground 8→6,首舰(Tempest)出生后地面 floor 更快退出,省矿给后续舰队产能。O298-①试 6→3 证伪回退(o298 早波死亡 3/10,常驻地板 3 太薄,恢复 6)。
     # E2 动态开矿(司令:有能力开到 4 矿):爆仓(农民 ≥ 22×基地数)或
     # 前线优势(我方 army supply ≥ 敌可见 + 12)时逐矿 +1,rush 期间不开
     auto_expand: {max_bases: 6, when_workers: 16, advantage_supply: 12, first_expand_at: 150}   # O198:o197 三局全单矿到死，first_expand_at 210 被 rush/threat 永久冻结；提前到 150s(8 农民开局约等于 12 农民 210s 的经济窗口)，配合 FB 资金保护后二矿资金窗更早出现。O216g(司令观察):主基 26 农/分矿 16 农满载仍不开矿=农民浪费人口,max_bases 3→6,饱和触发要主动开 3/4/5/6 矿;Zerg Rush 仍在代码层锁 2(production_manager O186)。
