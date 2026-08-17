@@ -1894,6 +1894,7 @@ def rush_worker_escort_needed(
     min_enemy: int = 3,
     zealots_enough: int = 4,
     cannons_enough: int = 2,
+    hopeless: bool = False,
 ) -> bool:
     """O94-C/O104-①/O123-③:首波农民协防判据。纯逻辑,可单测。
 
@@ -1901,7 +1902,14 @@ def rush_worker_escort_needed(
     O104-①:1 塔不放人(转塔下作战),2 塔/叉够/敌退才归队。
     O123-③(叉海 A/B):叉子接管线 2→4 —— 叉海成型后农民不再参战
     (协防战损是速败局的经济癌症),只在「叉<4 且敌进家」才出手。
+    O309-②(o308a game_03/04 实证):白送上界 —— 敌地面超 14+6×塔
+    (同 O306-③口径)时不拉,协防从「顶 10-20s」变成「×6 添油四轮
+    骤减 4-11/波」的纯放血(game_04:敌27-30 地面照拉 ×6)。
+    白送线以上农民留矿保命(ares keep_safe 个体避险),留经济火种。
+    hopeless 缺省 False → 旧签名行为不变。
     """
+    if hopeless:
+        return False
     if zealots >= zealots_enough or cannons_ready >= cannons_enough:
         return False
     return enemy_ground_near >= min_enemy
@@ -2919,7 +2927,7 @@ def expand_holding_should_abort(
     holding_for: float,
     nexus_unstarted: int,
     can_afford_nexus: bool,
-    timeout: float = 90.0,
+    timeout: float = 60.0,
 ) -> bool:
     """O307-③(o306c game_05 实证):开矿持有死锁自愈判据。纯逻辑,可单测。
 
@@ -2927,6 +2935,9 @@ def expand_holding_should_abort(
     科技链(core_allowed=False)全程冻结,星门 0、气烂 1325,两波滚死。
     持有 >timeout 且 Nexus 仍未开工、仍买不起 → 撤销派工解锁科技链,
     冷却后再由动态开矿重评(波间隙特权,不是永久取消)。
+    O309-③(o308a game_02 实证):90s 超时 + 45s 冷却 = 135s 重试周期,
+    二连 abort(355/474s)把二矿拖到 546s;胜局二矿 309s vs 败局
+    478-546s,每 30s 都值钱 —— 超时压到 60s(周期 90s)。
     """
     return holding_for > timeout and nexus_unstarted > 0 and not can_afford_nexus
 

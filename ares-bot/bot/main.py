@@ -451,8 +451,15 @@ def update_worker_last_stand(ai) -> None:
     # 循环 = 农民逐个喂给蟑螂,还赔走位/采矿复位时间);首批未决出
     # 胜负就交给塔/电池/部队,农民死在矿位和死在冲锋位之差是纯亏。
     # 敌退 stand 清仓后,下一场接战重新拉首批(自校正)。
+    # O309-①(o308a game_02/04 实证):o308 的「stand 空才拉」被死亡绕过
+    # —— 首批战死 stand 即空,下帧重拉(game_02 拉1×5 复活)。加 30s
+    # latch:首批拉人后 30s 内 stand 空了也不重拉(整批阵亡 = 这场
+    # 接战农民救不了,再拉是纯喂)。
+    _can_pull = not stand and (
+        ai.time - getattr(ai, "_last_stand_pulled_at", -9999.0) > 30.0
+    )
     for w in ai.workers:
-        if stand:
+        if not _can_pull:
             break
         if w.tag in stand or w.tag not in gathering:
             continue
@@ -493,6 +500,7 @@ def update_worker_last_stand(ai) -> None:
                 continue
         w.attack(min(enemies, key=lambda e: e.position.distance_to(w.position)))
     if pulled:
+        ai._last_stand_pulled_at = ai.time  # O309-①:30s 添油 latch 起点
         ai._events.append({
             "t": round(ai.time, 1),
             "msg": (

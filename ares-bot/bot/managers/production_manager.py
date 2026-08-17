@@ -64,6 +64,7 @@ from bot.production_plans import (
     expand_holding_should_abort,
     holding_allows_cyber,
     serialize_presumed_cannons,
+    worker_last_stand_hopeless,
     expansion_cannon_count,
     expansion_cannon_min_dynamic,
     expansion_max_pending,
@@ -545,11 +546,11 @@ class ProductionManager(Manager):
                     self.manager_mediator.get_building_counter[UnitID.NEXUS] -= 1
                     _tracker.pop(_tag)
             self._expand_holding_since = None
-            self._expand_abort_until = self.ai.time + 45.0
+            self._expand_abort_until = self.ai.time + 30.0  # O309-③:45→30
             _expand_holding = False
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
-                "msg": "O307:开矿持有>90s未开工,撤销派工解锁科技链(冷却45s)",
+                "msg": "O307:开矿持有>60s未开工,撤销派工解锁科技链(冷却30s)",
             })
         elif self.ai.time < getattr(self, "_expand_abort_until", 0.0):
             _expand_holding = False
@@ -4100,6 +4101,8 @@ class ProductionManager(Manager):
                 if (self._opp_race == "zerg" and self._ai_build == "timing")
                 else 3
             ),
+            # O309-②:白送上界(同 O306-③口径),超线不拉,留经济火种
+            hopeless=worker_last_stand_hopeless(enemy_near, cannons_ready),
         )
         # O136-③:坡口墙模式未封口 + 敌地面近家 ≥2 → 协防去墙缝肉身填缝
         # (墙建筑完工前的空窗 = 速骰局死刑窗;封口/敌退自动归队)

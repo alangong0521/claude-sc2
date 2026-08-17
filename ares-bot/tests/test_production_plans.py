@@ -1808,6 +1808,15 @@ class TestO94FirstWaveDefense(unittest.TestCase):
         self.assertTrue(rush_worker_escort_needed(2, 0, 0, min_enemy=2))
         self.assertFalse(rush_worker_escort_needed(1, 0, 0, min_enemy=2))
 
+    def test_worker_escort_hopeless(self):
+        # O309-②(o308a game_03/04 实证):白送上界 —— 敌地面超 14+6×塔
+        # 不拉(×6 添油四轮、骤减 4-11/波的纯放血),留矿保命
+        self.assertFalse(rush_worker_escort_needed(27, 0, 0, hopeless=True))
+        # 未超线照拉(顶 10-20s 空窗的本职不变)
+        self.assertTrue(rush_worker_escort_needed(12, 0, 0, hopeless=False))
+        # 缺省 hopeless=False → 旧行为不变
+        self.assertTrue(rush_worker_escort_needed(27, 0, 0))
+
     def test_zt_prewave_trickle(self):
         # O292(D1):GW 就绪 + 地面 <cap + 舰队基建未活 → 预备产兵
         self.assertTrue(zt_prewave_trickle_needed(False, True, 0))
@@ -2723,14 +2732,15 @@ class TestO126SpawnArbiter(unittest.TestCase):
 
     def test_expand_holding_should_abort(self):
         # O307-③(o306c game_05 实证):Nexus 未开工持有 326s 冻死科技链
+        # O309-③:超时 90→60(重试周期 135s→90s,二矿时点提前)
         # 未超时 → 不放弃(正常攒钱窗)
-        self.assertFalse(expand_holding_should_abort(60.0, 1, False))
+        self.assertFalse(expand_holding_should_abort(45.0, 1, False))
         # 超时但已开工(在建不算死锁)
         self.assertFalse(expand_holding_should_abort(120.0, 0, False))
         # 超时但买得起(下一帧就开工,不是死锁)
         self.assertFalse(expand_holding_should_abort(120.0, 1, True))
         # 超时 + 未开工 + 买不起 → 撤销派工解锁科技链
-        self.assertTrue(expand_holding_should_abort(120.0, 1, False))
+        self.assertTrue(expand_holding_should_abort(75.0, 1, False))
 
     def test_holding_allows_cyber(self):
         # O307-①:holding 期放行 CYBERNETICSCORE(仅 Zerg Timing + 兵营就绪)
