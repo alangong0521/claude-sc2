@@ -161,11 +161,13 @@ from bot.production_plans import (  # noqa: E402
     wall_hold_point,
     pick_wall_positions,
     pocket_saving_cannons,
+    pivot_stalker_cap,
     carrier_reserve_ok,
     fleet_infra_rebuild_active,
     forge_rebuild_probe_yield,
     upgrade_tech_buildings,
     worker_target,
+    zt_golden_window_push,
     zt_prewave_trickle_needed,
 )
 
@@ -1867,6 +1869,33 @@ class TestO94FirstWaveDefense(unittest.TestCase):
         self.assertFalse(fleet_infra_rebuild_active(False, 500.0))
         # 太早 → 不开闸
         self.assertFalse(fleet_infra_rebuild_active(True, 299.9))
+
+    def test_zt_golden_window_push(self):
+        # O302:t≥650 + 舰队 ≥3 + 追猎 ≥8 → 黄金窗推进(O303-② 参数)
+        self.assertTrue(zt_golden_window_push(650.0, 3, 8))
+        self.assertTrue(zt_golden_window_push(750.0, 3, 12))   # o302b-g01 场景
+        # 窗口前不推
+        self.assertFalse(zt_golden_window_push(649.9, 6, 20))
+        # 舰队/追猎不足不推
+        self.assertFalse(zt_golden_window_push(750.0, 2, 20))
+        self.assertFalse(zt_golden_window_push(750.0, 3, 7))
+        # 自定义阈值
+        self.assertTrue(zt_golden_window_push(600.0, 3, 8, min_t=600.0, min_fleet=3, min_stalkers=8))
+        # O304-②:可见腐化 >2 → 否决(快尖塔局无黄金窗,不送暴风)
+        self.assertFalse(zt_golden_window_push(750.0, 6, 12, corruptors=3))
+        self.assertTrue(zt_golden_window_push(750.0, 6, 12, corruptors=2))
+        self.assertTrue(zt_golden_window_push(750.0, 6, 12, corruptors=0))
+
+    def test_pivot_stalker_cap(self):
+        # O303-③:腐化 0-8 → cap 12(防追猎洪水)
+        self.assertEqual(pivot_stalker_cap(0), 12)
+        self.assertEqual(pivot_stalker_cap(8), 12)
+        # 腐化 ≥9 → 1.5× 放量(腐化海时追猎是唯一能还手的)
+        self.assertEqual(pivot_stalker_cap(9), 14)
+        self.assertEqual(pivot_stalker_cap(19), 28)   # o302b-g04 腐化海场景
+        # 自定义 base
+        self.assertEqual(pivot_stalker_cap(0, base=8), 8)
+        self.assertEqual(pivot_stalker_cap(20, base=8), 30)
 
 
 class TestO96EscortAndTransitionExpand(unittest.TestCase):

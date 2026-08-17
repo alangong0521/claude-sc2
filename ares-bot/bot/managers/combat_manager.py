@@ -40,6 +40,7 @@ from bot.production_plans import (
     should_push_advantage,
     two_base_guard_point,
     main_defense_first,
+    zt_golden_window_push,
 )
 
 if TYPE_CHECKING:
@@ -515,6 +516,28 @@ class CombatManager(Manager):
                 _fleet_count >= _push_fleet_need
                 and getattr(self.ai, "time", 0.0) > 540.0
             )
+            # O302(司令 2026-08-17 拍板·先手压制专项):O241 强推闸实证整局
+            # 不触发(舰队卡 4-6 艘)。跨 40 局敌编成取证:850s+ 敌必转腐化+
+            # 大龙(暴风被克,0 胜);750-800s 敌纯蟑螂/刺蛇(蟑螂不能对空)
+            # = 暴风无克制黄金窗。窗口内降闸:舰队 ≥4 + 追猎 ≥10 即推,
+            # 抢在腐化转型前打死/打残;召回/安全线不变,推不动会被波次
+            # 自然叫回家。
+            _golden_push = (
+                _is_zerg_timing
+                and zt_golden_window_push(
+                    getattr(self.ai, "time", 0.0),
+                    _fleet_count,
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.STALKER
+                    ),
+                    # O304-②:快尖塔局腐化早出 = 无黄金窗,否决(不送暴风)
+                    corruptors=sum(
+                        1 for u in self.ai.enemy_units
+                        if u.type_id == UnitID.CORRUPTOR
+                    ),
+                )
+            )
+            _force_push = _force_push or _golden_push
             if not (
                 (
                     _force_push
@@ -570,6 +593,24 @@ class CombatManager(Manager):
             # 进「行军模式」(不追 15 格内的过路敌,只打进了射程的,主力压向
             # attack_target)。否则小队骚扰在行为层把每艘暴风永久钩在原地
             # 风筝,attack_target 给得再对舰队也永远走不出去。
+            # O302-②:推进/召回簿记 —— 压制窗是否触发、触发时兵力,下轮尸检
+            # 直接读(此前推进静默,无法判断闸不开是没到窗还是被否决)。
+            # O303-①(o302b game_04 实证):_push_committed 在集结期每帧复位,
+            # 事件逐帧刷屏 —— 30s 节流。
+            if not self._push_committed and (
+                self.ai.time - getattr(self, "_o302_logged_at", 0.0) > 30.0
+            ):
+                self._o302_logged_at = self.ai.time
+                _evs = getattr(self.ai, "_events", None)
+                if _evs is not None:
+                    _evs.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            f"O302:先手压制推进(fleet={_fleet_count},"
+                            f"追猎={self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.STALKER)},"
+                            f"黄金窗={_golden_push})"
+                        ),
+                    })
             self._push_committed = True
 
         # —— 默认逻辑（无命令时）：最近敌建筑 → 轮巡分矿 ——

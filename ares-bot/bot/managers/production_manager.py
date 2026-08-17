@@ -103,6 +103,7 @@ from bot.production_plans import (
     pick_walk_patch,
     pick_wall_positions,
     pocket_saving_cannons,
+    pivot_stalker_cap,
     carrier_reserve_ok,
     fleet_infra_rebuild_active,
     forge_rebuild_probe_yield,
@@ -4837,7 +4838,15 @@ class ProductionManager(Manager):
         # —— 兵营快(30s/125 矿)对星门(43s/175 矿+125 气)速度碾压,追猎
         # 洪水 28 只(3500 矿+1400 气)把暴风挤到 4 艘(胜局配方 14-17)。
         # 追猎混入加上限:现有 <12 才混(防空保险够用的量,矿留给暴风)。
+        # O303-③(o302b game_04 实证):腐化海(19-20 条)时 cap 12 = 缴械
+        # —— 暴风被 massive 加成克死,追猎是唯一能还手的;cap 动态化
+        # (pivot_stalker_cap:腐化 ≥9 按 1.5× 放量)。
         if air_threat >= pv.anti_air_trigger and pv.anti_air_units:
+            _corruptors = sum(
+                1 for u in self.ai.enemy_units
+                if u.type_id == UnitID.CORRUPTOR
+            )
+            _stalker_cap = pivot_stalker_cap(_corruptors)
             for name in pv.anti_air_units:
                 uid = getattr(UnitID, name, None)
                 if uid is not None:
@@ -4846,7 +4855,7 @@ class ProductionManager(Manager):
                         and self.manager_mediator.get_own_unit_count(
                             unit_type_id=UnitID.STALKER
                         )
-                        >= 12
+                        >= _stalker_cap
                     ):
                         continue
                     spawn[uid] = {
@@ -5062,7 +5071,10 @@ class ProductionManager(Manager):
                     # 必来),等看见腐化再产追猎 = 30s+ 产能空窗,舰队 8s 内
                     # 先死(4→0)。t≥700 追猎 cap 预置 8(防空保险),
                     # 舰队成型(≥8)后回 4 让矿给航母。
-                    if self.ai.time >= 700.0 and _fleet_now_o246 < 8:
+                    # O304-③(o303a game_05 实证):快尖塔局腐化 723s 出场时
+                    # 我方追猎仅 2 只 —— 预置窗提前到 650s,腐化一到即有
+                    # 追猎核可战。
+                    if self.ai.time >= 650.0 and _fleet_now_o246 < 8:
                         _cap2 = max(_cap2, 8)
                 spawn = pre_fleet_spawn(
                     spawn,

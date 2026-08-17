@@ -30,6 +30,18 @@ def _pick_focus(enemies, focus: str | None, origin=None) -> Unit:
     chosen = pick_focus_key(enemies, focus, origin=origin)
     if chosen is not None:
         return chosen
+    # O304-①(o303a game_05/o302b game_04 实证):大龙 > 腐化优先 —— 大龙
+    # 射程 10 在塔程(7)外白拆基地,是终局最大失血点(1173s 暴风被腐化
+    # 海猎杀前,基地已被大龙磨穿);暴风对 massive 加成,2-3 轮点杀一条。
+    # 腐化有 O272 掩体撤退兜底,大龙没有任何反制 —— 见大龙先点大龙。
+    for _uid in (UnitID.BROODLORD, UnitID.CORRUPTOR):
+        _cand = [u for u in enemies if not u.is_structure and u.type_id == _uid]
+        if _cand:
+            if origin is not None:
+                return min(
+                    _cand, key=lambda u: u.position.distance_to(origin.position)
+                )
+            return _cand[0]
     void = prefer_void_rays(enemies, origin=origin)
     if void is not None:
         return void

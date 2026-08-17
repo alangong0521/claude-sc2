@@ -2897,6 +2897,51 @@ def pocket_saving_cannons(cannons: int, cap: int = 3) -> int:
     return min(cannons, cap)
 
 
+def zt_golden_window_push(
+    now: float,
+    fleet_count: int,
+    stalker_count: int,
+    min_t: float = 650.0,
+    min_fleet: int = 3,
+    min_stalkers: int = 8,
+    corruptors: int = 0,
+    max_corruptors: int = 2,
+) -> bool:
+    """O302(司令 2026-08-17 拍板·先手压制专项):ZT 黄金窗推进闸。纯逻辑,可单测。
+
+    跨 40 局敌编成取证:850s+ 敌必转腐化+大龙(暴风被克,我方 0 胜);
+    750-800s 敌纯蟑螂/刺蛇(蟑螂不能对空,暴风白打)= 先手黄金窗。
+    O241 的强推闸(fleet≥6 & t>540)实证整局不触发 —— 舰队卡 4-6 艘。
+    窗口内降闸:舰队 + 追猎达线即推(刺蛇由追猎接,暴风自由输出);
+    召回/安全线(carrier_push_safe/热点回防)不变,推不动会被波次自然
+    叫回家,推得动就抢在腐化转型前打死/打残。
+    O303-②(o302b game_01/game_04 实证):原参数(t≥700/舰队≥4/追猎≥10)
+    两局推进都差一点没够上(3+12@650s、7+5@830s),且腐化转型 ~870s
+    就到,压制需要 60-90s 造成杀伤 —— 窗口提前到 650s、阈值放宽到
+    舰队 ≥3 + 追猎 ≥8(7 舰队局仍由 O241 闸覆盖,语义不重叠)。
+    O304-②(o303a game_05 实证):快尖塔局腐化 723s 就出场,无克制窗
+    根本不存在 —— 黄金窗推进把 6 暴风送进腐化区喂掉。可见腐化
+    >max_corruptors → 否决(该局没有黄金窗,蹲守等配方)。
+    """
+    return (
+        now >= min_t
+        and fleet_count >= min_fleet
+        and stalker_count >= min_stalkers
+        and corruptors <= max_corruptors
+    )
+
+
+def pivot_stalker_cap(corruptors: int, base: int = 12) -> int:
+    """O303-③(o302b game_04 实证):反空军 pivot 追猎上限动态化。纯逻辑,可单测。
+
+    O301-① 的固定 cap 12 治「追猎洪水挤暴风」,但腐化海(19-20 条,
+    1080-1170s 实证)时暴风被 massive 加成克死,追猎是唯一能还手的
+    兵种 —— cap 12 等于缴械。动态:腐化 0-8 时 cap 12(防洪水);
+    腐化 ≥9 时按 1.5×腐化 放量(换比有利:追猎 blink 集火克腐化)。
+    """
+    return max(base, round(1.5 * corruptors))
+
+
 def forge_rebuild_probe_yield(
     forge_ready: bool,
     defense_acute: bool,
