@@ -14,11 +14,13 @@ from bot.production_plans import (
     is_combat_type,
     nexus_rebuild_viable,
     pick_evacuation_base,
+    pick_walk_patch,
     resource_contested,
     scout_next_step,
     should_evacuate_workers,
     should_release_waiting_builder,
     worker_last_stand,
+    worker_last_stand_hopeless,
     worker_transfer_count,
 )
 from bot.shield_battery import restore_with_batteries
@@ -37,7 +39,10 @@ from bot.managers.production_manager import ProductionManager
 _STEER_EVERY: float = 4.0
 
 # ── E6 农民被抄转移/协防 ──
-_EVAC_RADIUS: float = 15.0    # 敌地面单位距 Nexus 多少格内算"进矿区"
+_EVAC_RADIUS: float = 20.0    # 敌地面单位距 Nexus 多少格内算"进矿区"
+                              # O306-①(o291-o304「农民骤减 7-9」实证):15 格时狗
+                              # (4.7 速)进圈到咬到农民仅 ~2s,撤离命令到走位启动
+                              # 来不及;20 格 ≈ 提前 2-3s 撤离,波后农民存活率升
 _EVAC_THRESHOLD: int = 4      # 进矿区敌地面 ≥ 此数 → 该基地视为被抄
 _CANNON_COVER: float = 9.0    # 就绪塔距 Nexus ≤ 此值 → 矿区在塔射程内
 _SCOUT_FLEE_RADIUS: float = 8.0  # O22:侦查探机邻近此距离内遇敌地面作战单位 → 立即逃跑(marine 射程 5+缓冲)
@@ -432,6 +437,12 @@ def update_worker_last_stand(ai) -> None:
     ]
     if not enemies:
         return
+    # O306-③(o291-o304 系列「农民骤减 7-9」实证):决死加白送上界 ——
+    # 敌地面 > 14+6×塔 时农民冲锋改变不了结局(基地照丢+火种全灭=
+    # 下波必死),改穿矿游走甩包围(O104 实证微操),塔阵/舰队打输出,
+    # 农民保命留重建火种。
+    _hopeless = worker_last_stand_hopeless(n, cannons)
+    _patches = ai.mineral_field.closer_than(11, ai.start_location) if _hopeless else []
     tracker = ai.mediator.get_building_tracker_dict
     gathering = set(ai.mediator.get_unit_role_dict[UnitRole.GATHERING])
     pulled = 0
@@ -441,19 +452,47 @@ def update_worker_last_stand(ai) -> None:
         if w.tag in tracker or w.tag in ai._player_ctrl:
             continue
         ai.mediator.assign_role(tag=w.tag, role=_LAST_STAND_ROLE)
-        w.attack(min(enemies, key=lambda e: e.position.distance_to(w.position)))
+        if _hopeless and _patches:
+            _threat = min(enemies, key=lambda e: e.position.distance_to(w.position))
+            _wp = pick_walk_patch(
+                [(m.position.x, m.position.y) for m in _patches],
+                (_threat.position.x, _threat.position.y),
+            )
+            if _wp is not None:
+                from sc2.position import Point2 as _P2
+                w.move(_P2(_wp))
+            else:
+                w.attack(min(enemies, key=lambda e: e.position.distance_to(w.position)))
+        else:
+            w.attack(min(enemies, key=lambda e: e.position.distance_to(w.position)))
         stand.add(w.tag)
         pulled += 1
     # 已在协战但闲置(目标死了/命令断)的农民补刀最近敌
+    # O306-③:游走模式闲置 = 已到矿簇/命令断,补下一跳穿矿而不是补刀
+    # (补刀=白送上界失效)
     for tag in list(stand):
         w = next((x for x in ai.workers if x.tag == tag), None)
         if w is None or not w.is_idle:
             continue
+        if _hopeless and _patches:
+            _threat = min(enemies, key=lambda e: e.position.distance_to(w.position))
+            _wp = pick_walk_patch(
+                [(m.position.x, m.position.y) for m in _patches],
+                (_threat.position.x, _threat.position.y),
+            )
+            if _wp is not None:
+                from sc2.position import Point2 as _P2
+                w.move(_P2(_wp))
+                continue
         w.attack(min(enemies, key=lambda e: e.position.distance_to(w.position)))
     if pulled:
         ai._events.append({
             "t": round(ai.time, 1),
-            "msg": f"O256:主基决死协防(敌{n}地面,塔{cannons}),拉{pulled}农民塔下协战",
+            "msg": (
+                f"O256:主基决死协防(敌{n}地面,塔{cannons}),拉{pulled}农民塔下协战"
+                if not _hopeless
+                else f"O306:敌{n}地面超白送线(塔{cannons}),{pulled}农民穿矿游走保命"
+            ),
         })
 
 

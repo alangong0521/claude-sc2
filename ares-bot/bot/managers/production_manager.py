@@ -1838,7 +1838,10 @@ class ProductionManager(Manager):
                 # —— 分矿是事实主战场。落成后主基塔只留 1 座补漏(威胁/
                 # rush 期不动),塔钱全给分矿:5 塔 + 2 电池 + 双兵营墙。
                 _cannons_expansion = max(_cannons_expansion, 5)
-                batt = max(batt, 2)
+                # O306-②(o256-③ 双电池奶塔存活×3 实证外推):中局 44-82
+                # supply 波集火下双电池奶量见底(塔 8→0 序列),分矿电池
+                # 2→3(塔存活≈波战损的直接杠杆;100 矿出自防御窗银行)。
+                batt = max(batt, 3)
                 # 主基降到 ≤1(坡口墙/叉子在,塔是补漏);威胁/rush 期不动
                 # 主基目标(波打主基时塔照拉满)。
                 if cannons > 0 and not self._threat_active and not self._rush_active:

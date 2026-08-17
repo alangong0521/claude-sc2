@@ -591,6 +591,23 @@ def worker_last_stand(
     )
 
 
+def worker_last_stand_hopeless(
+    enemy_ground_near: int,
+    cannons_near: int,
+    hopeless_base: int = 14,
+    hopeless_per_cannon: int = 6,
+) -> bool:
+    """O306-③(o291-o304 系列「农民骤减 7-9」实证):决死协防的白送上界。
+    纯逻辑,可单测。
+
+    敌地面 > 14+6×塔(2 塔对 26+ 地面)时,农民冲锋(+~100dps,10s)
+    改变不了结局 —— 基地照丢且经济火种全灭,下一波必死(连胜局剖面
+    都是农民活、基地可重建)。此线以上不冲锋,改穿矿游走甩包围
+    (O104 实证微操),塔阵/舰队打输出,农民保命留重建火种。
+    """
+    return enemy_ground_near > hopeless_base + hopeless_per_cannon * cannons_near
+
+
 def pick_evacuation_base(raided_pos, candidates):
     """E6：撤离目标基地选择。纯逻辑，可单测。
 

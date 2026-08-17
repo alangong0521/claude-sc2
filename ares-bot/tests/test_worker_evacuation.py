@@ -33,6 +33,7 @@ from bot.production_plans import (  # noqa: E402
     pick_evacuation_base,
     should_evacuate_workers,
     worker_last_stand,
+    worker_last_stand_hopeless,
     worker_transfer_count,
 )
 
@@ -72,6 +73,20 @@ class TestWorkerLastStand(unittest.TestCase):
         # 1 塔压垮线 10
         self.assertTrue(worker_last_stand(10, 1, 1, True))
         self.assertFalse(worker_last_stand(9, 1, 1, True))
+
+    def test_last_stand_hopeless(self):
+        # O306-③:白送上界 14+6×塔 —— 2 塔:26 及以下冲,27+ 游走保命
+        self.assertFalse(worker_last_stand_hopeless(20, 2))
+        self.assertFalse(worker_last_stand_hopeless(26, 2))
+        self.assertTrue(worker_last_stand_hopeless(27, 2))
+        # 1 塔:20 及以下冲,21+ 游走
+        self.assertFalse(worker_last_stand_hopeless(20, 1))
+        self.assertTrue(worker_last_stand_hopeless(21, 1))
+        # 0 塔:14 以上游走
+        self.assertTrue(worker_last_stand_hopeless(15, 0))
+        self.assertFalse(worker_last_stand_hopeless(14, 0))
+        # 自定义参数
+        self.assertTrue(worker_last_stand_hopeless(11, 2, hopeless_base=10, hopeless_per_cannon=0))
 
 
 class TestEvacuationCriteria(unittest.TestCase):
