@@ -1,6 +1,7 @@
 """shield_battery.pick_restore_target 单测 —— Sharky 规则:DPS 降序、盾量升序、跳过已锁定。"""
 from bot.shield_battery import (
     overcharge_struct_allowed,
+    overcharge_unit_allowed,
     pick_overcharge_target,
     pick_restore_target,
     should_overcharge,
@@ -70,3 +71,11 @@ def test_overcharge_struct_whitelist():
     assert overcharge_struct_allowed("NEXUS")
     assert not overcharge_struct_allowed("PYLON")
     assert not overcharge_struct_allowed("GATEWAY")
+
+
+def test_overcharge_unit_blacklist():
+    # O293-③:超载不挂农民(o291a game_01 超载→PROBE 白烧实证),作战单位照挂
+    assert not overcharge_unit_allowed("PROBE")
+    assert overcharge_unit_allowed("ZEALOT")
+    assert overcharge_unit_allowed("STALKER")
+    assert overcharge_unit_allowed("CARRIER")

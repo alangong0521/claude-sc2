@@ -2878,6 +2878,88 @@ def gateway_chain_after_first_zealot(
     return gateways_have >= 1 and not first_zealot_seen
 
 
+def pocket_saving_cannons(cannons: int, cap: int = 3) -> int:
+    """O293-②(o292a game_01 实证):口袋激活期塔目标地板。纯逻辑,可单测。
+
+    O290 的「激活期塔归 0」实证过狠:首波(236-320s)正好落在攒钱窗里,
+    波到脸 threat 才翻真,29s 建造+dispatch 来不及 —— game_01 塔恒 2、
+    Nexus 也没攒出,两头落空。胜局对照(o290b-g05):波前 3 塔 285s 成型
+    是存活地板。激活期塔目标收到 ≤3(保留 O290 拦 3→10 塔链的本意),
+    急性(threat)期仍不冻。
+    """
+    return min(cannons, cap)
+
+
+def forge_rebuild_probe_yield(
+    forge_ready: bool,
+    defense_acute: bool,
+    minerals: float,
+    forge_price: float = 150.0,
+) -> bool:
+    """O294-①(o293a game_04 实证):forge 重建资金窗,探机让位。纯逻辑,可单测。
+
+    局4:forge 随分矿阵亡后,重建的 150 矿资金窗被探机(50/个)+叉子吃干,
+    塔链 tech_not_ready 刷 80s+(666-697s),塔 8→0 连锁丢三基。无就绪
+    forge + 急性防御(threat/rush)+ 矿不够 forge → 暂停探机训练把资金窗
+    让给 forge;forge 开工有钱/就绪后自动恢复(自校正,无 latch)。
+    """
+    return not forge_ready and defense_acute and minerals < forge_price
+
+
+def carrier_reserve_ok(
+    sg_ready: bool,
+    threat_active: bool,
+    enemy_supply: float = 0.0,
+    own_supply: float = 9999.0,
+) -> bool:
+    """O294-②(o293a game_04 实证):航母攒钱预留的前置判据。纯逻辑,可单测。
+
+    局4 675s:主基决死窗(敌 28-31 地面进家、我方地面兵 3、SG 已毁),
+    carrier_reserve 停产攒 350 —— SG 死了航母根本产不出,停产=自杀。
+    预留只在「有就绪 SG(产得出)+ 非急性威胁期(停得起)」才成立。
+    O295-②(o294a game_02 实证):threat 侦测滞后 —— 911s 停产时 76-supply
+    死亡波已在途(E9 到 915.5 才翻 threat);加敌我可见兵力对比闸:
+    敌可见 supply > 我方军队 supply 时产线永不停(攒钱是波间隙特权)。
+    """
+    return sg_ready and not threat_active and enemy_supply <= own_supply
+
+
+def fleet_infra_rebuild_active(
+    first_fleet_seen: bool, now: float, min_time: float = 300.0
+) -> bool:
+    """O294-③(o293a game_04 实证):舰队基建重建链开闸判据。纯逻辑,可单测。
+
+    局4:SG 642s/FB 679s 被拆,到判负 100s+ 零重建 —— 开矿持有冻核心链、
+    FB 重建闸要就绪 SG、威胁让位闸三层堵死,878 气烂银行。舰队曾成型
+    (first_fleet_seen 证明基建曾存在过,非开局误触发)+ t≥300 → 允许
+    cyber→SG→FB 链式钉点补建,不受 core_allowed 冻结。
+    """
+    return first_fleet_seen and now >= min_time
+
+
+def zt_prewave_trickle_needed(
+    fleet_infra_live: bool,
+    gateway_ready: bool,
+    ground_count: int,
+    cap: int = 6,
+) -> bool:
+    """O292(D1,o291a game_01 实证):Zerg Timing 首波预备产兵判据。纯逻辑,可单测。
+
+    实证:GW1 156s 就绪后空转 93s(rush 确认=波到脸才开闸),首叉 249s,
+    波 278s 到脸只 1 叉+2 塔;同期矿 415/气 552 烂银行。GW 就绪即开闸
+    预备产兵,cap 自校正(够数回舰队配方)——只动用闲置 GW 产能,不冻
+    科技链(与 O208 证伪的 transition 冻星门不同)。
+    fleet_infra_live(SG 就绪+FB 在场/在建)即关闸:舰队产能让位第一优先,
+    地面只留 rush 分支/舰队配方比例补,防 trickle 压死舰队上量(败局层②)。
+    注意 ZT 的 _fleet_transitioned 永假(transition 禁入),不能用它当闸。
+    """
+    return (
+        not fleet_infra_live
+        and gateway_ready
+        and ground_count < cap
+    )
+
+
 def fleet_transition_strong_exit(
     defense_score: float,
     enemy_visible_supply: float,

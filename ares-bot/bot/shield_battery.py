@@ -67,7 +67,9 @@ def overcharge_with_batteries(ai) -> int:
             ]
             _units = [
                 u for u in ai.units
-                if u.shield_max > 0 and u.shield < u.shield_max - SHIELD_MARGIN
+                # O293-③:农民不挂超载(盾回翻倍花在 PROBE 上=白烧能量)
+                if overcharge_unit_allowed(u.type_id.name)
+                and u.shield_max > 0 and u.shield < u.shield_max - SHIELD_MARGIN
                 and u.distance_to(b) <= RESTORE_RANGE
             ]
             target = pick_overcharge_target(_structs, _units)
@@ -82,6 +84,18 @@ def overcharge_with_batteries(ai) -> int:
 
 
 OVERCHARGE_STRUCT_WHITELIST = frozenset({"PHOTONCANNON", "NEXUS"})
+
+OVERCHARGE_UNIT_BLACKLIST = frozenset({"PROBE"})
+
+
+def overcharge_unit_allowed(type_name: str) -> bool:
+    """O293-③(o291a game_01 实证):超载单位黑名单。纯函数,可单测。
+
+    局1:超载挂给 PROBE —— 农民盾薄血少,超载的盾回翻倍花在农民身上
+    =白烧 45 能量,同帧塔/叉子在挨打。与 O123-② 建筑白名单同构:
+    超载只给作战单位(叉/追猎/舰队),农民不挂。
+    """
+    return type_name not in OVERCHARGE_UNIT_BLACKLIST
 
 
 def overcharge_struct_allowed(type_name: str) -> bool:

@@ -102,6 +102,11 @@ from bot.production_plans import (
     pick_slot_anchor,
     pick_walk_patch,
     pick_wall_positions,
+    pocket_saving_cannons,
+    carrier_reserve_ok,
+    fleet_infra_rebuild_active,
+    forge_rebuild_probe_yield,
+    zt_prewave_trickle_needed,
     pivot_primary_id,
     pre_fleet_cap,
     pre_fleet_spawn,
@@ -1176,12 +1181,33 @@ class ProductionManager(Manager):
             ),
             # O240:气烂 ≥800 且航母配比落后(航母 < 暴风/6)时攒 350 矿点航母;
             # 航母在产/配比达标即恢复产线(自校正)。
+            # O294-②(o293a game_04 实证):主基决死窗(敌 28-31 地面、地面兵 3、
+            # SG 已毁)停产攒航母=自杀 —— 预留要有就绪 SG(产得出)+ 非急性
+            # 威胁期(停得起)才成立。
             carrier_saving=(
                 self._opp_race == "zerg"
                 and self._ai_build == "timing"
                 and not self._transition_active
                 and self.ai.vespene >= 800.0
                 and self._fb_entities_now > 0
+                and carrier_reserve_ok(
+                    sg_ready=any(
+                        s.is_ready
+                        for s in self.manager_mediator.get_own_structures_dict[
+                            UnitID.STARGATE
+                        ]
+                    ),
+                    threat_active=self._threat_active,
+                    # O295-②(o294a game_02 实证):threat 侦测滞后,E9 翻旗前
+                    # 76-supply 波已在途仍停产 —— 敌可见 supply > 我方军队
+                    # supply 时产线永不停(攒钱是波间隙特权)。
+                    enemy_supply=sum(
+                        self.ai.calculate_supply_cost(u.type_id)
+                        for u in self.ai.enemy_units
+                        if not u.is_structure and is_combat_type(u.type_id)
+                    ),
+                    own_supply=float(self.ai.supply_army),
+                )
                 and (
                     self.manager_mediator.get_own_unit_count(
                         unit_type_id=UnitID.CARRIER
@@ -1660,7 +1686,9 @@ class ProductionManager(Manager):
                 self._zt_pocket_expand_active() and not self._threat_active
             )
             if _pocket_saving:
-                cannons = 0
+                # O293-②(o292a game_01 实证):0 封 → 3 座地板 —— 首波正落
+                # 攒钱窗,threat 翻真再补塔来不及;胜局波前 3 塔是存活地板。
+                cannons = pocket_saving_cannons(cannons)
             # O216d(O216c 败局):FB 实体落成前,动态塔目标扩到 3-4 座/基地会反复
             # 抽干 300 矿 FB 资金窗,舰队继续空转。压回 ec.min(1-2 座保命塔),
             # 让 FB 优先落地。过渡期地面防御不动。
@@ -2533,19 +2561,41 @@ class ProductionManager(Manager):
             # O229(o227-lane2 game_01 实证):O218 事件连发 58+ 次但 SG2 至死
             # 未落成 —— can_afford 帧判后矿被 zealot/探机/塔同帧抢走,与 FB
             # 同型。Zerg Timing 追加星门同样改关键件钉点派工(驻点等钱)。
+            # O295-①(o294a game_02 实证):钉点仍不落地 —— 主基带电 3x3 槽
+            # 归零(no_placement),事件每帧无条件刷屏 100+ 次掩盖真因。
+            # 改:就绪基地逐个试落位(主基满了落分矿);全部 no_placement →
+            # 钉点补电(O55 同构自救);事件只在结果变化时记(节流治刷屏)。
             if self._opp_race == "zerg" and self._ai_build == "timing":
-                self._dispatch_structure(
-                    UnitID.STARGATE, self.ai.start_location, critical=True
-                )
+                _rc = None
+                _blocs = [th.position for th in self.ai.townhalls.ready]
+                for _bloc in (_blocs or [self.ai.start_location]):
+                    _rc = self._dispatch_structure(
+                        UnitID.STARGATE, _bloc, critical=True
+                    )
+                    if _rc == "dispatched":
+                        break
+                if _rc == "no_placement":
+                    self._dispatch_structure(
+                        UnitID.PYLON, self.ai.start_location, critical=True
+                    )
+                if _rc != getattr(self, "_o218_last_rc", None):
+                    self._o218_last_rc = _rc
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            f"O218:气烂银行追加星门(SG={_sg_total_o218},"
+                            f"气={self.ai.vespene:.0f},派工={_rc})"
+                        ),
+                    })
             else:
                 await self._build_core_structure(UnitID.STARGATE)
-            self.ai._events.append({
-                "t": round(self.ai.time, 1),
-                "msg": (
-                    f"O218:气烂银行追加星门(SG={_sg_total_o218},"
-                    f"气={self.ai.vespene:.0f})"
-                ),
-            })
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O218:气烂银行追加星门(SG={_sg_total_o218},"
+                        f"气={self.ai.vespene:.0f})"
+                    ),
+                })
         # O83(n5m-zerg-rush game_03 实证):舰队饥饿豁免 —— 慢性威胁/持续抄家时
         # rush 分支(上)与 E9 让位(tech_yields_to_threat)把舰队航标永久冻结:
         # 3 就绪星门 250s 零产出、气烂 2500+ 败亡(流派出兵全是耗气的暴风/航母)。
@@ -4676,6 +4726,56 @@ class ProductionManager(Manager):
                         }
                     return mixed
                 return {UnitID.ZEALOT: {"proportion": 1.0, "priority": 0}}
+        # O292(D1,o291a game_01 实证):ZT 首波预备产兵 —— rush 确认=波到脸
+        # 才开闸,GW1 156s 就绪后空转 93s,首叉 249s,波 278s 到脸只 1 叉
+        # +2 塔,矿 415/气 552 烂银行。GW 就绪即开闸:追猎/叉子混编(气全
+        # 烂银行,追猎=白捡的对重甲 DPS),cap 6 自校正 —— 够数即回舰队配方。
+        # 与 O208 证伪的 transition 不同:不冻星门/FB 科技链,只动用闲置 GW
+        # 产能;rush 确认后上方 rush 分支接管(纯叉顶数),本分支自然让位。
+        # fleet_infra_live 即关闸:舰队上量第一优先,trickle 不压舰队(败局层②)。
+        # O293-①(o292a game_01 实证):口袋 Nexus 激活期 cap 6→3 —— 保留
+        # 首波核心 3 地面兵,余下 ~300 矿让进 Nexus 400 资金窗(O290 塔链
+        # 已封顶,trickle 不让位 = Nexus 永远攒不出);Nexus 派出 active 翻假,
+        # cap 自动回 6。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and zt_prewave_trickle_needed(
+                fleet_infra_live=(
+                    any(
+                        s.is_ready
+                        for s in self.manager_mediator.get_own_structures_dict[
+                            UnitID.STARGATE
+                        ]
+                    )
+                    and self._structure_present_or_pending(UnitID.FLEETBEACON)
+                ),
+                gateway_ready=any(
+                    g.is_ready
+                    for g in self.manager_mediator.get_own_structures_dict[
+                        UnitID.GATEWAY
+                    ]
+                ),
+                ground_count=(
+                    self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.ZEALOT)
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.STALKER
+                    )
+                ),
+                cap=(
+                    3
+                    if (
+                        self._zt_pocket_expand_active()
+                        and self.ai.townhalls.amount < 2
+                    )
+                    else 6
+                ),
+            )
+        ):
+            return {
+                UnitID.STALKER: {"proportion": 0.4, "priority": 0},
+                UnitID.ZEALOT: {"proportion": 0.6, "priority": 1},
+            }
         spawn = self._flow.spawn_dict()
         # E10 策略 pivot(只挂 carrier × 侦查 verdict=greedy):舰队成型前
         # 风暴主 C 压制(9c2f89d 认证赢法),成型/中后期转回航母主 C 终结。
@@ -5830,6 +5930,37 @@ class ProductionManager(Manager):
             )
         ):
             return
+        # O294-①(o293a game_04 实证):forge 随分矿阵亡后,150 矿重建资金窗
+        # 被探机+叉子吃干,塔链 tech_not_ready 80s+、塔 8→0 连锁丢基。
+        # 无就绪 forge + 急性防御 + 矿不够 forge → 探机让位资金窗(自校正)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and forge_rebuild_probe_yield(
+                forge_ready=any(
+                    s.is_ready
+                    for s in self.manager_mediator.get_own_structures_dict[
+                        UnitID.FORGE
+                    ]
+                ),
+                defense_acute=(self._threat_active or self._rush_active),
+                minerals=self.ai.minerals,
+                forge_price=self.ai.calculate_cost(UnitID.FORGE).minerals,
+            )
+        ):
+            return
+        # O295-③(o294a game_02 实证):O218 追加星门钉点 100+ 帧不落地 ——
+        # 钉点无资金预留,150 矿窗被探机(50/个)帧级抢走(与 O236 Nexus
+        # 钉点同型)。SG 钉点未开工 + 矿不够 SG → 探机让位资金窗(自校正:
+        # SG 开工/矿够即恢复)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.not_started_but_in_building_tracker(UnitID.STARGATE) > 0
+            and self.ai.minerals
+            < self.ai.calculate_cost(UnitID.STARGATE).minerals
+        ):
+            return
         # 农民上限随基地数放大：每矿 ~22（16 矿 + 6 气），封顶 70 给军队留供给。
         # 单矿时 22*1=22 与旧行为一致；开二矿后目标自动抬到 44，接着补农民采矿采气。
         if (
@@ -5929,6 +6060,38 @@ class ProductionManager(Manager):
         else:
             self._tech_stall_id = missing_sid
             self._tech_stall_since = self.ai.time
+
+        # O294-③(o293a game_04 实证):舰队基建(SG 642s/FB 679s 随分矿阵亡)
+        # 被拆后到判负 100s+ 零重建 —— 开矿持有冻核心链(core_allowed=False
+        # 早退)、FB 重建闸要就绪 SG、威胁让位闸三层堵死,878 气烂银行。
+        # ZT 且舰队曾成型(first_fleet_seen=基建曾存在,开局不误触发)→
+        # cyber→SG→FB 链式钉点补建,放在 core_allowed 早退之前(同 O55b
+        # 理由:冻结期恰恰是最需要自救的窗口)。critical 钉点等钱=钱到即开工;
+        # _dispatch_structure 自带 taken/tech 闸,重复调用安全。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and fleet_infra_rebuild_active(self._first_fleet_seen(), self.ai.time)
+        ):
+            _rebuild_sid = None
+            if not self._structure_present_or_pending(UnitID.CYBERNETICSCORE):
+                _rebuild_sid = UnitID.CYBERNETICSCORE
+            elif not self._structure_present_or_pending(UnitID.STARGATE):
+                _rebuild_sid = UnitID.STARGATE
+            elif (
+                not self._structure_present_or_pending(UnitID.FLEETBEACON)
+                and any(s.is_ready for s in structures_dict[UnitID.STARGATE])
+            ):
+                _rebuild_sid = UnitID.FLEETBEACON
+            if _rebuild_sid is not None:
+                _rc = self._dispatch_structure(
+                    _rebuild_sid, self.ai.start_location, critical=True
+                )
+                if _rc == "dispatched":
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": f"O294:舰队基建重建钉点={_rebuild_sid.name}",
+                    })
 
         if not core_allowed:
             # O163(o162-vh-zerg-power game_01 实证):经济开局(CarrierOpener)把

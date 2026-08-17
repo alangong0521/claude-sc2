@@ -160,8 +160,13 @@ from bot.production_plans import (  # noqa: E402
     wall_fallback_due,
     wall_hold_point,
     pick_wall_positions,
+    pocket_saving_cannons,
+    carrier_reserve_ok,
+    fleet_infra_rebuild_active,
+    forge_rebuild_probe_yield,
     upgrade_tech_buildings,
     worker_target,
+    zt_prewave_trickle_needed,
 )
 
 
@@ -1794,6 +1799,69 @@ class TestO94FirstWaveDefense(unittest.TestCase):
     def test_worker_escort_params(self):
         self.assertTrue(rush_worker_escort_needed(5, 0, 0, min_enemy=5))
         self.assertFalse(rush_worker_escort_needed(4, 0, 0, min_enemy=5))
+
+    def test_zt_prewave_trickle(self):
+        # O292(D1):GW 就绪 + 地面 <cap + 舰队基建未活 → 预备产兵
+        self.assertTrue(zt_prewave_trickle_needed(False, True, 0))
+        self.assertTrue(zt_prewave_trickle_needed(False, True, 5))
+        # 够数自校正回舰队配方
+        self.assertFalse(zt_prewave_trickle_needed(False, True, 6))
+        # GW 未就绪不开闸(开局 BO 不抢钱)
+        self.assertFalse(zt_prewave_trickle_needed(False, False, 0))
+        # 舰队基建活(SG 就绪+FB 在场/在建)→ 舰队上量优先,关闸
+        self.assertFalse(zt_prewave_trickle_needed(True, True, 0))
+        # 自定义 cap
+        self.assertTrue(zt_prewave_trickle_needed(False, True, 3, cap=4))
+        self.assertFalse(zt_prewave_trickle_needed(False, True, 4, cap=4))
+        # O293-①:口袋激活期 cap 6→3(让钱给 Nexus 资金窗)
+        self.assertTrue(zt_prewave_trickle_needed(False, True, 2, cap=3))
+        self.assertFalse(zt_prewave_trickle_needed(False, True, 3, cap=3))
+
+    def test_pocket_saving_cannons(self):
+        # O293-②:激活期塔目标收到 ≤3(首波存活地板),不再归 0
+        self.assertEqual(pocket_saving_cannons(0), 0)
+        self.assertEqual(pocket_saving_cannons(2), 2)
+        self.assertEqual(pocket_saving_cannons(3), 3)
+        # O290 本意保留:3→10 塔链仍被拦
+        self.assertEqual(pocket_saving_cannons(10), 3)
+        # 自定义 cap
+        self.assertEqual(pocket_saving_cannons(5, cap=4), 4)
+
+    def test_forge_rebuild_probe_yield(self):
+        # O294-①:无就绪 forge + 急性 + 矿不够 → 探机让位
+        self.assertTrue(forge_rebuild_probe_yield(False, True, 100.0))
+        # 矿够 forge → 照产(自校正)
+        self.assertFalse(forge_rebuild_probe_yield(False, True, 150.0))
+        # forge 就绪 → 照产
+        self.assertFalse(forge_rebuild_probe_yield(True, True, 0.0))
+        # 非急性期 → 照产
+        self.assertFalse(forge_rebuild_probe_yield(False, False, 100.0))
+        # 自定义 forge 价
+        self.assertTrue(forge_rebuild_probe_yield(False, True, 100.0, forge_price=120.0))
+
+    def test_carrier_reserve_ok(self):
+        # O294-②:有就绪 SG + 非急性 → 预留成立
+        self.assertTrue(carrier_reserve_ok(True, False))
+        # SG 毁了 → 攒航母产不出,不预留
+        self.assertFalse(carrier_reserve_ok(False, False))
+        # 急性威胁期 → 停产=自杀,不预留
+        self.assertFalse(carrier_reserve_ok(True, True))
+        # O295-②:敌可见 supply > 我方 → 产线永不停(threat 滞后兜底)
+        self.assertFalse(carrier_reserve_ok(True, False, enemy_supply=76.0, own_supply=48.0))
+        self.assertTrue(carrier_reserve_ok(True, False, enemy_supply=30.0, own_supply=48.0))
+        # 敌我相等不算落后(闸语义=严格大于才停)
+        self.assertTrue(carrier_reserve_ok(True, False, enemy_supply=48.0, own_supply=48.0))
+        # 默认参数(无敌情)维持 O294-② 语义
+        self.assertTrue(carrier_reserve_ok(True, False))
+
+    def test_fleet_infra_rebuild_active(self):
+        # O294-③:舰队曾成型 + t≥300 → 重建链开闸
+        self.assertTrue(fleet_infra_rebuild_active(True, 642.9))
+        self.assertTrue(fleet_infra_rebuild_active(True, 300.0))
+        # 开局未成型 → 不误触发
+        self.assertFalse(fleet_infra_rebuild_active(False, 500.0))
+        # 太早 → 不开闸
+        self.assertFalse(fleet_infra_rebuild_active(True, 299.9))
 
 
 class TestO96EscortAndTransitionExpand(unittest.TestCase):
