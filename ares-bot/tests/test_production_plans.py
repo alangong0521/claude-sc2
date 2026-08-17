@@ -29,6 +29,8 @@ from bot.production_plans import (  # noqa: E402
     defense_anchor_index,
     defense_sprint_active,
     defense_syncs_with_nexus,
+    expand_holding_should_abort,
+    holding_allows_cyber,
     dispatch_viable,
     early_scout_verdict,
     expansion_blocked,
@@ -92,6 +94,7 @@ from bot.production_plans import (  # noqa: E402
     rush_gas_stop_window,
     rush_worker_escort_needed,
     save_up_spawn,
+    serialize_presumed_cannons,
     spawn_pause_reason,
     sprint_blocks_probes,
     scout_early_redispatch_needed,
@@ -2608,6 +2611,18 @@ class TestO125FirstZealotRace(unittest.TestCase):
         self.assertTrue(forge_before_first_gateway(True, False))
         self.assertFalse(forge_before_first_gateway(True, True))
         self.assertFalse(forge_before_first_gateway(False, False))
+        # O308-①(o307a game_02/03 实证):Zerg Timing 豁免 —— ZT 首波
+        # ~240s(非 o126b 的 ~154s 狗波),GW1 先拍首叉 ~180s 上岗
+        self.assertFalse(forge_before_first_gateway(True, False, True))
+        # Zerg Rush 保持 O127 数据终裁(forge 先)
+        self.assertTrue(forge_before_first_gateway(True, False, False))
+
+    def test_serialize_presumed_cannons(self):
+        # O308-③:首塔就绪前炮塔串行化(目标压 1,资金集中)
+        self.assertTrue(serialize_presumed_cannons(0))
+        # 首塔就绪即解除
+        self.assertFalse(serialize_presumed_cannons(1))
+        self.assertFalse(serialize_presumed_cannons(3))
 
     def test_chrono_first_zealot(self):
         # rush/过渡 + 首叉未出 → chrono 给兵营;首叉出场/非紧急 → 不抢
@@ -2682,6 +2697,48 @@ class TestO126SpawnArbiter(unittest.TestCase):
             spawn_pause_reason(enemy_supply=10.0, own_supply=29.0, **_kw),
             "zerg_timing_expand_reserve",
         )
+
+    def test_zerg_timing_expand_reserve_ground_floor(self):
+        # O307-②(o306c game_03/05 实证):地面低于保底(12 supply)时停产
+        # 攒 Nexus = 裸奔 —— 侦查断链期 enemy_supply=0,敌情闸失效,
+        # 地面保底是盲期最后防线。
+        _kw = dict(
+            rebuild_nexus=False,
+            expand_holding=True,
+            is_zerg_timing=True,
+            nexus_unstarted=1,
+            minerals=350.0,
+            enemy_supply=0.0,
+            own_supply=23.0,
+        )
+        # 地面 2 兵(4 supply)< 12 → 不停产(game_03 死法)
+        self.assertIsNone(spawn_pause_reason(ground_supply=4.0, **_kw))
+        # 地面 5 兵(10 supply)< 12 → 不停产(game_05 死法)
+        self.assertIsNone(spawn_pause_reason(ground_supply=10.0, **_kw))
+        # 地面达标(≥12 supply)→ 维持暂停
+        self.assertEqual(
+            spawn_pause_reason(ground_supply=12.0, **_kw),
+            "zerg_timing_expand_reserve",
+        )
+
+    def test_expand_holding_should_abort(self):
+        # O307-③(o306c game_05 实证):Nexus 未开工持有 326s 冻死科技链
+        # 未超时 → 不放弃(正常攒钱窗)
+        self.assertFalse(expand_holding_should_abort(60.0, 1, False))
+        # 超时但已开工(在建不算死锁)
+        self.assertFalse(expand_holding_should_abort(120.0, 0, False))
+        # 超时但买得起(下一帧就开工,不是死锁)
+        self.assertFalse(expand_holding_should_abort(120.0, 1, True))
+        # 超时 + 未开工 + 买不起 → 撤销派工解锁科技链
+        self.assertTrue(expand_holding_should_abort(120.0, 1, False))
+
+    def test_holding_allows_cyber(self):
+        # O307-①:holding 期放行 CYBERNETICSCORE(仅 Zerg Timing + 兵营就绪)
+        self.assertTrue(holding_allows_cyber(True, True))
+        # 非 ZT 不放行(其它对阵零变化)
+        self.assertFalse(holding_allows_cyber(False, True))
+        # 兵营未就绪不放行(链序不乱)
+        self.assertFalse(holding_allows_cyber(True, False))
 
     def test_zerg_timing_tech_reserve_pauses_spawn(self):
         # O224:Zerg Timing 防御已立且 SG/FB 缺失买不起时,暂停地面产兵攒钱

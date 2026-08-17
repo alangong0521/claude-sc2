@@ -2756,7 +2756,8 @@ def forge_first_probe_yield(
 
 
 def forge_before_first_gateway(
-    defense_urgent: bool, forge_present_or_pending: bool
+    defense_urgent: bool, forge_present_or_pending: bool,
+    is_zerg_timing: bool = False,
 ) -> bool:
     """O118-②/O127-①(数据终裁):防御紧急窗 forge 先于首兵营。纯逻辑,可单测。
 
@@ -2766,8 +2767,25 @@ def forge_before_first_gateway(
     75-80 开拍(资金被 O79 水晶/农民偷),不是顺序错。
     严格前提「forge 未拍(无实体且无在建)」:forge 一拍下 GW1 即紧随,
     不互抢;forge 掉了重建期 GW 让位(塔链是防御本体)。
+
+    O308-①(o307a game_02/03 尸检):Zerg Timing 豁免 —— o126b 的算术基于
+    ~154s 狗波(Zerg Rush);ZT 首波是 ~240s 蟑螂波,forge-first 把首叉
+    拖到 218s,波到脸仅 4-6 supply + 1 塔(game_02/03 均因此崩)。
+    ZT 改 GW1 先拍(司令 GM 录像口径:兵营先于 BF),首叉 ~180s 上岗,
+    forge/首塔随其后。Rush 保持 O127 终裁不动。
     """
-    return defense_urgent and not forge_present_or_pending
+    return defense_urgent and not forge_present_or_pending and not is_zerg_timing
+
+
+def serialize_presumed_cannons(cannons_ready: int) -> bool:
+    """O308-③(o307a game_03/o306c game_05 实证):presumed/unknown 窗炮塔串行化。
+    纯逻辑,可单测。
+
+    125-143s 连续三农民「等钱造 PHOTONCANNON」—— 3 塔同排(450 矿窗口)
+    把资金摊薄,首塔拖到 200-225s 才就绪,而 ZT 首波 ~240s 到脸。
+    首塔就绪前目标压到 1(资金集中,首塔 ~60s 提前),落地后恢复正常目标。
+    """
+    return cannons_ready == 0
 
 
 def chrono_first_zealot(defense_urgent: bool, first_zealot_seen: bool) -> bool:
@@ -2822,6 +2840,8 @@ def spawn_pause_reason(
     immortal_price: float = 275.0,
     enemy_supply: float = 0.0,
     own_supply: float = 9999.0,
+    ground_supply: float = 9999.0,
+    ground_floor: float = 12.0,
 ) -> str | None:
     """O135(o134-vh-zerg-timing 0-5 尸检):产出永不暂停 —— 暂停型预留体系
     整体证伪。纯逻辑,可单测。
@@ -2861,6 +2881,11 @@ def spawn_pause_reason(
         # 与 O296-① carrier 闸同口径:敌可见 supply ≥ 我方时产线永不停
         # (开矿攒钱是波间隙特权), Nexus 资金由 O298-③ 的开销让位解决。
         and enemy_supply < own_supply
+        # O307-②(o306c game_03/05 实证):地面低于保底时停产攒 Nexus = 裸奔
+        # —— game_03 地面 2(4 supply)停产,306s 15-supply 波到家仅 7 兵;
+        # game_05 地面 5(10 supply)停产,304s 波穿主基。侦查断链期
+        # enemy_supply=0 让 O298-② 闸失效,地面保底是盲期最后防线。
+        and ground_supply >= ground_floor
     ):
         return "zerg_timing_expand_reserve"
     if (
@@ -2888,6 +2913,32 @@ def spawn_pause_reason(
     ):
         return "zerg_timing_immortal_reserve"
     return None
+
+
+def expand_holding_should_abort(
+    holding_for: float,
+    nexus_unstarted: int,
+    can_afford_nexus: bool,
+    timeout: float = 90.0,
+) -> bool:
+    """O307-③(o306c game_05 实证):开矿持有死锁自愈判据。纯逻辑,可单测。
+
+    game_05:Nexus 预走位未开工,holding 从 ~300s 持续到 626s(326s)——
+    科技链(core_allowed=False)全程冻结,星门 0、气烂 1325,两波滚死。
+    持有 >timeout 且 Nexus 仍未开工、仍买不起 → 撤销派工解锁科技链,
+    冷却后再由动态开矿重评(波间隙特权,不是永久取消)。
+    """
+    return holding_for > timeout and nexus_unstarted > 0 and not can_afford_nexus
+
+
+def holding_allows_cyber(is_zerg_timing: bool, gateway_ready: bool) -> bool:
+    """O307-①(o306c game_03/05 实证):holding 期放行 CYBERNETICSCORE。纯逻辑,可单测。
+
+    开矿持有期 core_allowed=False 把整条科技链冻结;Cybercore 仅 50 矿
+    (Nexus 的 1/8),却是追猎/星门链的总开关 —— 两局败局气烂 700-1300
+    无追猎可出。仅限 Zerg Timing(证据所在),兵营就绪才建(链序不乱)。
+    """
+    return is_zerg_timing and gateway_ready
 
 
 def gateway_chain_after_first_zealot(

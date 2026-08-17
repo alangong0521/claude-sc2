@@ -446,7 +446,14 @@ def update_worker_last_stand(ai) -> None:
     tracker = ai.mediator.get_building_tracker_dict
     gathering = set(ai.mediator.get_unit_role_dict[UnitRole.GATHERING])
     pulled = 0
+    # O308-②(o307a game_02/03 实证):同一场接战不添油 —— 首批拉完后
+    # stand 非空期间不再拉新农民(「拉9→战死→再拉1→再送」×5 的添油
+    # 循环 = 农民逐个喂给蟑螂,还赔走位/采矿复位时间);首批未决出
+    # 胜负就交给塔/电池/部队,农民死在矿位和死在冲锋位之差是纯亏。
+    # 敌退 stand 清仓后,下一场接战重新拉首批(自校正)。
     for w in ai.workers:
+        if stand:
+            break
         if w.tag in stand or w.tag not in gathering:
             continue
         if w.tag in tracker or w.tag in ai._player_ctrl:

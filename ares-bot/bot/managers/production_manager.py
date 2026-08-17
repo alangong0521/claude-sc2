@@ -61,6 +61,9 @@ from bot.production_plans import (
     escort_worker_count,
     escort_pull_cap,
     escort_stance,
+    expand_holding_should_abort,
+    holding_allows_cyber,
+    serialize_presumed_cannons,
     expansion_cannon_count,
     expansion_cannon_min_dynamic,
     expansion_max_pending,
@@ -523,6 +526,33 @@ class ProductionManager(Manager):
             or self.manager_mediator.get_building_counter[UnitID.NEXUS] > 0
             or self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
         )
+        # O307-③(o306c game_05 实证):holding 死锁自愈 —— Nexus 预走位等钱
+        # 90s+ 未开工(game_05 持了 326s),科技链/塔/研究全冻结,气烂 1300
+        # 两波滚死。超时且仍买不起 → 撤销预走位派工(镜像 assimilator 反卡死),
+        # 解锁 45s 让科技链/产线恢复,冷却后动态开矿自然重评。
+        if _expand_holding:
+            self._expand_holding_since = self._expand_holding_since or self.ai.time
+        else:
+            self._expand_holding_since = None
+        if expand_holding_should_abort(
+            self.ai.time - (self._expand_holding_since or self.ai.time),
+            self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
+            self.ai.can_afford(UnitID.NEXUS),
+        ):
+            _tracker = self.manager_mediator.get_building_tracker_dict
+            for _tag, _info in list(_tracker.items()):
+                if _info[TRACKER_ID] == UnitID.NEXUS:
+                    self.manager_mediator.get_building_counter[UnitID.NEXUS] -= 1
+                    _tracker.pop(_tag)
+            self._expand_holding_since = None
+            self._expand_abort_until = self.ai.time + 45.0
+            _expand_holding = False
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": "O307:开矿持有>90s未开工,撤销派工解锁科技链(冷却45s)",
+            })
+        elif self.ai.time < getattr(self, "_expand_abort_until", 0.0):
+            _expand_holding = False
         # O166: 这些闸在 update 尾部的方法(_spend_bank/_build_extra_production/
         # _build_forward_pylon)里也要读，挂到实例上避免 NameError。
         self._expand_holding = _expand_holding
@@ -1170,6 +1200,8 @@ class ProductionManager(Manager):
                 if not u.is_structure and is_combat_type(u.type_id)
             ),
             own_supply=float(self.ai.supply_army),
+            # O307-②:地面保底闸 —— 低于 12 supply(≈6 兵)不停产攒 Nexus。
+            ground_supply=2.0 * _ground_army_now,
             # O224:transition 期 zealot 吃光 SG/FB 资金窗(SG ~500s/首舰 620+)。
             # 防御已立(t≥240+塔≥2)且 SG/FB 缺失 → 停产攒钱,买得起即恢复。
             # O226(o222-lane2 game_04 实证):塔≥2 门太严(本局塔 1 拖到 281s,
@@ -1700,6 +1732,23 @@ class ProductionManager(Manager):
                 # O293-②(o292a game_01 实证):0 封 → 3 座地板 —— 首波正落
                 # 攒钱窗,threat 翻真再补塔来不及;胜局波前 3 塔是存活地板。
                 cannons = pocket_saving_cannons(cannons)
+            # O308-③(o307a game_03/o306c game_05 实证):ZT presumed/unknown 窗
+            # 首塔未就绪时目标压 1 串行化 —— 3 塔同排(450 矿窗口)把资金摊薄,
+            # 首塔拖到 200-225s 才就绪,波 ~240s 到脸;集中资金首塔 ~60s 提前。
+            if (
+                cannons > 1
+                and self._opp_race == "zerg"
+                and self._ai_build == "timing"
+                and (_presumed_rush or _unknown_defense)
+                and serialize_presumed_cannons(
+                    sum(
+                        1 for s in self.ai.structures.ready
+                        if s.type_id == UnitID.PHOTONCANNON
+                        and s.position.distance_to(self.ai.start_location) < 25
+                    )
+                )
+            ):
+                cannons = 1
             # O216d(O216c 败局):FB 实体落成前,动态塔目标扩到 3-4 座/基地会反复
             # 抽干 300 矿 FB 资金窗,舰队继续空转。压回 ec.min(1-2 座保命塔),
             # 让 FB 优先落地。过渡期地面防御不动。
@@ -4256,6 +4305,8 @@ class ProductionManager(Manager):
             and not forge_before_first_gateway(
                 self._defense_urgent,
                 self._structure_present_or_pending(UnitID.FORGE),
+                # O308-①:Zerg Timing 豁免(GW1 先拍,首叉 ~180s)
+                self._opp_race == "zerg" and self._ai_build == "timing",
             )
             # O112-①:GW3+ 在主基 3x3 余量 <2 时让位科技槽(给 cyber/SG/FB
             # 留位)—— rush 局主基铺满塔是必然,不能等舰队期才发现没地方放
@@ -6224,6 +6275,17 @@ class ProductionManager(Manager):
             # 解冻首 GATEWAY:即使持有期也要拍下兵营,保证起码的地面产能和防御。
             if not self._structure_present_or_pending(UnitID.GATEWAY):
                 await self._build_core_structure(UnitID.GATEWAY)
+            # O307-①(o306c game_03/05 实证):holding 期放行 CYBERNETICSCORE ——
+            # 仅 50 矿(Nexus 的 1/8),却是追猎/星门链总开关;两局败局气烂
+            # 700-1300 零追猎。兵营就绪才建(链序不乱),限 Zerg Timing。
+            if (
+                holding_allows_cyber(
+                    self._opp_race == "zerg" and self._ai_build == "timing",
+                    any(s.is_ready for s in structures_dict[UnitID.GATEWAY]),
+                )
+                and not self._structure_present_or_pending(UnitID.CYBERNETICSCORE)
+            ):
+                await self._build_core_structure(UnitID.CYBERNETICSCORE)
             # O215:Zerg Timing 开矿持有期仍允许 FleetBeacon——Nexus 在建时 FB
             # 被冻是舰队成型过晚的主因。此处只放行 FB,其它核心科技继续让位。
             if self._is_zerg_timing_fb_exempt():
@@ -6272,6 +6334,8 @@ class ProductionManager(Manager):
                 and forge_before_first_gateway(
                     self._defense_urgent,
                     self._structure_present_or_pending(UnitID.FORGE),
+                    # O308-①:Zerg Timing 豁免(GW1 先拍,首叉 ~180s)
+                    self._opp_race == "zerg" and self._ai_build == "timing",
                 )
             ):
                 continue
