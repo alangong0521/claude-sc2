@@ -94,6 +94,7 @@ from bot.production_plans import (
     mothership_economy_ok,
     sg2_pin_economy_ok,
     sg_pin_expand_ok,
+    zt_zealot_yield,
     zt_fast_expand_pin,
     zt_defense_at_natural,
     gas_gated_stargate_target,
@@ -614,6 +615,10 @@ class ProductionManager(Manager):
             and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
             and self._structure_present_or_pending(UnitID.FORGE)
             and not getattr(self, "_o329_predef_fired", False)
+            # O332-④(o331a game_01 实证):派工=taken 后 fired 照样置位,
+            # 预置塔整局不再尝试(分矿塔实际 463s 落成触发才来,489s
+            # 波 38 supply 走进裸奔分矿)——失败重试,30s 节流。
+            and self.ai.time - getattr(self, "_o329_predef_last", 0.0) > 30.0
         ):
             # 目标 = 在建分矿 Nexus(已开工后 pocket_target 因 townhalls
             # !=1 返回 None,必须改读在建基地);未开工窗退回 pocket 选址。
@@ -632,7 +637,9 @@ class ProductionManager(Manager):
                 else self._zt_pocket_expand_target()
             )
             if _pre_target is not None:
-                self._o329_predef_fired = True
+                # O332-④:只有塔派工成功才置 fired;taken/失败记时间戳,
+                # 30s 后重试(守卫在上面的 if 条件里)。
+                self._o329_predef_last = self.ai.time
                 self._dispatch_structure(
                     UnitID.PYLON, _pre_target,
                     closest_to=_pre_target, needs_power=False,
@@ -642,6 +649,8 @@ class ProductionManager(Manager):
                     UnitID.PHOTONCANNON, _pre_target,
                     closest_to=_pre_target, critical=True,
                 )
+                if _rc == "dispatched":
+                    self._o329_predef_fired = True
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": f"O329:分矿预置塔链(Nexus在途,派工={_rc})",
@@ -1021,6 +1030,15 @@ class ProductionManager(Manager):
         )
         if self._floor_unknown_zt:
             self._floor_active = True
+        # O332-②(司令 doctrine 2026-08-18):二矿开工前零兵种 —— o331 实证
+        # opener 零叉后 bot 层 floor 在 Nexus 开工前照出 5-6 叉(500-600
+        # 矿),把 O329 钉点资金窗抽干;_effective_spawn 的叉 floor_cap
+        # 读此闸归零。Nexus 开工(townhalls≥2 含在建)/rush 确认后恢复。
+        self._o332_zyt = (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and zt_zealot_yield(self.ai.townhalls.amount, self._rush_confirmed)
+        )
         # O279:预警 latch 接触即解除(威胁响应包接管,预警使命完成)
         if self._wave_incoming and (self._threat_active or self._rush_active):
             self._wave_incoming = False
@@ -1545,17 +1563,14 @@ class ProductionManager(Manager):
             # O202:CarrierOpenerZergRush 早期由 build order 自己铺 forge+双塔,
             # 手动链不抢资源,避免把二塔拖到 5 分钟后。
             and not self._carrier_rush_opener_early()
-            # O329-④:速二矿在途/落成后主基防御链整体噤声(司令拍板:
-            # 放弃主基分散铺塔,forge 由 opener 18 步负责,塔链在分矿)。
-            # rush 确认(fuse)或分矿全丢时判据翻假,手动链自动恢复。
+            # O329-④/O332-①:ZT 主基防御链全程噤声(司令拍板:放弃主基
+            # 分散铺塔;o331 实证 Nexus 开工前 presumed 链已在主基铺
+            # 3-5 塔抽干钉点资金窗)。forge 由 opener 18 步负责,塔链
+            # 在分矿(O329-③)。rush 确认(fuse)即恢复主基防御。
             and not (
                 self._opp_race == "zerg"
                 and self._ai_build == "timing"
                 and not self._rush_confirmed
-                and (
-                    self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
-                    or self.ai.townhalls.amount >= 2
-                )
             )
         )
         if _presumed_manual:
@@ -2181,6 +2196,15 @@ class ProductionManager(Manager):
                         self._rush_active,
                     )
                 )
+                # O332-①(o331 尸检):主基塔全程归零 —— O329-④ 只在 Nexus
+                # 在途后封主基,但 115s 注册(presumed/F2)已在 200-300s
+                # 给主基铺 3-5 塔+电池(600-900 矿),正是钉点资金窗被
+                # 抽干的元凶;Nexus 开工前主基也不铺塔(rush 激活回退)。
+                _zt_no_main_def = (
+                    self._opp_race == "zerg"
+                    and self._ai_build == "timing"
+                    and not self._rush_active
+                )
                 # O76b 诊断(n5/o76 分矿恒 1 塔悬案):每基地首次注册 + 每 30s 每基地
                 # 塔数上报事件,定位「没注册 / 注册不建 / 建了被拆」哪一环。
                 # O77(诊断一层):按离敌距离升序注册 —— 最暴露的基地(分矿)先抢
@@ -2296,11 +2320,11 @@ class ProductionManager(Manager):
                     # (基地附近**有电**的位置)。锚点概念(塔朝敌 6 格)对分矿是
                     # 连环失败源:锚点无电/不可建 → 塔单静默失败(分矿恒 0-1 塔,
                     # 主基坡口锚点无恙故主基保留)—— 矿线侧的塔 > 锚点空气。
-                    if is_main and _zt_def_natural:
-                        # O329-④(司令拍板):防御重心在 2 矿 —— 主基塔/电池
-                        # 归零,建造槽全喂分矿堵口阵;registered=True 防落
-                        # 全局兜底 PSD(会把塔注册回主基 rally)。分矿全丢
-                        # 时判据翻假,主基防御自动恢复。
+                    if is_main and _zt_no_main_def:
+                        # O329-④/O332-①(司令拍板):防御重心在 2 矿 —— 主基
+                        # 塔/电池全程归零(Nexus 开工前也不铺),建造槽全喂
+                        # 分矿堵口阵;registered=True 防落全局兜底 PSD。
+                        # rush 激活时判据翻假,主基防御自动恢复。
                         registered = True
                         continue
                     anchor_xy = base_defense_anchor(
@@ -5545,20 +5569,24 @@ class ProductionManager(Manager):
             # O314-③(o313b game_02/03 实证):波窗(t≥240)敌可见 ≥4 →
             # cap 8 —— 早二矿落定后 cap 3 是绞索(我 11-13 vs 敌 20-27)。
             floor_cap=(
-                min(
-                    pre_fleet_cap(
-                        pf.cap, pf.per_enemy, pf.max,
-                        self._visible_enemy_army_count(),
-                    ),
-                    unknown_zt_floor_cap(
-                        self.ai.time,
-                        self._visible_enemy_army_count(),
-                        self._wave_incoming,
-                    ),
-                )
-                if self._floor_unknown_zt
-                else pre_fleet_cap(
-                    pf.cap, pf.per_enemy, pf.max, self._visible_enemy_army_count()
+                0
+                if getattr(self, "_o332_zyt", False)
+                else (
+                    min(
+                        pre_fleet_cap(
+                            pf.cap, pf.per_enemy, pf.max,
+                            self._visible_enemy_army_count(),
+                        ),
+                        unknown_zt_floor_cap(
+                            self.ai.time,
+                            self._visible_enemy_army_count(),
+                            self._wave_incoming,
+                        ),
+                    )
+                    if self._floor_unknown_zt
+                    else pre_fleet_cap(
+                        pf.cap, pf.per_enemy, pf.max, self._visible_enemy_army_count()
+                    )
                 )
             ),
             fleet_online=fleet_online,

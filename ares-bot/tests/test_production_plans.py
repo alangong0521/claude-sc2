@@ -58,6 +58,7 @@ from bot.production_plans import (  # noqa: E402
     sg2_pin_economy_ok,
     zt_fast_expand_pin,
     sg_pin_expand_ok,
+    zt_zealot_yield,
     zt_defense_at_natural,
     forge_before_first_gateway,
     gateway_chain_after_first_zealot,
@@ -3532,13 +3533,23 @@ class TestO329FastExpand(unittest.TestCase):
         self.assertFalse(zt_fast_expand_pin(120.0, 400.0, 2, 0, False))
 
     def test_sg_pin_expand_ok(self):
-        # 2 基地或 Nexus 在途 → 放行(舰队科技不拖)
+        # 2 基地(含在建)→ 放行(舰队科技不拖)
         self.assertTrue(sg_pin_expand_ok(2, 0, 300.0))
-        self.assertTrue(sg_pin_expand_ok(1, 1, 300.0))
+        # O332-③:「在途」不再放行 —— 驻点等钱的 Nexus 会被 SG 插队
+        # (o331a game_01:297s SG vs 395s 才开工的 Nexus)
+        self.assertFalse(sg_pin_expand_ok(1, 1, 300.0))
         # 单基地无在途且 <360s → 拦(o329b game_01:342s SG 抢二矿资金窗)
         self.assertFalse(sg_pin_expand_ok(1, 0, 342.0))
         # 单基地硬时限 360s 后放行(防 O261 死窗零对空)
         self.assertTrue(sg_pin_expand_ok(1, 0, 360.0))
+
+    def test_zt_zealot_yield(self):
+        # 二矿开工前(单基地)+非 rush → 零兵种(司令 doctrine)
+        self.assertTrue(zt_zealot_yield(1, False))
+        # Nexus 开工(含在建,townhalls≥2)→ 恢复产叉
+        self.assertFalse(zt_zealot_yield(2, False))
+        # rush 确认 → 恢复(rush 响应包要叉)
+        self.assertFalse(zt_zealot_yield(1, True))
 
     def test_zt_defense_at_natural(self):
         # Nexus 在途或分矿存在 → 防御重心在 2 矿(主基塔归零)

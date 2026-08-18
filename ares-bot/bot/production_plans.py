@@ -881,11 +881,29 @@ def sg_pin_expand_ok(townhalls: int, nexus_in_flight: int, now: float, hard_at: 
 
     O329-① 新 opener 无首塔 → O323 SG 钉点的「口袋攒钱期让位」守卫
     (要首塔就绪才激活)整局失效,342-366s 连拍 4 次 SG(150/150)
-    抢光二矿资金窗,单基地到死。2 基地运转或 Nexus 在途即放行
-    (舰队科技不拖,司令「重心升级科技」);仍单基地时硬时限 360s
-    后放行(防 O261 死窗零对空的旧教训)。
+    抢光二矿资金窗,单基地到死。2 基地运转即放行(舰队科技不拖,
+    司令「重心升级科技」);仍单基地时硬时限 360s 后放行(防 O261
+    死窗零对空的旧教训)。
+    O332-③(o331a game_01 实证):放行口径去掉 nexus_in_flight ——
+    「在途」含驻点等钱(game_01 Nexus 226s 钉点后等钱 145s),
+    此时放 SG = 插队抢等钱中的 Nexus(297s SG vs 395s 才开工的
+    Nexus);只认 townhalls≥2(含在建,Nexus 真开工)。
+    nexus_in_flight 参数保留不再入判据(向后兼容调用方签名)。
     """
-    return townhalls >= 2 or nexus_in_flight > 0 or now >= hard_at
+    return townhalls >= 2 or now >= hard_at
+
+
+def zt_zealot_yield(townhalls: int, rush_confirmed: bool) -> bool:
+    """O332-②(o331 尸检+司令 doctrine):二矿开工前零兵种判据。纯逻辑,可单测。
+
+    司令 2026-08-18 战术:2 矿没建造开始前不出战斗兵种,防御完全
+    交给塔+电池。o331 实证 opener 零叉后,bot 层 floor(unknown 死窗
+    cap 3/波前 cap 5/O314 cap 8)在 Nexus 开工前照出 5-6 叉
+    (500-600 矿),与主基塔链一起把 O329 钉点资金窗抽干(矿窗
+    226s+ 才摸到 350,game_03/04 整局哑火)。Nexus 开工
+    (townhalls≥2,含在建)或 rush 确认后恢复产叉。
+    """
+    return townhalls < 2 and not rush_confirmed
 
 
 def zt_defense_at_natural(
