@@ -618,11 +618,18 @@ class ProductionManager(Manager):
                 )
                 if _cn_near >= 2:
                     continue
-                if not any(
+                # O339-③(o338a game_01 实证):补电判据加「带电槽=0」——
+                # 旧口径只看有无就绪水晶;水晶在但 2x2 带电槽被塔/电池/
+                # 墙建筑占满(512-843s no_placement 常驻)时不补,塔阵
+                # 永远铺不开。口径同 O296-③ 主基(_slot_counts_at)。
+                _exp_pyl_ok = any(
                     s.type_id == UnitID.PYLON and s.is_ready
                     and s.position.distance_to(_exp_th.position) < 12
                     for s in self.ai.structures
-                ):
+                )
+                if not _exp_pyl_ok or self._slot_counts_at(
+                    _exp_th.position, BuildingSize.TWO_BY_TWO
+                )[0] == 0:
                     self._dispatch_structure(
                         UnitID.PYLON, _exp_th.position,
                         closest_to=_exp_th.position, needs_power=False,
@@ -1079,7 +1086,10 @@ class ProductionManager(Manager):
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and zt_zealot_yield(
-                self.ai.townhalls.amount, self._rush_confirmed, self._threat_active
+                self.ai.townhalls.amount,
+                self._rush_confirmed,
+                self._threat_active,
+                self._wave_incoming,
             )
         )
         # O279:预警 latch 接触即解除(威胁响应包接管,预警使命完成)
@@ -6894,6 +6904,11 @@ class ProductionManager(Manager):
             # (taken/no_placement)每 ~4s 重试连拍 12 次,事件刷屏且
             # 反复抢派工槽。
             and self.ai.time - getattr(self, "_o323_sg_last", 0.0) > 30.0
+            # O339-①(o338a game_01 实证):SG 同 SG2 的驻点等钱 pop 循环
+            # —— 穷局「成功」派工 4 连(360-450s)零落地(到位→等钱→
+            # 10s 僵死 pop→30s 重派),舰队链(SG→FB→首舰)整体晚 ~90s;
+            # 买得起才派,派了即开工(O337-③ SG2 同款)。
+            and self.ai.can_afford(UnitID.STARGATE)
         ):
             self._o323_sg_last = self.ai.time
             _rc = self._dispatch_structure(

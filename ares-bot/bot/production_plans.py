@@ -897,7 +897,12 @@ def sg_pin_expand_ok(townhalls: int, nexus_in_flight: int, now: float, hard_at: 
     return townhalls >= 2 or now >= hard_at
 
 
-def zt_zealot_yield(townhalls: int, rush_confirmed: bool, threat_active: bool = False) -> bool:
+def zt_zealot_yield(
+    townhalls: int,
+    rush_confirmed: bool,
+    threat_active: bool = False,
+    wave_incoming: bool = False,
+) -> bool:
     """O332-②(o331 尸检+司令 doctrine):二矿开工前零兵种判据。纯逻辑,可单测。
 
     司令 2026-08-18 战术:2 矿没建造开始前不出战斗兵种,防御完全
@@ -909,8 +914,12 @@ def zt_zealot_yield(townhalls: int, rush_confirmed: bool, threat_active: bool = 
     O333-③(o332b game_01/02 实证):threat 激活豁免 —— 钉点晚局
     (185-286s)波 288-304s 到脸时零叉零塔,主基 359s 被推平;
     敌压境时零兵种 doctrine 立即让位(rush fuse 同源)。
+    O339-②(o338a game_05 实证):波预警豁免 —— threat 触发时敌已
+    到门口(296s 敌 11 vs 我 2),此时才产叉 = 28s 折跃后 330s 才
+    接战,晚 30s 被滚;_wave_incoming(O279 波预警,40-60s 提前量)
+    即恢复产叉,波到脸时叉已列队。
     """
-    if rush_confirmed or threat_active:
+    if rush_confirmed or threat_active or wave_incoming:
         return False
     return townhalls < 2
 

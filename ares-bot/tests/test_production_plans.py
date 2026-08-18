@@ -3556,6 +3556,11 @@ class TestO329FastExpand(unittest.TestCase):
         self.assertFalse(zt_zealot_yield(1, True))
         # O333-③:threat 激活豁免 —— 钉点晚局波到脸零叉零塔 = 359s 速败
         self.assertFalse(zt_zealot_yield(1, False, True))
+        # O339-②:波预警豁免 —— threat 触发时敌已到门口(296s 敌11 vs
+        # 我2),才产叉 330s 接战晚 30s;预警(40-60s 提前量)即恢复
+        self.assertFalse(zt_zealot_yield(1, False, False, True))
+        # 无预警无威胁且二矿未开工 → 仍零兵种
+        self.assertTrue(zt_zealot_yield(1, False, False, False))
 
     def test_main_defense_bank_fuse(self):
         # 矿 ≥600 且 Nexus 未开工 → 熔断开(主基塔放行,o333a game_03
