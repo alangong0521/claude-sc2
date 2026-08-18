@@ -65,6 +65,7 @@ from bot.production_plans import (
     holding_allows_cyber,
     serialize_presumed_cannons,
     unknown_zt_floor_cap,
+    zt_wave_read,
     worker_last_stand_hopeless,
     expansion_cannon_count,
     expansion_cannon_min_dynamic,
@@ -762,6 +763,36 @@ class ProductionManager(Manager):
         # 首塔 190-225 vs 波次 155-237。defense_urgent = rush 确认/过渡/疑似;
         # 人口紧急(≤4)照建(E3h 语义优先)。_presumed_rush 提前到这里算,
         # F2 段复用(状态均为一帧滞后,无妨)。
+        # O320-①②③(o306-o319 共 14 轮尸检):ZT 快慢波分档 —— verdict 一发
+        # latch 后到达的情报(ROACHWARREN ~136s/敌分矿)此前无人消费,每局
+        # 盲打 presumed 包(~500 矿)。fast:warren 先行 → 武装 rush 证实包
+        # (O107 先例:情报确认算证实);slow:敌开矿优先 → presumed 退保
+        # (下方闸)+ 开矿窗提前 200s(zerg_timing_expand_allowed 调用点)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and getattr(self, "_zt_wave_mode", None) is None
+        ):
+            _mode = zt_wave_read(
+                any(
+                    s.type_id == UnitID.ROACHWARREN
+                    for s in self.ai.enemy_structures
+                ),
+                sum(
+                    1 for s in self.ai.enemy_structures
+                    if s.type_id in self._ENEMY_TOWNHALL_IDS
+                ),
+                self.ai.time,
+            )
+            if _mode is not None:
+                self._zt_wave_mode = _mode
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O320:ZT波档判读={_mode}(快波武装/慢波退保)",
+                })
+                if _mode == "fast":
+                    self._rush_confirmed = True
+                    self._rush_confirmed_at = self.ai.time
         _presumed_rush = presumed_rush_defense(
             getattr(getattr(self.ai, "enemy_race", None), "name", None) == "Zerg",
             self._flow.transition is not None,
@@ -769,7 +800,8 @@ class ProductionManager(Manager):
             self._rush_confirmed,
             self.ai.time,
             scout_lost=self._scout_lost(),
-        )
+            # O320-②:slow 档 presumed 退保(省 ~500 矿包给经济/科技)
+        ) and getattr(self, "_zt_wave_mode", None) != "slow"
         # O300-②:_build_flow_structures 的停气闸也读 presumed(局部变量
         # 不出 update 作用域),存属性供跨方法读。
         self._presumed_rush = _presumed_rush
@@ -5542,6 +5574,9 @@ class ProductionManager(Manager):
             # 回退(280s/首塔)—— A 案三轮 Harder 0+1+0/15 未跑赢基线:
             # 单矿经济撑不起[nexus+forge+塔+农民+8叉]三线投入,波窗
             # 恰在投入期。防守总量优先,二矿回首波后(~350s)。
+            # O320-③:slow 档(敌开矿优先,波 ≥440s)窗提前 200s ——
+            # A 案资产的情报驱动版:早开矿只在慢波判决后启用。
+            at=(200.0 if getattr(self, "_zt_wave_mode", None) == "slow" else 280.0),
         ):
             return False
         ae = self._flow.auto_expand

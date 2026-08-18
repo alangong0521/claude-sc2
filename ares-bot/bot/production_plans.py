@@ -2398,6 +2398,25 @@ def fb_gate_f2_exempt_zt(is_zerg_timing: bool, sg_ready: bool) -> bool:
     return is_zerg_timing and not sg_ready
 
 
+def zt_wave_read(warren_seen: bool, enemy_bases: int, now: float) -> str | None:
+    """O320-①(o306-o319 共 14 轮尸检):ZT 快慢波分档判据。纯逻辑,可单测。
+
+    verdict(O9)是一发 latch(t≈109-170s),后到的情报(ROACHWARREN ~136s、
+    敌分矿)无人消费 → 每局盲打 presumed 包(~500 矿),快慢波不分。
+    分档:
+    - fast:已见 ROACHWARREN 且敌 ≤1 基地(t≥150)—— 蟑螂巢先行不开矿
+      = 280-330s 快波,武装 rush 证实包(O107 先例:情报确认算证实);
+    - slow:敌 ≥2 基地且未见 warren(t≥200)—— 开矿优先 = 波 ≥440s,
+      presumed 退保省包 + 开矿窗提前(波间隙是经济的,不是防御的);
+    - 其余 → None(情报不足,维持现状不押注)。
+    """
+    if warren_seen and enemy_bases <= 1 and now >= 150.0:
+        return "fast"
+    if enemy_bases >= 2 and not warren_seen and now >= 200.0:
+        return "slow"
+    return None
+
+
 def zerg_timing_expand_allowed(
     is_zerg_timing: bool,
     first_fleet_seen: bool,

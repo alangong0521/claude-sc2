@@ -158,6 +158,7 @@ from bot.production_plans import (  # noqa: E402
     unknown_verdict_defense,
     zerg_timing_unknown_floor,
     zerg_timing_expand_allowed,
+    zt_wave_read,
     pick_pocket_expansion,
     fb_gate_f2_exempt_zt,
     wall_disabled_after,
@@ -2979,6 +2980,19 @@ class TestO133TimingDefense(unittest.TestCase):
         self.assertTrue(fb_gate_f2_exempt_zt(True, False))
         self.assertFalse(fb_gate_f2_exempt_zt(True, True))
         self.assertFalse(fb_gate_f2_exempt_zt(False, False))
+
+    def test_zt_wave_read(self):
+        # O320-①:warren 先行 + 敌单基地(t≥150)→ fast(快波武装)
+        self.assertEqual(zt_wave_read(True, 1, 200.0), "fast")
+        # 敌已开二矿 + 未见 warren(t≥200)→ slow(退保+早开矿)
+        self.assertEqual(zt_wave_read(False, 2, 240.0), "slow")
+        # 情报不足不押注
+        self.assertIsNone(zt_wave_read(False, 1, 300.0))
+        # 时点闸:warren 早见但 t<150 不判;敌二矿 t<200 不判
+        self.assertIsNone(zt_wave_read(True, 1, 140.0))
+        self.assertIsNone(zt_wave_read(False, 2, 190.0))
+        # warren + 敌多基地(蟑螂巢是后补的)→ 不判 fast
+        self.assertIsNone(zt_wave_read(True, 2, 300.0))
 
     def test_zerg_timing_expand_allowed(self):
         # O278-②:t<280 或首塔未就绪 → 不开;t≥280 + 首塔 + 家无敌 +
