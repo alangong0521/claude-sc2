@@ -1414,7 +1414,11 @@ class ProductionManager(Manager):
                     )
                 )
             )
-            and _sprint
+            # O316-②(o315b game_01 实证):presumed 窗不再要求 _sprint ——
+            # 55s presumed 启动后 sprint 未激活时手动链整段停摆,首塔
+            # 零派工尝试 55→301s(塔 281s 才落地,波 281s 同帧到脸)。
+            # presumed/defense_urgent 本身就是防御紧急信号,手动链串行
+            # (forge→供电→首塔)与 F2 的重复由 O286 全口径计数兜底。
             and not self._threat_active
             # O202:CarrierOpenerZergRush 早期由 build order 自己铺 forge+双塔,
             # 手动链不抢资源,避免把二塔拖到 5 分钟后。
@@ -4376,6 +4380,11 @@ class ProductionManager(Manager):
                 have,
                 # O132-③:峰值口径 —— 塔被拆不再反锁 GW2+(o131 timing 局1)
                 self._cannons_peak,
+                # O316-③(o315b game_01 实证):ZT 防御窗塔门 2→1 —— 首塔
+                # 281s 才落时 2 塔门把 GW2 锁到 350s+,叉产能翻倍完美
+                # 错过 280-310s 波;塔量由 O313-① 波窗地板 3 独立保护,
+                # 不靠本闸省矿(O99-① 的「塔链饿死」场景已被地板覆盖)。
+                min_cannons=(1 if _zt_defense_window else 2),
             )
             and self.ai.can_afford(UnitID.GATEWAY)
             # O197:星门已就绪但 FleetBeacon 还没影时,不再追加兵营,

@@ -2956,13 +2956,11 @@ class TestO133TimingDefense(unittest.TestCase):
         # O314-③(o313b game_02/03 实证):波窗(t≥240)敌可见 ≥4 → cap 8
         self.assertEqual(unknown_zt_floor_cap(300.0, 20, False), 8)
         self.assertEqual(unknown_zt_floor_cap(240.0, 4, False), 8)
-        # 敌可见 <4 → 保持 O255-③ 省气语义
-        self.assertEqual(unknown_zt_floor_cap(300.0, 3, False), 3)
-        # 窗未到 → 保持原样
-        self.assertEqual(unknown_zt_floor_cap(200.0, 20, False), 3)
-        # wave_incoming → 5(O279,不受敌数影响)
+        # O316-①(o315b game_01:银行 485 叉仅 2,cap 是枷):常态 3→5
+        self.assertEqual(unknown_zt_floor_cap(300.0, 3, False), 5)
+        self.assertEqual(unknown_zt_floor_cap(200.0, 20, False), 5)
+        # wave_incoming 同样 5(O279)
         self.assertEqual(unknown_zt_floor_cap(200.0, 0, True), 5)
-        self.assertEqual(unknown_zt_floor_cap(300.0, 3, True), 5)
 
     def test_zerg_timing_unknown_floor(self):
         # O255-③:Zerg Timing + unknown + t≥220 + 舰队未出 → 死窗叉子 floor

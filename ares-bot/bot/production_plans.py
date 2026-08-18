@@ -347,12 +347,14 @@ def unknown_zt_floor_cap(now: float, visible_enemy: int, wave_incoming: bool) ->
     在 O312 早二矿(241-265s 落成)落地后变成绞索:game_02/03 二矿已落,
     304s 波(敌 20-27)到脸时叉 cap 仍 3 → 我 11-13 supply 对 20-27,
     分矿 373-409s 失守。波窗(t≥240)且敌可见 ≥4 → cap 8(pre_fleet
-    max 全量,叉子是此时唯一的矿耗战力);wave_incoming 保持 5(O279);
-    其余保持 3(O255-③ 省气语义)。
+    max 全量,叉子是此时唯一的矿耗战力);wave_incoming 保持 5(O279)。
+    O316-①(o315b game_01 实证):cap 3 全程也是枷 —— 241s 银行 485
+    叉仅 2(钱在,cap 锁死),波前(240s 敌未可见)攒不出守波兵力;
+    常态 3→5(多 200 矿叉钱,银行数据证明付得起),波窗 8 不变。
     """
     if now >= 240.0 and visible_enemy >= 4:
         return 8
-    return 5 if wave_incoming else 3
+    return 5
 
 
 def ground_floor_gateways(
