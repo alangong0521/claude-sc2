@@ -3065,19 +3065,18 @@ class ProductionManager(Manager):
                         "msg": "O261:死窗虚空(FB 前星门不空转)",
                     })
                     break
-        # O329-②(司令 2026-08-18 拍板):速二矿钉点 —— 电脑 VeryHard Zerg
-        # 二矿 119-150s(录像实测),我方 377-500s 是经济差滚雪球的起点。
-        # t≥105 + 矿 ≥400 + rush 未确认 → critical 钉口袋矿(O328 选址),
-        # 开动 ≤120s 向电脑看齐;rush 确认 = fuse,走旧防御先行路径,
-        # O251 硬饱和钉点(280s+)兜底。防御由 O329-③ 分矿预置塔链随行。
-        # O334-①(o333 双 lane 实证):钉点事件不再「一试即记成功」——
-        # o333 全轮 104-186s 的「钉点」事件背后,派工实际连续失败
-        # 200-400s(game_03 银行烂到 1315 仍零开工),rc 可见化:
-        # 结果变化即记 + 30s 节流,成功事件只在 dispatched 时记。
-        # O334-②:连续失败 >60s → 目标退回最近 natural(换落位自救)。
+        # O329-②(司令 2026-08-18 拍板):速二矿 —— 电脑 VeryHard Zerg 二矿
+        # 119-150s(录像实测),我方 377-500s 是经济差滚雪球的起点。
+        # O334-④(o334 双 lane 实证):执行通道从手动 _dispatch_structure
+        # 改为 ExpansionController(_want_dynamic_expand 的 O334-④ 分支,
+        # location=口袋点)——手动派工对口袋点恒 no_placement(10/10 局
+        # 哑故障 200-400s),ares 通道实战建成了全部 Nexus;且 holding
+        # 自带锁钱(科技/塔让位 Nexus),正是 O333-② 想要的语义。
+        # 此处只留一次事件簿记,rush 确认 fuse 弃权,O251 兜底不变。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
+            and not getattr(self, "_o329_logged", False)
             and zt_fast_expand_pin(
                 self.ai.time,
                 self.ai.minerals,
@@ -3085,53 +3084,12 @@ class ProductionManager(Manager):
                 self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
                 self._rush_confirmed,
             )
-            and self.ai.time - getattr(self, "_o329_rc_ts", 0.0) > 10.0
         ):
-            _o329_target = self._zt_pocket_expand_target()
-            if (
-                getattr(self, "_o329_fail_since", None) is not None
-                and self.ai.time - self._o329_fail_since > 60.0
-            ):
-                _free_o329 = [
-                    el
-                    for el in self.ai.expansion_locations_list
-                    if not self.ai.townhalls.closer_than(5.0, el)
-                ]
-                if _free_o329:
-                    _o329_target = min(
-                        _free_o329,
-                        key=lambda el: min(
-                            el.distance_to(th) for th in self.ai.townhalls
-                        ),
-                    )
-            if _o329_target is not None:
-                _rc = self._dispatch_structure(
-                    UnitID.NEXUS, _o329_target, critical=True, needs_power=False
-                )
-                if _rc == "dispatched":
-                    self._o329_fail_since = None
-                    if not getattr(self, "_o329_logged", False):
-                        self._o329_logged = True
-                        self.ai._events.append({
-                            "t": round(self.ai.time, 1),
-                            "msg": "O329:速二矿钉点(120s向电脑看齐)",
-                        })
-                else:
-                    if self._o329_fail_since is None:
-                        self._o329_fail_since = self.ai.time
-                    if _rc != getattr(self, "_o329_last_rc", None) or (
-                        self.ai.time - getattr(self, "_o329_fail_log_ts", 0.0) > 30.0
-                    ):
-                        self._o329_fail_log_ts = self.ai.time
-                        self.ai._events.append({
-                            "t": round(self.ai.time, 1),
-                            "msg": (
-                                f"O329:钉点派工失败={_rc}"
-                                f"(连续{self.ai.time - self._o329_fail_since:.0f}s)"
-                            ),
-                        })
-                self._o329_last_rc = _rc
-                self._o329_rc_ts = self.ai.time
+            self._o329_logged = True
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": "O329:速二矿启动(ExpansionController,120s向电脑看齐)",
+            })
         # O333-②(o332 双 lane 实证):forge 钉点随 Nexus 开工 —— opener
         # 摘除 forge/core/GW2 后(O329 钉点的 400 矿零竞争,开工 ~130s),
         # 分矿塔链的前置 forge 由 bot 层在 Nexus 开工(townhalls≥2 含
@@ -5947,6 +5905,23 @@ class ProductionManager(Manager):
         # 196s 派 Nexus 时 0 塔,银行被塔链/科技抽干,Nexus 工人钉点后撤,
         # 306s 波到脸 0 塔被推平(O216a 150s 无防强开教训复现)。防御先行。
         # O315(B 案):O312 的 GW1 替代前提回退 —— 恢复「首塔就绪才开矿」。
+        # O334-④(o334 双 lane 实证):O329 速开走 ExpansionController ——
+        # 手动 _dispatch_structure(NEXUS, 口袋点) 恒 no_placement(10/10
+        # 局哑故障 200-400s),而 ExpansionController(location=口袋点)
+        # 实战建成了全部 Nexus;钉点条件成立即「想开」,绕过 O216i
+        # 首塔闸(塔链由 O329-③ 随 Nexus 在途铺,不再首塔先行)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and zt_fast_expand_pin(
+                self.ai.time,
+                self.ai.minerals,
+                self.ai.townhalls.amount,
+                self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
+                self._rush_confirmed,
+            )
+        ):
+            return True
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
