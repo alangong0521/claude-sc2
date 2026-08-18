@@ -30,6 +30,7 @@ from bot.production_plans import (  # noqa: E402
     defense_sprint_active,
     defense_syncs_with_nexus,
     expand_holding_should_abort,
+    holding_abort_keep_first_expand,
     holding_allows_cyber,
     dispatch_viable,
     early_scout_verdict,
@@ -3567,6 +3568,15 @@ class TestO329FastExpand(unittest.TestCase):
         self.assertFalse(main_defense_bank_fuse(800.0, True, True))
         # 未达阈值且未开过 → 关
         self.assertFalse(main_defense_bank_fuse(500.0, False, False))
+
+    def test_holding_abort_keep_first_expand(self):
+        # ZT 首扩(townhalls==1)→ 只解锁不撤销(o335a game_02:
+        # 281/457s 二连撤销 → 落成 578s vs 胜局 212-233s)
+        self.assertTrue(holding_abort_keep_first_expand(True, 1))
+        # ZT 3 矿+(townhalls≥2)→ 原语义(撤销)
+        self.assertFalse(holding_abort_keep_first_expand(True, 2))
+        # 非 ZT → 原语义
+        self.assertFalse(holding_abort_keep_first_expand(False, 1))
 
     def test_zt_defense_at_natural(self):
         # Nexus 在途或分矿存在 → 防御重心在 2 矿(主基塔归零)

@@ -91,6 +91,7 @@ from bot.production_plans import (
     forge_first_pylon_yield,
     early_gas_overflow_pull,
     expand_pin_workers_ok,
+    holding_abort_keep_first_expand,
     mothership_economy_ok,
     sg2_pin_economy_ok,
     sg_pin_expand_ok,
@@ -562,17 +563,31 @@ class ProductionManager(Manager):
             self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
             self.ai.can_afford(UnitID.NEXUS),
         ):
-            _tracker = self.manager_mediator.get_building_tracker_dict
-            for _tag, _info in list(_tracker.items()):
-                if _info[TRACKER_ID] == UnitID.NEXUS:
-                    self.manager_mediator.get_building_counter[UnitID.NEXUS] -= 1
-                    _tracker.pop(_tag)
+            # O336-①(o335a game_02 实证):ZT 首扩只解锁不撤销 —— 等钱
+            # 多半是首波 rush 防御开销挤的,撤销重派 = 工人再走 20s +
+            # 资金窗重算(281/457s 二连撤销 → 落成 578s vs 胜局
+            # 212-233s);派工保留,仅释放 holding 30s 让科技链恢复
+            # (o306c 的科技冻结死因不回潮)。
+            _o336_keep = holding_abort_keep_first_expand(
+                self._opp_race == "zerg" and self._ai_build == "timing",
+                self.ai.townhalls.amount,
+            )
+            if not _o336_keep:
+                _tracker = self.manager_mediator.get_building_tracker_dict
+                for _tag, _info in list(_tracker.items()):
+                    if _info[TRACKER_ID] == UnitID.NEXUS:
+                        self.manager_mediator.get_building_counter[UnitID.NEXUS] -= 1
+                        _tracker.pop(_tag)
             self._expand_holding_since = None
             self._expand_abort_until = self.ai.time + 30.0  # O309-③:45→30
             _expand_holding = False
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
-                "msg": "O307:开矿持有>60s未开工,撤销派工解锁科技链(冷却30s)",
+                "msg": (
+                    "O336:首扩等钱>60s,解锁科技链30s(派工保留)"
+                    if _o336_keep
+                    else "O307:开矿持有>60s未开工,撤销派工解锁科技链(冷却30s)"
+                ),
             })
         elif self.ai.time < getattr(self, "_expand_abort_until", 0.0):
             _expand_holding = False
@@ -1122,6 +1137,9 @@ class ProductionManager(Manager):
             )
         # O124-③(o123 系列实证):首叉冲刺 —— rush 确认/过渡 + 有就绪兵营
         # + 首叉未出未在产 + 矿 <100 → 水晶/农民全停,直到首叉在产
+        # O336-③(o335a game_02 实证):零兵种窗(_o332_zyt)内冲刺让位 ——
+        # presumed 从 55s 常驻,冲刺把农民/水晶全停去等一只本就被
+        # O336-② 封掉的叉,O145 矿 45 时农民停产 = Nexus 收入断流。
         _zealot_sprint = first_zealot_sprint(
             defense_urgent=(
                 self._rush_confirmed or self._transition_active or _presumed_rush
@@ -1140,7 +1158,7 @@ class ProductionManager(Manager):
                 > 0
             ),
             minerals=self.ai.minerals,
-        )
+        ) and not getattr(self, "_o332_zyt", False)
         # O168:8 农民 carrier 前期矿极紧，核心科技缺失期间 AutoSupply 不因
         # can_afford 就注册水晶，只在 supply_left<=2 紧急通道放行。
         if should_register_autosupply(
@@ -5286,9 +5304,15 @@ class ProductionManager(Manager):
         # 首波核心 3 地面兵,余下 ~300 矿让进 Nexus 400 资金窗(O290 塔链
         # 已封顶,trickle 不让位 = Nexus 永远攒不出);Nexus 派出 active 翻假,
         # cap 自动回 6。
+        # O336-②(o335a game_02 实证):trickle 接入零兵种闸 —— 本分支是
+        # 「零叉 opener」外最后的地面泄漏口(GW1 就绪 ~110s 即产,
+        # 153-273s 漏 5 叉+1 追猎 ≈700 矿,首波 rush 开销前就把 Nexus
+        # 资金窗先啃掉一半)。二矿开工(townhalls≥2)/rush/威胁时
+        # _o332_zyt 翻假,本分支照常(trickle 语义不变)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
+            and not getattr(self, "_o332_zyt", False)
             and zt_prewave_trickle_needed(
                 fleet_infra_live=self._zt_fleet_infra_live(),
                 gateway_ready=any(

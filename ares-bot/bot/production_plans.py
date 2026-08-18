@@ -3210,8 +3210,23 @@ def expand_holding_should_abort(
     O309-③(o308a game_02 实证):90s 超时 + 45s 冷却 = 135s 重试周期,
     二连 abort(355/474s)把二矿拖到 546s;胜局二矿 309s vs 败局
     478-546s,每 30s 都值钱 —— 超时压到 60s(周期 90s)。
+    O336-①:ZT 首扩的撤销豁免见 holding_abort_keep_first_expand
+    (调用方分支,本判据不变)。
     """
     return holding_for > timeout and nexus_unstarted > 0 and not can_afford_nexus
+
+
+def holding_abort_keep_first_expand(is_zerg_timing: bool, townhalls: int) -> bool:
+    """O336-①(o335a game_02 实证):ZT 首扩的 holding abort 只解锁不撤销。纯逻辑,可单测。
+
+    o335a game_02:O329 启动 104s,但 257s 首波 rush_active 解锁主基
+    防御链(forge+2塔+电池+5叉+追猎 1150+ 矿),等钱的 Nexus 被 O307
+    二连撤销(281/457s)→ 落成 578s vs 胜局 212-233s。首扩是全村
+    希望:撤销重派 = 工人再走 20s + 资金窗重算,只会更晚。ZT 首扩
+    (townhalls==1)abort 时保留派工,仅释放 holding 30s 让科技链
+    恢复(o306c 的科技冻结死因不回潮);3 矿+ 与原语义(撤销)不变。
+    """
+    return is_zerg_timing and townhalls == 1
 
 
 def holding_allows_cyber(is_zerg_timing: bool, gateway_ready: bool) -> bool:
