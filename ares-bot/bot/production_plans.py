@@ -777,6 +777,74 @@ def mineral_crisis_gas_stop(
     return vespene >= vespene_threshold and minerals <= _mineral_thr
 
 
+def early_gas_overflow_pull(
+    now: float,
+    vespene: float,
+    minerals: float,
+    fleet_tech_ready: bool,
+    window_start: float = 150.0,
+    window_end: float = 420.0,
+    vespene_threshold: float = 400.0,
+    mineral_threshold: float = 250.0,
+) -> bool:
+    """O327-①(o326 双 lane 尸检):早窗气烂抽矿判据。纯逻辑,可单测。
+
+    o326a 全 5 局 225-338s 气体已烂银行 472-876(6 个气农在产死钱),
+    同期矿物恒 <200 —— Nexus(400)/农民(50)/塔(150) 全被矿物卡死,
+    二矿拖到 518-647s(胜线 ≤310s),终局经济差 1.5×+。舰队科技(FB)
+    就绪前气体无消费者,早窗气 ≥400 且矿 ≤250 时把气农抽回矿线:
+    主基矿线 16/16 溢出后仍有 ~1/3 效率,窗口期(150-420s)累计
+    ~+400 矿 ≈ 一个 Nexus。FB 就绪(舰队开始吃气)或出窗即解除,
+    由调用方滞回(气 <200)复位,不棘轮。
+    """
+    if fleet_tech_ready:
+        return False
+    if not window_start <= now <= window_end:
+        return False
+    return vespene >= vespene_threshold and minerals <= mineral_threshold
+
+
+def expand_pin_workers_ok(workers: int, bases: int, now: float) -> bool:
+    """O327-②(o326 尸检+司令观察):扩张钉点的农民门槛。纯逻辑,可单测。
+
+    旧门槛「农民 ≥16×基地+8」对 2 基地局 = 40 农;但败局农民峰值
+    仅 22-28(波次收割 + 停产闸),40 永远等不到 → 三矿永不开,
+    20 分钟仍 2 矿,经济差被滚雪球(司令观察实证)。2+ 基地放宽:
+    农民 ≥26 即可钉;还等不到则 t≥600 时间兜底 —— 多一个 Nexus
+    本身就是农民产能 ×1.5(波后回血翻倍),比攒农更治本。波间隙
+    /无敌/矿 ≥350 守卫由调用方保留,不在本判据内。1 基地首扩的
+    24 农门槛不变(O311-③ 的 24→20 已证伪,不在此复试)。
+    """
+    if workers >= 16 * bases + 8:
+        return True
+    return bases >= 2 and (workers >= 26 or now >= 600.0)
+
+
+def mothership_economy_ok(bases: int, workers: int) -> bool:
+    """O327-③(o326a 尸检):母舰训练的经济门。纯逻辑,可单测。
+
+    母舰 300/300 + 占 Nexus 队列 ~71s(期间零农民)。o326a 母舰
+    @811s 下水时全 5 局 2 基地 22-28 农、矿恒 <250 —— 这 300 矿
+    正是 Nexus/农民/塔的资金窗,母舰成了压垮经济的最后一根。
+    3 基地运转或农民 ≥36(2 基地接近硬饱和)才负担得起这张
+    「舰队保命符」;达不到就先补经济,舰队靠电池/塔撑。
+    """
+    return bases >= 3 or workers >= 36
+
+
+def sg2_pin_economy_ok(bases: int, minerals: float) -> bool:
+    """O327-④(o326a vs o325a 对照):SG2 钉点让位二矿。纯逻辑,可单测。
+
+    O326-② 的 SG2 critical 钉点(FB+气400 即触发,~400-500s)与
+    二矿 Nexus 同资金窗:150 矿被 SG2 抢走后 Nexus 排队更晚,
+    o326a 二矿均值 ~576s(样本 647/518/563)vs o325a ~503s
+    (458/546/631/378),双双远离 ≤310s 胜线。2 基地已运转则
+    SG2 随便拍(双 SG 的黄金窗收益不变);仍单基地时要求矿 ≥550
+    —— 拍完 SG2 还剩 400 给 Nexus,不挤占扩张资金窗。
+    """
+    return bases >= 2 or minerals >= 550.0
+
+
 def builder_release_exempt(rush_active: bool, defense_urgent: bool) -> bool:
     """O117-②(o116 取证实证):O11 钉点撤回的豁免判据。纯逻辑,可单测。
 

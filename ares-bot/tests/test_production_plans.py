@@ -52,6 +52,10 @@ from bot.production_plans import (  # noqa: E402
     gas_gated_stargate_target,
     gas_target,
     mineral_crisis_gas_stop,
+    early_gas_overflow_pull,
+    expand_pin_workers_ok,
+    mothership_economy_ok,
+    sg2_pin_economy_ok,
     forge_before_first_gateway,
     gateway_chain_after_first_zealot,
     gateway_yields_tech_slots,
@@ -3394,6 +3398,58 @@ class TestIdleBuilderFuseExempt(unittest.TestCase):
         self.assertFalse(
             idle_builder_fuse_exempt("FORGE", critical_ids={"PYLON"})
         )
+
+
+class TestO327Economy(unittest.TestCase):
+    """O327(o326 双 lane 尸检 + 司令观察):经济专项四判据。
+
+    o326 败局链:二矿 518-647s(胜线 ≤310s)、三矿永不开(农民峰值
+    22-28 等不到 40 门槛)、早窗气烂 472-876 而矿 <200、母舰 811s
+    300/300 压垮 2 基地经济、SG2 与 Nexus 同资金窗互挤。"""
+
+    def test_early_gas_overflow_pull(self):
+        # 窗内 + FB 未就绪 + 气 ≥400 且矿 ≤250 → 抽矿(o326a 225-338s 常态)
+        self.assertTrue(early_gas_overflow_pull(280.0, 700.0, 115.0, False))
+        # FB 就绪(舰队开始吃气)→ 不抽
+        self.assertFalse(early_gas_overflow_pull(280.0, 700.0, 115.0, True))
+        # 出窗(太早/太晚)→ 不抽
+        self.assertFalse(early_gas_overflow_pull(100.0, 700.0, 115.0, False))
+        self.assertFalse(early_gas_overflow_pull(500.0, 700.0, 115.0, False))
+        # 气/矿阈值边界
+        self.assertFalse(early_gas_overflow_pull(280.0, 399.0, 115.0, False))
+        self.assertFalse(early_gas_overflow_pull(280.0, 700.0, 251.0, False))
+        self.assertTrue(early_gas_overflow_pull(150.0, 400.0, 250.0, False))
+        self.assertTrue(early_gas_overflow_pull(420.0, 400.0, 250.0, False))
+
+    def test_expand_pin_workers_ok(self):
+        # 旧门槛:16×基地+8 仍放行(1 基 24 / 2 基 40,行为不变)
+        self.assertTrue(expand_pin_workers_ok(24, 1, 300.0))
+        self.assertTrue(expand_pin_workers_ok(40, 2, 300.0))
+        # 1 基地不到 24 → 拦(O311-③ 证伪区不复试)
+        self.assertFalse(expand_pin_workers_ok(23, 1, 700.0))
+        # O327-②:2+ 基地放宽 —— ≥26 农即钉;t≥600 时间兜底
+        self.assertTrue(expand_pin_workers_ok(26, 2, 300.0))
+        self.assertFalse(expand_pin_workers_ok(25, 2, 300.0))
+        self.assertTrue(expand_pin_workers_ok(20, 2, 600.0))
+        self.assertFalse(expand_pin_workers_ok(20, 2, 599.0))
+        # 3 基地同样适用放宽
+        self.assertTrue(expand_pin_workers_ok(26, 3, 300.0))
+
+    def test_mothership_economy_ok(self):
+        # 3 基地运转 → 放行
+        self.assertTrue(mothership_economy_ok(3, 20))
+        # 2 基地需 ≥36 农(o326a:22-28 农出母舰 = 净负)
+        self.assertFalse(mothership_economy_ok(2, 35))
+        self.assertTrue(mothership_economy_ok(2, 36))
+        # 单基地未达到 36 农 → 拦
+        self.assertFalse(mothership_economy_ok(1, 30))
+
+    def test_sg2_pin_economy_ok(self):
+        # 2 基地运转 → 放行(黄金窗收益不变)
+        self.assertTrue(sg2_pin_economy_ok(2, 100.0))
+        # 单基地:矿 ≥550 才拍(拍完还剩 400 给 Nexus)
+        self.assertFalse(sg2_pin_economy_ok(1, 549.0))
+        self.assertTrue(sg2_pin_economy_ok(1, 550.0))
 
 
 if __name__ == "__main__":

@@ -89,6 +89,10 @@ from bot.production_plans import (
     floor_exits,
     forge_first_probe_yield,
     forge_first_pylon_yield,
+    early_gas_overflow_pull,
+    expand_pin_workers_ok,
+    mothership_economy_ok,
+    sg2_pin_economy_ok,
     gas_gated_stargate_target,
     gas_target,
     forge_before_first_gateway,
@@ -321,6 +325,8 @@ class ProductionManager(Manager):
         self._gas_stop_since: float | None = None
         # O157:矿物危机停气状态(vespene 烂银行、minerals 枯竭且舰队未成规模)
         self._mineral_crisis_gas_stop: bool = False
+        # O327-①:早窗气烂抽矿状态(150-420s 气 ≥400 且矿 ≤250,FB 就绪前)
+        self._early_gas_pull: bool = False
         # O117-②:防御紧急旗标(rush确认/过渡/presumed 合成,每帧更新)——
         # main.py 的 O11 钉点撤回豁免读它(presumed 期塔工不再被撤回循环)
         self._defense_urgent: bool = False
@@ -2890,6 +2896,11 @@ class ProductionManager(Manager):
             )
             == 0
             and self.ai.can_afford(UnitID.MOTHERSHIP)
+            # O327-③(o326a 尸检):经济门 —— 3 基地或 ≥36 农才出母舰;
+            # 2 基地 22-28 农局 300/300 + 占 Nexus 队列 71s 是净负。
+            and mothership_economy_ok(
+                self.ai.townhalls.amount, self.ai.supply_workers
+            )
         ):
             for _th in self.ai.townhalls.ready:
                 if _th.orders and len(_th.orders) >= 2:
@@ -2950,7 +2961,12 @@ class ProductionManager(Manager):
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and 1 <= self.ai.townhalls.amount < 5
-            and self.ai.supply_workers >= 16 * self.ai.townhalls.amount + 8
+            # O327-②(o326 尸检+司令观察):2+ 基地的农民门槛放宽(≥26 或
+            # t≥600 兜底)——旧门槛 40 农在败局(峰值 22-28)永远等不到,
+            # 三矿永不开,20 分钟仍 2 矿,经济差滚雪球。判据抽纯函数。
+            and expand_pin_workers_ok(
+                self.ai.supply_workers, self.ai.townhalls.amount, self.ai.time
+            )
             and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) == 0
             and (
                 not self._rush_active or self.ai.townhalls.amount == 1
@@ -3138,6 +3154,11 @@ class ProductionManager(Manager):
             ) == 0
             and not cy_unit_pending(self.ai, UnitID.MOTHERSHIP)
             and self.ai.can_afford(UnitID.MOTHERSHIP)
+            # O327-③(o326a 尸检):经济门 —— 同 O264 块,3 基地或 ≥36 农
+            # 才出母舰;经济挣扎局 300/300 + Nexus 队列 71s 是净负。
+            and mothership_economy_ok(
+                self.ai.townhalls.amount, self.ai.supply_workers
+            )
         ):
             _nex = self.ai.townhalls.ready.first
             if _nex is not None:
@@ -4957,11 +4978,31 @@ class ProductionManager(Manager):
             self.ai.vespene < 300 or self.ai.minerals > 500
         ):
             self._mineral_crisis_gas_stop = False
+        # O327-①(o326 双 lane 尸检):早窗气烂抽矿 —— 150-420s 气已烂银行
+        # (472-876)而矿 <250 卡死 Nexus/农民/塔时,FB 就绪前把气农抽回矿线
+        # (窗口期 ~+400 矿 ≈ 一个 Nexus)。滞回复位:气 <200 / FB 就绪 / 出窗。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and early_gas_overflow_pull(
+                self.ai.time,
+                self.ai.vespene,
+                self.ai.minerals,
+                fleet_tech_ready=self._fb_entities_now > 0,
+            )
+        ):
+            self._early_gas_pull = True
+        elif self._early_gas_pull and (
+            self.ai.vespene < 200.0
+            or self._fb_entities_now > 0
+            or self.ai.time > 420.0
+        ):
+            self._early_gas_pull = False
         if rush_gas_stop_window(
             self._rush_active,
             _stop_age,
             window=45.0 if self._flow.transition is not None else float("inf"),
-        ) or self._mineral_crisis_gas_stop:
+        ) or self._mineral_crisis_gas_stop or self._early_gas_pull:
             gas_workers = self.manager_mediator.get_worker_to_vespene_dict
             gathering = self.manager_mediator.get_unit_role_dict.get(
                 UnitRole.GATHERING, set()
@@ -6560,6 +6601,10 @@ class ProductionManager(Manager):
                 + self.manager_mediator.get_building_counter[UnitID.STARGATE]
             ) < 2
             and not self._zt_pocket_expand_active()
+            # O327-④(o326a vs o325a 对照):SG2 让位二矿 —— 仍单基地时
+            # 要求矿 ≥550(拍完还剩 400 给 Nexus);SG2 的 150 不抢扩张
+            # 资金窗(o326a 二矿均值 ~576s vs o325a ~503s,同资金窗挤压)。
+            and sg2_pin_economy_ok(self.ai.townhalls.amount, self.ai.minerals)
         ):
             _rc = self._dispatch_structure(
                 UnitID.STARGATE, self.ai.start_location, critical=True
