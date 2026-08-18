@@ -594,36 +594,56 @@ class ProductionManager(Manager):
         # O323-③(o321b game_01 实证):分矿落成即钉 1 塔(critical,驻点等钱)
         # —— 分矿塔常态靠 F2 余钱,落成后裸奔 30-100s 被波收(490s 落成
         # 506s 失守)。落成交接棒:先 1 塔保命,F2 后续按目标补齐。
+        # O337-①(o336a game_01 实证):一次性 latch 改持续守卫 ——
+        # O334-④ 后 Nexus 开工飞快(~190s),旧触发在「开工」帧即走
+        # (townhalls 含在建),forge 未就绪 → tech_not_ready 一次性
+        # 哑火,分矿零塔被 302s 波 26 supply 推平(507s 速败,E6「敌4
+        # 地面,无塔」三连实证)。改为持续守卫:任意非主基基地 12 格内
+        # 就绪塔 <2 → 先补电(不要 forge),forge 就绪即钉塔(30s 节流);
+        # 覆盖开工快/落成慢/塔被拆补建全部形态。
         _th_now = self.ai.townhalls.amount
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and _th_now > getattr(self, "_o323_th_last", 1)
+            and self.ai.time - getattr(self, "_o323_cannon_last", 0.0) > 30.0
         ):
-            _new_th = max(
-                self.ai.townhalls,
-                key=lambda t: t.position.distance_to(self.ai.start_location),
-            )
-            # O324-③:先补电再钉塔 —— 新矿常态无电(塔钉需要供电槽,
-            # 无电钉塔 = 新 stall 源);水晶自带电源(needs_power=False)。
-            if not any(
-                s.type_id == UnitID.PYLON and s.is_ready
-                and s.position.distance_to(_new_th.position) < 12
-                for s in self.ai.structures
-            ):
-                self._dispatch_structure(
-                    UnitID.PYLON, _new_th.position,
-                    closest_to=_new_th.position, needs_power=False,
-                    critical=True,
+            for _exp_th in self.ai.townhalls:
+                if _exp_th.position.distance_to(self.ai.start_location) <= 5.0:
+                    continue
+                _cn_near = sum(
+                    1
+                    for s in self.ai.structures.ready
+                    if s.type_id == UnitID.PHOTONCANNON
+                    and s.position.distance_to(_exp_th.position) < 12
                 )
-            _rc = self._dispatch_structure(
-                UnitID.PHOTONCANNON, _new_th.position,
-                closest_to=_new_th.position, critical=True,
-            )
-            self.ai._events.append({
-                "t": round(self.ai.time, 1),
-                "msg": f"O323:分矿落成塔钉点(共{_th_now}基地,派工={_rc})",
-            })
+                if _cn_near >= 2:
+                    continue
+                if not any(
+                    s.type_id == UnitID.PYLON and s.is_ready
+                    and s.position.distance_to(_exp_th.position) < 12
+                    for s in self.ai.structures
+                ):
+                    self._dispatch_structure(
+                        UnitID.PYLON, _exp_th.position,
+                        closest_to=_exp_th.position, needs_power=False,
+                        critical=True,
+                    )
+                if any(
+                    s.is_ready
+                    for s in self.manager_mediator.get_own_structures_dict[
+                        UnitID.FORGE
+                    ]
+                ):
+                    self._o323_cannon_last = self.ai.time
+                    _rc = self._dispatch_structure(
+                        UnitID.PHOTONCANNON, _exp_th.position,
+                        closest_to=_exp_th.position, critical=True,
+                    )
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": f"O337:分矿塔持续守卫(共{_th_now}基地,派工={_rc})",
+                    })
+                break
         self._o323_th_last = _th_now
         # O329-③(司令 2026-08-18 拍板):分矿塔链前移到「Nexus 在途」——
         # 落成再钉 = 裸奔 30-100s(o321b 实证);防御跟着 2 矿走,Nexus
@@ -2535,8 +2555,14 @@ class ProductionManager(Manager):
                     self.ai.start_location, BuildingSize.TWO_BY_TWO
                 )[0] == 0
             ):
+                # O337-②(o336b game_01 实证):补电对准塔锚点 —— 旧版拍在
+                # 主基中心(默认落位),坡口/矿线锚点区带电槽仍 0
+                # (282-343s 首塔 no_placement/not_viable 连发 60s+,
+                # 波到脸塔铺不开);closest_to=锚点 + 自带电源,下一根
+                # 水晶直接覆盖塔位。
                 self._dispatch_structure(
-                    UnitID.PYLON, self.ai.start_location, critical=True
+                    UnitID.PYLON, self.ai.start_location,
+                    closest_to=_anchor, needs_power=False, critical=True,
                 )
             # O118-①:防御紧急窗内派工即时簿记(结果变化或 5s 节流)——
             # forge 就绪 → 首塔落地的静默段逐帧可见,不等 15s 停滞
@@ -6839,6 +6865,12 @@ class ProductionManager(Manager):
                     "t": round(self.ai.time, 1),
                     "msg": "O323:SG钉点(t≥300+cyber就绪)",
                 })
+            else:
+                # O337-③:失败 rc 可见化(同 O334-①;30s 节流已在钉点门上)
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O323:SG钉点失败={_rc}",
+                })
         # O326-②(o325 尸检):SG2 紧随 FB —— 单 SG 出 6 暴风要 ~260s,
         # 舰队 6 艘拖到 950-990s,黄金窗(750-870s)推出时腐化 4-13 已
         # 出场(o325a game_04 实证)。FB 拍下 + 首 SG 就绪 + 气 ≥400 +
@@ -6860,6 +6892,11 @@ class ProductionManager(Manager):
             # O333-④(o332b game_03/04 实证):矿 ≥550 替代项去掉(等钱期
             # 矿过 550 是常态,SG2 又插队)+ 派工失败 30s 节流(连拍 19 次)。
             and sg2_pin_economy_ok(self.ai.townhalls.amount, self.ai.minerals)
+            # O337-③(o336b game_01 实证):SG2 加可负担门 —— 穷局(矿 <150)
+            # 驻点等钱触发「到位→等钱→10s 僵死 pop→30s 重派」循环(489-
+            # 639s 七连派 SG2 不落地,工人每轮白走 25s);买得起才派,
+            # 派了即开工。失败 rc 簿记(30s 节流已在钉点门上)。
+            and self.ai.can_afford(UnitID.STARGATE)
             and self.ai.time - getattr(self, "_o326_sg2_last", 0.0) > 30.0
         ):
             self._o326_sg2_last = self.ai.time
@@ -6870,6 +6907,11 @@ class ProductionManager(Manager):
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": "O326:SG2钉点(FB+气400,黄金窗抢时间)",
+                })
+            else:
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O326:SG2钉点失败={_rc}",
                 })
 
         if not core_allowed:
