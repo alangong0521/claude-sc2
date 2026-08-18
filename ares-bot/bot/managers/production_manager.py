@@ -556,6 +556,28 @@ class ProductionManager(Manager):
             })
         elif self.ai.time < getattr(self, "_expand_abort_until", 0.0):
             _expand_holding = False
+        # O323-③(o321b game_01 实证):分矿落成即钉 1 塔(critical,驻点等钱)
+        # —— 分矿塔常态靠 F2 余钱,落成后裸奔 30-100s 被波收(490s 落成
+        # 506s 失守)。落成交接棒:先 1 塔保命,F2 后续按目标补齐。
+        _th_now = self.ai.townhalls.amount
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and _th_now > getattr(self, "_o323_th_last", 1)
+        ):
+            _new_th = max(
+                self.ai.townhalls,
+                key=lambda t: t.position.distance_to(self.ai.start_location),
+            )
+            _rc = self._dispatch_structure(
+                UnitID.PHOTONCANNON, _new_th.position,
+                closest_to=_new_th.position, critical=True,
+            )
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": f"O323:分矿落成塔钉点(共{_th_now}基地,派工={_rc})",
+            })
+        self._o323_th_last = _th_now
         # O166: 这些闸在 update 尾部的方法(_spend_bank/_build_extra_production/
         # _build_forward_pylon)里也要读，挂到实例上避免 NameError。
         self._expand_holding = _expand_holding
@@ -4338,7 +4360,16 @@ class ProductionManager(Manager):
 
     def _rush_gateway_boost(self) -> None:
         """E3d: rush 期间敌可见兵力超过在场叉子数时追加 gateway(封顶 2)。
-        单 gateway ~28s 一叉是实证瓶颈——叉子永远分批到场被围殴(在场恒 1)。"""
+        单 gateway ~28s 一叉是实证瓶颈——叉子永远分批到场被围殴(在场恒 1)。
+        O323-①(o322b game_04 实证):口袋攒钱期(ZT)兵营链冻结 —— GW2/3
+        各 150 矿在 270-440s 把 Nexus 基金磨穿;rush 保命例外。"""
+        if (
+            self._zt_pocket_expand_active()
+            and not self._rush_active
+            and self._opp_race == "zerg"
+            and self._ai_build == "timing"
+        ):
+            return
         pv = self._flow.pivot
         # P1:作战单位口径(is_combat_type),排除侦查/运输(见 _evaluate_scout_intel)
         enemy_army = sum(
@@ -5208,9 +5239,16 @@ class ProductionManager(Manager):
                 # 窗贯穿全局时追猎恒 0,400-650s 舰队真空期军队质量 ~25
                 # supply 对敌 38-90 波;胜局(o230)靠的正是 21-25 追猎海。
                 # 气已烂在银行(SG 未拍用不掉),追猎吃的是死钱不是窗。
+                # O323-①(o322b game_04 实证):口袋攒钱期解禁无效 —— 追猎
+                # 125 矿/只在 270-440s 把 Nexus 基金磨穿(m 恒 10-305),
+                # 口袋激活期 cap2 照样归零(攒钱优先级最高)。
                 if self._floor_unknown_zt and not (
                     self.ai.time >= 360.0 and self.ai.vespene >= 250.0
+                    and not self._zt_pocket_expand_active()
                 ):
+                    _cap2 = 0
+                # O323-①:口袋攒钱期(非 unknown 档)追猎核同样归零。
+                elif self._zt_pocket_expand_active():
                     _cap2 = 0
                 # O236:Nexus 钉点期间追猎 floor 归零(125 矿/只),与探机暂停
                 # 一起把 400 矿资金窗让给二矿;pinning 解除自动恢复。
@@ -6426,6 +6464,29 @@ class ProductionManager(Manager):
                         "t": round(self.ai.time, 1),
                         "msg": f"O294:舰队基建重建钉点={_rebuild_sid.name}",
                     })
+
+        # O323-②(o322b 三局实证):SG 时点目标化 —— SG 落地 405-623s 方差
+        # 过大,每晚 30s 首舰晚一波(舰队真空=中局死因)。ZT 且 t≥300 且
+        # cyber 就绪且无 SG → 钉点派工(驻点等钱,钱到即开工),不让 SG
+        # 在塔/叉/追猎后面排队等余钱;口袋攒钱期(O323-①)让位 Nexus。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.time >= 300.0
+            and any(
+                s.is_ready for s in structures_dict[UnitID.CYBERNETICSCORE]
+            )
+            and not self._structure_present_or_pending(UnitID.STARGATE)
+            and not self._zt_pocket_expand_active()
+        ):
+            _rc = self._dispatch_structure(
+                UnitID.STARGATE, self.ai.start_location, critical=True
+            )
+            if _rc == "dispatched":
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O323:SG钉点(t≥300+cyber就绪)",
+                })
 
         if not core_allowed:
             # O163(o162-vh-zerg-power game_01 实证):经济开局(CarrierOpener)把
