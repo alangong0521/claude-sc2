@@ -2521,7 +2521,36 @@ def zerg_timing_expand_allowed(
     )
 
 
-def pick_pocket_expansion(free_expansions, enemy_start, playable_rect=None):
+def ring_openness(grid, pos, radius: float = 14.0, samples: int = 24) -> int:
+    """O328(司令观察):扩张点环上可通行采样数 —— 口袋度的反向指标。纯逻辑,可单测。
+
+    背靠墙体的防守矿,环上采样点大量落在悬崖/墙体/图缘外(不可通行);
+    敞开矿几乎全可通行。grid 只需有 is_set((x:int, y:int)) -> bool
+    (burnysc2 PixelMap 即此接口);出界/异常按不可通行计(= 背靠掩体)。
+    radius=14:小于此半径会被矿线/气矿 footprint 污染,大于此半径
+    信号被邻近地形稀释(探针 scripts/dump_map_geo.py 实测口径)。"""
+    open_count = 0
+    for i in range(samples):
+        a = i * math.tau / samples
+        x = int(round(pos.x + radius * math.cos(a)))
+        y = int(round(pos.y + radius * math.sin(a)))
+        try:
+            if grid.is_set((x, y)):
+                open_count += 1
+        except Exception:
+            pass
+    return open_count
+
+
+def pick_pocket_expansion(
+    free_expansions,
+    enemy_start,
+    playable_rect=None,
+    main=None,
+    openness=None,
+    open_weight: float = 4.0,
+    main_weight: float = 0.5,
+):
     """O281(o280 基线复测 0-9 裁决打法上限):ZT 首扩远位口袋矿。纯逻辑,可单测。
 
     natural 在 305-320s 死窗波行进路径上,Nexus 建筑期被首波打断/白捐
@@ -2531,7 +2560,13 @@ def pick_pocket_expansion(free_expansions, enemy_start, playable_rect=None):
     O291(司令观察):选址加地形分 —— 优先「背靠地图边缘」的矿点(背后
     墙体天然封口,防御只需封正面 1-2 个口);score = 离敌距离 -
     0.5×离图缘距离,贴缘矿点在同等离敌距离下胜出。playable_rect=
-    (x, y, w, h),None 时退化为纯离敌距离。"""
+    (x, y, w, h),None 时退化为纯离敌距离。
+    O328(司令观察+探针取证):加开阔度/距主基两项 —— AbyssalReefLE 主基
+    右下时,旧分把首扩拍到北侧 (157.5,50.5)(open14=14/24 敞开、四面
+    临敌,建筑学+塔守不住),而非司令指定的西侧 (129.5,26.5)
+    (open14=10/24,背靠墙体只封 1-2 口)。openness=环上可通行采样数
+    (ring_openness 口径,越少越口袋),每点权重 4.0;距主基权重 0.5
+    (防御整合 + 农民/增援短链路)。两项缺省 None → 旧分逐位不变。"""
     if not free_expansions or enemy_start is None:
         return None
     if playable_rect is None:
@@ -2540,7 +2575,12 @@ def pick_pocket_expansion(free_expansions, enemy_start, playable_rect=None):
 
     def _score(el):
         edge = min(el.x - rx, rx + rw - el.x, el.y - ry, ry + rh - el.y)
-        return el.distance_to(enemy_start) - 0.5 * edge
+        s = el.distance_to(enemy_start) - 0.5 * edge
+        if openness is not None:
+            s -= open_weight * openness(el)
+        if main is not None:
+            s -= main_weight * el.distance_to(main)
+        return s
 
     return max(free_expansions, key=_score)
 

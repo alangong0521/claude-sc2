@@ -190,6 +190,7 @@ from bot.production_plans import (
     zerg_timing_unknown_floor,
     zerg_timing_expand_allowed,
     pick_pocket_expansion,
+    ring_openness,
     upgrade_tech_buildings,
     wall_disabled_after,
     wall_escort_needed,
@@ -400,6 +401,9 @@ class ProductionManager(Manager):
         # B4③ 停气台账:rush 期间被拉下气矿的农民 tag(role 归 _GAS_STOP_ROLE),
         # rush 解除后统一归 GATHERING 回气(ares 记账不动,见 _rush_gas_stop)。
         self._gas_stopped_tags: set[int] = set()
+        # O328:口袋矿选址缓存(townhalls==1 期静态;选址含 24 点环采样,
+        # 不缓存则每帧多处调用重复算)
+        self._pocket_target_cache = None
         # 流派配置(flows.yml,神族生产侧单一真相源);Terran/Zerg 路径不走它。
         self._flow: FlowConfig = FlowConfig.load(os.environ.get("BUILD"))
         # O184/O190/O208:Zerg Rush/Timing 直接强制进 transition，用 ground_spawn
@@ -5583,9 +5587,26 @@ class ProductionManager(Manager):
         # 矿点背后墙体天然封口,只需封正面 1-2 个口)。
         _pa = getattr(self.ai.game_info, "playable_area", None)
         _rect = (_pa.x, _pa.y, _pa.width, _pa.height) if _pa is not None else None
-        return pick_pocket_expansion(
-            free, self.ai.enemy_start_locations[0], _rect
+        # O328(司令观察+探针取证):开阔度 = pathing grid r=14 环 24 采样
+        # (ring_openness 口径),结果随 townhalls==1 全程静态 → 缓存,
+        # 本方法每帧被多处调用(开矿闸/防御注册/钉点豁免),缓存后零开销。
+        if self._pocket_target_cache is not None and not self.ai.townhalls.closer_than(
+            5.0, self._pocket_target_cache
+        ):
+            return self._pocket_target_cache
+        _grid = getattr(self.ai.game_info, "pathing_grid", None)
+        _openness = (
+            (lambda el, g=_grid: ring_openness(g, el)) if _grid is not None else None
         )
+        _target = pick_pocket_expansion(
+            free,
+            self.ai.enemy_start_locations[0],
+            _rect,
+            main=self.ai.start_location,
+            openness=_openness,
+        )
+        self._pocket_target_cache = _target
+        return _target
 
     def _zt_enemy_near_expand_target(self) -> int:
         """O281:扩张目标点(口袋矿)35 格内敌作战单位数。

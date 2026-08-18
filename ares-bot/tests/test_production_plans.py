@@ -164,6 +164,7 @@ from bot.production_plans import (  # noqa: E402
     zerg_timing_expand_allowed,
     zt_wave_read,
     pick_pocket_expansion,
+    ring_openness,
     fb_gate_f2_exempt_zt,
     wall_disabled_after,
     wall_escort_needed,
@@ -3079,6 +3080,63 @@ class TestO133TimingDefense(unittest.TestCase):
         self.assertIs(pick_pocket_expansion([edge_pt, far_open], enemy, rect), far_open)
         # rect=None → 纯距离(向后兼容)
         self.assertIs(pick_pocket_expansion([open_pt, edge_pt], enemy, None), open_pt)
+
+    def test_pick_pocket_expansion_openness(self):
+        # O328(司令观察+探针实测):AbyssalReefLE 主基右下 (161.5,21.5),
+        # 旧分选北侧 (157.5,50.5)(open14=14/24 敞开),司令指定西侧
+        # (129.5,26.5)(open14=10/24,背靠墙体只封 1-2 口)。
+        class _P:
+            def __init__(self, x, y):
+                self.x, self.y = x, y
+
+            def distance_to(self, o):
+                return ((self.x - o.x) ** 2 + (self.y - o.y) ** 2) ** 0.5
+
+        enemy = _P(38.5, 122.5)
+        main = _P(161.5, 21.5)
+        rect = (24, 4, 152, 136)
+        west = _P(129.5, 26.5)   # open14=10/24,d_enemy=132.3
+        north = _P(157.5, 50.5)  # open14=14/24,d_enemy=139.1
+        _open = {id(west): 10, id(north): 14}
+        openness = lambda el: _open[id(el)]
+        # 旧行为(无 openness):北侧凭 d_enemy 胜出(o326 现状,司令判定错)
+        self.assertIs(pick_pocket_expansion([west, north], enemy, rect), north)
+        # O328:开阔度+距主基入分 → 西侧口袋矿胜出
+        self.assertIs(
+            pick_pocket_expansion(
+                [west, north], enemy, rect, main=main, openness=openness
+            ),
+            west,
+        )
+        # 只传 main 不传 openness:距主基项单独生效(西侧 32.4 vs 北侧 29.3,
+        # 0.5 权重差 1.55 < 旧分差 8.8 → 仍北侧,不意外翻转)
+        self.assertIs(
+            pick_pocket_expansion([west, north], enemy, rect, main=main), north
+        )
+
+    def test_ring_openness(self):
+        class _Grid:
+            def __init__(self, pred):
+                self._pred = pred
+
+            def is_set(self, p):
+                return self._pred(p)
+
+        class _P:
+            def __init__(self, x, y):
+                self.x, self.y = x, y
+
+        pos = _P(100.0, 100.0)
+        # 全可通行 → 24/24;全不可通行 → 0/24
+        self.assertEqual(ring_openness(_Grid(lambda p: True), pos), 24)
+        self.assertEqual(ring_openness(_Grid(lambda p: False), pos), 0)
+        # 半平面(x<100 可通行)→ 约一半
+        half = ring_openness(_Grid(lambda p: p[0] < 100), pos)
+        self.assertTrue(8 <= half <= 16, half)
+        # is_set 抛异常(出界)→ 按不可通行计,不炸
+        self.assertEqual(
+            ring_openness(_Grid(lambda p: 1 / 0), pos), 0
+        )
 
     def test_rush_blocks_reserve(self):
         # O151-①:rush 但家 40 格无敌(波间隙)→ 不挡攒钱预留;
