@@ -841,8 +841,12 @@ def sg2_pin_economy_ok(bases: int, minerals: float) -> bool:
     (458/546/631/378),双双远离 ≤310s 胜线。2 基地已运转则
     SG2 随便拍(双 SG 的黄金窗收益不变);仍单基地时要求矿 ≥550
     —— 拍完 SG2 还剩 400 给 Nexus,不挤占扩张资金窗。
+    O333-④(o332b game_04 实证):矿 ≥550 替代项去掉 —— 首扩驻点
+    等钱期间矿过 550 是常态(收入没地方花),SG2 在 346s 放行 =
+    又一次插队抢等钱中的 Nexus;只认 bases≥2(含在建,Nexus
+    真开工)。minerals 参数保留不再入判据(向后兼容签名)。
     """
-    return bases >= 2 or minerals >= 550.0
+    return bases >= 2
 
 
 def zt_fast_expand_pin(
@@ -893,7 +897,7 @@ def sg_pin_expand_ok(townhalls: int, nexus_in_flight: int, now: float, hard_at: 
     return townhalls >= 2 or now >= hard_at
 
 
-def zt_zealot_yield(townhalls: int, rush_confirmed: bool) -> bool:
+def zt_zealot_yield(townhalls: int, rush_confirmed: bool, threat_active: bool = False) -> bool:
     """O332-②(o331 尸检+司令 doctrine):二矿开工前零兵种判据。纯逻辑,可单测。
 
     司令 2026-08-18 战术:2 矿没建造开始前不出战斗兵种,防御完全
@@ -902,8 +906,13 @@ def zt_zealot_yield(townhalls: int, rush_confirmed: bool) -> bool:
     (500-600 矿),与主基塔链一起把 O329 钉点资金窗抽干(矿窗
     226s+ 才摸到 350,game_03/04 整局哑火)。Nexus 开工
     (townhalls≥2,含在建)或 rush 确认后恢复产叉。
+    O333-③(o332b game_01/02 实证):threat 激活豁免 —— 钉点晚局
+    (185-286s)波 288-304s 到脸时零叉零塔,主基 359s 被推平;
+    敌压境时零兵种 doctrine 立即让位(rush fuse 同源)。
     """
-    return townhalls < 2 and not rush_confirmed
+    if rush_confirmed or threat_active:
+        return False
+    return townhalls < 2
 
 
 def zt_defense_at_natural(

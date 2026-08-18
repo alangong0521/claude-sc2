@@ -88,11 +88,16 @@ Builds:
         #   交给塔+电池;O330 的 2 叉(16/20)在钉点修复后本就在 Nexus
         #   开工(~135s)之后触发,但 Nexus 延迟时叉会抢跑吃矿——直接从
         #   opener 拿掉,波前地面由 bot 层 rush/威胁响应按需补);
+        # - forge/core/GW2 全部摘除(O333-②,o332 双 lane 实证:钉点
+        #   104s 触发但 runner 后续步 ~550 矿排在等钱的 Nexus 前面,
+        #   开工拖到 300-500s)——opener 只剩农民/水晶/兵营,钉点的
+        #   400 矿零竞争;forge 由 bot 层在 Nexus 开工即钉点(O333-②),
+        #   core/GW2 走原科技链/追加产能;
         # O330-①(o329a game_01 实证):速开钉点矿门 400→350/at 105→100 ——
         #   全值矿门被 opener 后续步抽水,钉点整局哑火(O251 361s 兜底);
         # O330-③(o329b game_01 实证):SG 钉点让位扩张 —— 342s 连拍 4 次
         #   SG(150/150)抢光二矿资金窗,单基地到死;2 基地/Nexus 在途才放行。
-        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 worker', '12 supply', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 worker', '17 worker', '18 forge', '19 core', '20 worker', '20 supply', '21 worker', '22 gateway', '23 worker', '24 worker', '24 supply', '25 worker', '26 worker', '27 worker', '28 worker', '28 supply', '29 worker']
+        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 worker', '12 supply', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 worker', '17 worker', '18 worker', '19 worker', '20 worker', '20 supply', '21 worker', '22 worker', '23 worker', '24 worker', '24 supply', '25 worker', '26 worker', '27 worker', '28 worker', '28 supply', '29 worker']
 
     # O194:Zerg Rush 专用开局。O193 Rush game_01 实证 Timing 开局在 Rush 下
     # forge 07:25/首叉 08:14/首炮 08:44 才落地,狗群 03:20 已到家,物理空窗被滚雪球。

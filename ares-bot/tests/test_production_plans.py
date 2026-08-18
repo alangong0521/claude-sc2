@@ -3507,11 +3507,12 @@ class TestO327Economy(unittest.TestCase):
         self.assertFalse(mothership_economy_ok(1, 30))
 
     def test_sg2_pin_economy_ok(self):
-        # 2 基地运转 → 放行(黄金窗收益不变)
+        # 2 基地运转(含在建)→ 放行(黄金窗收益不变)
         self.assertTrue(sg2_pin_economy_ok(2, 100.0))
-        # 单基地:矿 ≥550 才拍(拍完还剩 400 给 Nexus)
-        self.assertFalse(sg2_pin_economy_ok(1, 549.0))
-        self.assertTrue(sg2_pin_economy_ok(1, 550.0))
+        # O333-④:单基地一律拦 —— 矿 ≥550 替代项已去掉(等钱期矿过
+        # 550 是常态,SG2 在 346s 插队抢等钱中的 Nexus,o332b game_04)
+        self.assertFalse(sg2_pin_economy_ok(1, 600.0))
+        self.assertFalse(sg2_pin_economy_ok(1, 100.0))
 
 
 class TestO329FastExpand(unittest.TestCase):
@@ -3544,12 +3545,15 @@ class TestO329FastExpand(unittest.TestCase):
         self.assertTrue(sg_pin_expand_ok(1, 0, 360.0))
 
     def test_zt_zealot_yield(self):
-        # 二矿开工前(单基地)+非 rush → 零兵种(司令 doctrine)
+        # 二矿开工前(单基地)+非 rush +非威胁 → 零兵种(司令 doctrine)
         self.assertTrue(zt_zealot_yield(1, False))
+        self.assertTrue(zt_zealot_yield(1, False, False))
         # Nexus 开工(含在建,townhalls≥2)→ 恢复产叉
         self.assertFalse(zt_zealot_yield(2, False))
         # rush 确认 → 恢复(rush 响应包要叉)
         self.assertFalse(zt_zealot_yield(1, True))
+        # O333-③:threat 激活豁免 —— 钉点晚局波到脸零叉零塔 = 359s 速败
+        self.assertFalse(zt_zealot_yield(1, False, True))
 
     def test_zt_defense_at_natural(self):
         # Nexus 在途或分矿存在 → 防御重心在 2 矿(主基塔归零)

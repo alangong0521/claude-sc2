@@ -1037,7 +1037,9 @@ class ProductionManager(Manager):
         self._o332_zyt = (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and zt_zealot_yield(self.ai.townhalls.amount, self._rush_confirmed)
+            and zt_zealot_yield(
+                self.ai.townhalls.amount, self._rush_confirmed, self._threat_active
+            )
         )
         # O279:预警 latch 接触即解除(威胁响应包接管,预警使命完成)
         if self._wave_incoming and (self._threat_active or self._rush_active):
@@ -3075,6 +3077,25 @@ class ProductionManager(Manager):
                         "t": round(self.ai.time, 1),
                         "msg": "O329:速二矿钉点(120s向电脑看齐)",
                     })
+        # O333-②(o332 双 lane 实证):forge 钉点随 Nexus 开工 —— opener
+        # 摘除 forge/core/GW2 后(O329 钉点的 400 矿零竞争,开工 ~130s),
+        # 分矿塔链的前置 forge 由 bot 层在 Nexus 开工(townhalls≥2 含
+        # 在建)即 critical 拍回;core/GW2 走原科技链/追加产能。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.townhalls.amount >= 2
+            and not self._structure_present_or_pending(UnitID.FORGE)
+        ):
+            _rc = self._dispatch_structure(
+                UnitID.FORGE, self.ai.start_location, critical=True
+            )
+            if _rc == "dispatched" and not getattr(self, "_o333_forge_logged", False):
+                self._o333_forge_logged = True
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O333:forge钉点(Nexus开工,分矿塔链前置)",
+                })
         # Nexus 因矿恒 <475(dispatch_viable buffer)永远排不出,2 基地 44 农封顶
         # 被慢性磨死。硬饱和时对最近空闲扩张点钉点派 Nexus(驻点等钱,与
         # SG/FB/robo 同款),三矿真正把饱和农民变成收入。
@@ -4841,10 +4862,16 @@ class ProductionManager(Manager):
         # 波在脸时钉点工往分矿走 = 农民+资金窗双捐(game_01:490s 落成、
         # 498s 波到、506s 分矿失守;O313-③ 只拦新钉,存量钉没人管)。
         # 钉点语义本就是「驻点等钱」(未付款),撤销零成本,波后重评。
+        # O333-①(o332 双 lane 实证):首扩(townhalls==1)豁免 —— O328 口袋
+        # 选址后首扩不在波路径上(波打主基),且 O329 速开钉点 104s 后
+        # 驻点等钱必然横跨 257-320s 波窗,逢波就撤 = 首扩循环撤销
+        # 整局开不出(game_01 单基地到死);O322 原实证是口袋选址前的
+        # natural 沿波路径局,场景已覆盖。3 矿+ 钉点撤销语义不变。
         if (
             self._threat_active
             and self._opp_race == "zerg"
             and self._ai_build == "timing"
+            and self.ai.townhalls.amount >= 2
         ):
             _tracker = self.manager_mediator.get_building_tracker_dict
             _cancelled = 0
@@ -6744,7 +6771,12 @@ class ProductionManager(Manager):
                 self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
                 self.ai.time,
             )
+            # O333-④(o332b game_05 实证):派工失败 30s 节流 —— 驻点失败
+            # (taken/no_placement)每 ~4s 重试连拍 12 次,事件刷屏且
+            # 反复抢派工槽。
+            and self.ai.time - getattr(self, "_o323_sg_last", 0.0) > 30.0
         ):
+            self._o323_sg_last = self.ai.time
             _rc = self._dispatch_structure(
                 UnitID.STARGATE, self.ai.start_location, critical=True
             )
@@ -6771,8 +6803,12 @@ class ProductionManager(Manager):
             # O327-④(o326a vs o325a 对照):SG2 让位二矿 —— 仍单基地时
             # 要求矿 ≥550(拍完还剩 400 给 Nexus);SG2 的 150 不抢扩张
             # 资金窗(o326a 二矿均值 ~576s vs o325a ~503s,同资金窗挤压)。
+            # O333-④(o332b game_03/04 实证):矿 ≥550 替代项去掉(等钱期
+            # 矿过 550 是常态,SG2 又插队)+ 派工失败 30s 节流(连拍 19 次)。
             and sg2_pin_economy_ok(self.ai.townhalls.amount, self.ai.minerals)
+            and self.ai.time - getattr(self, "_o326_sg2_last", 0.0) > 30.0
         ):
+            self._o326_sg2_last = self.ai.time
             _rc = self._dispatch_structure(
                 UnitID.STARGATE, self.ai.start_location, critical=True
             )
