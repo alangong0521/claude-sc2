@@ -93,6 +93,8 @@ from bot.production_plans import (
     expand_pin_workers_ok,
     mothership_economy_ok,
     sg2_pin_economy_ok,
+    zt_fast_expand_pin,
+    zt_defense_at_natural,
     gas_gated_stargate_target,
     gas_target,
     forge_before_first_gateway,
@@ -600,6 +602,49 @@ class ProductionManager(Manager):
                 "msg": f"O323:分矿落成塔钉点(共{_th_now}基地,派工={_rc})",
             })
         self._o323_th_last = _th_now
+        # O329-③(司令 2026-08-18 拍板):分矿塔链前移到「Nexus 在途」——
+        # 落成再钉 = 裸奔 30-100s(o321b 实证);防御跟着 2 矿走,Nexus
+        # 建筑期(~70s)并行把电+首塔铺到口袋矿。forge 在途才启动
+        # (否则塔工在分矿干等 forge 落成 80s+,暴露窗太长);落成时的
+        # O323-③ 触发会再补第二塔(不重复补电,守卫已在)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
+            and self._structure_present_or_pending(UnitID.FORGE)
+            and not getattr(self, "_o329_predef_fired", False)
+        ):
+            # 目标 = 在建分矿 Nexus(已开工后 pocket_target 因 townhalls
+            # !=1 返回 None,必须改读在建基地);未开工窗退回 pocket 选址。
+            _pre_th = next(
+                (
+                    t
+                    for t in self.ai.townhalls
+                    if not t.is_ready
+                    and t.position.distance_to(self.ai.start_location) > 5.0
+                ),
+                None,
+            )
+            _pre_target = (
+                _pre_th.position
+                if _pre_th is not None
+                else self._zt_pocket_expand_target()
+            )
+            if _pre_target is not None:
+                self._o329_predef_fired = True
+                self._dispatch_structure(
+                    UnitID.PYLON, _pre_target,
+                    closest_to=_pre_target, needs_power=False,
+                    critical=True,
+                )
+                _rc = self._dispatch_structure(
+                    UnitID.PHOTONCANNON, _pre_target,
+                    closest_to=_pre_target, critical=True,
+                )
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O329:分矿预置塔链(Nexus在途,派工={_rc})",
+                })
         # O166: 这些闸在 update 尾部的方法(_spend_bank/_build_extra_production/
         # _build_forward_pylon)里也要读，挂到实例上避免 NameError。
         self._expand_holding = _expand_holding
@@ -1499,6 +1544,18 @@ class ProductionManager(Manager):
             # O202:CarrierOpenerZergRush 早期由 build order 自己铺 forge+双塔,
             # 手动链不抢资源,避免把二塔拖到 5 分钟后。
             and not self._carrier_rush_opener_early()
+            # O329-④:速二矿在途/落成后主基防御链整体噤声(司令拍板:
+            # 放弃主基分散铺塔,forge 由 opener 18 步负责,塔链在分矿)。
+            # rush 确认(fuse)或分矿全丢时判据翻假,手动链自动恢复。
+            and not (
+                self._opp_race == "zerg"
+                and self._ai_build == "timing"
+                and not self._rush_confirmed
+                and (
+                    self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
+                    or self.ai.townhalls.amount >= 2
+                )
+            )
         )
         if _presumed_manual:
             await self._presumed_defense_chain()
@@ -2107,6 +2164,22 @@ class ProductionManager(Manager):
                 base_locs = list(self.manager_mediator.get_placements_dict.keys())
                 focus = self.ai.focused_enemy_start()
                 registered = False
+                # O329-④(司令 2026-08-18 拍板):防御重心迁 2 矿 —— Nexus
+                # 在途/分矿存在时,建造槽先喂分矿堵口阵,主基塔归零(塔+
+                # 电池聚在一起才有效;主基分散铺塔 = 2 矿裸奔被一波推上
+                # 高地,司令观战实证)。rush 激活/分矿全丢自动回退主基。
+                _zt_def_natural = (
+                    self._opp_race == "zerg"
+                    and self._ai_build == "timing"
+                    and zt_defense_at_natural(
+                        self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
+                        any(
+                            t.position.distance_to(self.ai.start_location) > 5.0
+                            for t in self.ai.townhalls
+                        ),
+                        self._rush_active,
+                    )
+                )
                 # O76b 诊断(n5/o76 分矿恒 1 塔悬案):每基地首次注册 + 每 30s 每基地
                 # 塔数上报事件,定位「没注册 / 注册不建 / 建了被拆」哪一环。
                 # O77(诊断一层):按离敌距离升序注册 —— 最暴露的基地(分矿)先抢
@@ -2130,8 +2203,10 @@ class ProductionManager(Manager):
                     # 优先」把 t=213-371 的槽全喂给注定弃守的分矿,主基坡口
                     # 到接触只有 2-3 塔(o67 胜局同期 5-8 塔)。rush 教义的
                     # 正确读法:主基是先保的那个,槽就该先给主基。
+                    # O329-④:ZT 防御重心迁 2 矿时排序反转(分矿先抢槽)。
                     key=lambda t: (
-                        t.position.distance_to(self.ai.start_location) > 5.0,
+                        (t.position.distance_to(self.ai.start_location) > 5.0)
+                        != _zt_def_natural,
                         _cannons_near.get(t.tag, 0),
                         t.position.distance_to(focus),
                     ),
@@ -2220,6 +2295,13 @@ class ProductionManager(Manager):
                     # (基地附近**有电**的位置)。锚点概念(塔朝敌 6 格)对分矿是
                     # 连环失败源:锚点无电/不可建 → 塔单静默失败(分矿恒 0-1 塔,
                     # 主基坡口锚点无恙故主基保留)—— 矿线侧的塔 > 锚点空气。
+                    if is_main and _zt_def_natural:
+                        # O329-④(司令拍板):防御重心在 2 矿 —— 主基塔/电池
+                        # 归零,建造槽全喂分矿堵口阵;registered=True 防落
+                        # 全局兜底 PSD(会把塔注册回主基 rally)。分矿全丢
+                        # 时判据翻假,主基防御自动恢复。
+                        registered = True
+                        continue
                     anchor_xy = base_defense_anchor(
                         is_main,
                         (th.position.x, th.position.y),
@@ -2941,6 +3023,33 @@ class ProductionManager(Manager):
                         "msg": "O261:死窗虚空(FB 前星门不空转)",
                     })
                     break
+        # O329-②(司令 2026-08-18 拍板):速二矿钉点 —— 电脑 VeryHard Zerg
+        # 二矿 119-150s(录像实测),我方 377-500s 是经济差滚雪球的起点。
+        # t≥105 + 矿 ≥400 + rush 未确认 → critical 钉口袋矿(O328 选址),
+        # 开动 ≤120s 向电脑看齐;rush 确认 = fuse,走旧防御先行路径,
+        # O251 硬饱和钉点(280s+)兜底。防御由 O329-③ 分矿预置塔链随行。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and zt_fast_expand_pin(
+                self.ai.time,
+                self.ai.minerals,
+                self.ai.townhalls.amount,
+                self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
+                self._rush_confirmed,
+            )
+        ):
+            _o329_target = self._zt_pocket_expand_target()
+            if _o329_target is not None:
+                self._dispatch_structure(
+                    UnitID.NEXUS, _o329_target, critical=True, needs_power=False
+                )
+                if not getattr(self, "_o329_logged", False):
+                    self._o329_logged = True
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": "O329:速二矿钉点(120s向电脑看齐)",
+                    })
         # Nexus 因矿恒 <475(dispatch_viable buffer)永远排不出,2 基地 44 农封顶
         # 被慢性磨死。硬饱和时对最近空闲扩张点钉点派 Nexus(驻点等钱,与
         # SG/FB/robo 同款),三矿真正把饱和农民变成收入。
@@ -7424,8 +7533,20 @@ class ProductionManager(Manager):
             })
         if getattr(self, "_o324_runner_stalled", False):
             return False
-        if bor.chosen_opening == "CarrierOpenerZergTiming" and self.ai.time >= 300.0:
-            return False
+        if bor.chosen_opening == "CarrierOpenerZergTiming":
+            # O329-⑤:速二矿 opener(O329-①)不再含主基防御链 —— Nexus
+            # 在途/落成即交棒 bot 层(O329-③ 分矿预置塔链/F2 迁矿),
+            # 不再等 build_completed/300s(否则分矿塔 ~250s 才启动,
+            # 波 305s 到脸裸接)。rush 确认 = fuse 同步交棒(速开弃权,
+            # 主基防御由 presumed/F2 旧链接管)。
+            if (
+                self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
+                or self.ai.townhalls.amount >= 2
+                or self._rush_confirmed
+            ):
+                return False
+            if self.ai.time >= 300.0:
+                return False
         if bor.build_completed:
             return False
         return self._count_structure(UnitID.PHOTONCANNON) < 2

@@ -845,6 +845,50 @@ def sg2_pin_economy_ok(bases: int, minerals: float) -> bool:
     return bases >= 2 or minerals >= 550.0
 
 
+def zt_fast_expand_pin(
+    now: float,
+    minerals: float,
+    townhalls: int,
+    nexus_in_flight: int,
+    rush_confirmed: bool,
+    at: float = 105.0,
+    cost: float = 400.0,
+) -> bool:
+    """O329-②(司令 2026-08-18 拍板):速二矿钉点判据。纯逻辑,可单测。
+
+    电脑 VeryHard Zerg 二矿 119-150s(录像实测,scripts/replay_bases.py),
+    我方 377-500s 是经济差滚雪球的起点;t≥at 且矿够即拍口袋矿
+    (O328 选址),开动 ≤120s 向电脑看齐。rush 确认 = fuse:不速开,
+    走旧防御先行路径(O251 硬饱和钉点 280s+ 兜底)。与 O216i 的
+    「首塔就绪才开矿」不冲突:本钉点独立于 _want_dynamic_expand,
+    防御由 O329-③ 分矿预置塔链随 Nexus 并行到位。
+    """
+    return (
+        townhalls == 1
+        and not rush_confirmed
+        and nexus_in_flight == 0
+        and now >= at
+        and minerals >= cost
+    )
+
+
+def zt_defense_at_natural(
+    nexus_in_flight: int,
+    has_expansion: bool,
+    rush_active: bool,
+) -> bool:
+    """O329-④(司令 2026-08-18 拍板):防御重心在 2 矿判据。纯逻辑,可单测。
+
+    塔+电池聚在一起才有效 —— Nexus 在途/分矿存在时,建造槽先喂分矿
+    堵口阵,主基塔归零(放弃主基分散铺塔:3 矿边 1-2 座零散塔电池 =
+    敌一波推上高地的白捐,司令观战实证)。rush 激活或分矿全丢
+    (无在途无落成)→ 自动回退主基防御(O81 rush 教义)。
+    """
+    if rush_active:
+        return False
+    return nexus_in_flight > 0 or has_expansion
+
+
 def builder_release_exempt(rush_active: bool, defense_urgent: bool) -> bool:
     """O117-②(o116 取证实证):O11 钉点撤回的豁免判据。纯逻辑,可单测。
 

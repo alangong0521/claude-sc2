@@ -56,6 +56,8 @@ from bot.production_plans import (  # noqa: E402
     expand_pin_workers_ok,
     mothership_economy_ok,
     sg2_pin_economy_ok,
+    zt_fast_expand_pin,
+    zt_defense_at_natural,
     forge_before_first_gateway,
     gateway_chain_after_first_zealot,
     gateway_yields_tech_slots,
@@ -3508,6 +3510,34 @@ class TestO327Economy(unittest.TestCase):
         # 单基地:矿 ≥550 才拍(拍完还剩 400 给 Nexus)
         self.assertFalse(sg2_pin_economy_ok(1, 549.0))
         self.assertTrue(sg2_pin_economy_ok(1, 550.0))
+
+
+class TestO329FastExpand(unittest.TestCase):
+    """O329(司令 2026-08-18 拍板):速二矿钉点 + 防御重心迁 2 矿。
+
+    电脑 Zerg 二矿 119-150s(录像实测),我方 377-500s 是经济差起点;
+    防御塔+电池聚在一起才有效,主基分散铺塔 = 2 矿裸奔被一波推。"""
+
+    def test_zt_fast_expand_pin(self):
+        # t≥105 + 矿≥400 + 单基地 + 无在途 + 非 rush → 钉
+        self.assertTrue(zt_fast_expand_pin(120.0, 400.0, 1, 0, False))
+        # 时间/矿门槛
+        self.assertFalse(zt_fast_expand_pin(104.0, 400.0, 1, 0, False))
+        self.assertFalse(zt_fast_expand_pin(120.0, 399.0, 1, 0, False))
+        # rush 确认 = fuse 弃权(走旧防御先行路径)
+        self.assertFalse(zt_fast_expand_pin(120.0, 400.0, 1, 0, True))
+        # 已有在途/已多基地不重拍
+        self.assertFalse(zt_fast_expand_pin(120.0, 400.0, 1, 1, False))
+        self.assertFalse(zt_fast_expand_pin(120.0, 400.0, 2, 0, False))
+
+    def test_zt_defense_at_natural(self):
+        # Nexus 在途或分矿存在 → 防御重心在 2 矿(主基塔归零)
+        self.assertTrue(zt_defense_at_natural(1, False, False))
+        self.assertTrue(zt_defense_at_natural(0, True, False))
+        # 分矿全丢(无在途无落成)→ 回退主基防御
+        self.assertFalse(zt_defense_at_natural(0, False, False))
+        # rush 激活一律回退(O81 rush 教义:主基先保)
+        self.assertFalse(zt_defense_at_natural(1, True, True))
 
 
 if __name__ == "__main__":

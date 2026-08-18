@@ -69,21 +69,24 @@ Builds:
     # 把 build order 的矿物压力压到最低，给二矿留出资金。
     CarrierOpenerZergTiming:
         ConstantWorkerProductionTill: 0
-        # O321(2026-08-18 司令拍板 A 案:opener 级大改):15 轮(O307-O320)
-        # 调参总账 VH 0/65、Harder ~10% —— 败因不是参数是执行:runner 与
-        # bot 层(presumed 包/F2/兵营链)在波前抢同一份钱,每条链都慢半拍。
-        # 重写为「防御总量前置」开局,把 14 轮尸检收敛出的胜局剖面
-        # (塔2+电池2+双兵营+叉4-6 @ ~280s)直接写死进 build order:
-        # - GW1(13)先于 forge(17):首叉 ~180s(O308-①实证 forge-first 拖死首叉)
-        # - cyber(18)→电池(21/26):塔阵续航(O52 双电池奶塔 ~3 倍存活)
-        # - forge(17)→塔(19/24):首塔 ~200s(o315/o316 实证 281s = 波同帧到脸)
-        # - GW2(22):双兵营 ~14s/叉接 280-310s 波(o315 实证单兵营 4-5 叉是天花板)
-        # - forge→塔之间不插 worker(O201/O202:首塔每插一个 worker 晚 15-20s);
-        #   不放 gas(bot 层 O13/O165 按基地补气,早期气矿 75 矿抢链)
-        # - 不写 Nexus:开矿由 bot 层 O278/O251 按波间隙闸执行(波中不拍是铁律)
-        # 执行期(本 opener 未完成前)bot 层防御开销全部噤声,
-        # 见 production_manager._carrier_rush_opener_early(已扩到本 opener)。
-        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 worker', '12 supply', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 zealot', '17 forge', '18 core', '19 photoncannon', '19 worker', '20 zealot', '20 supply', '21 shieldbattery', '22 gateway', '23 zealot', '24 photoncannon', '24 worker', '25 supply', '25 zealot', '26 shieldbattery', '27 worker', '28 zealot', '28 supply', '29 worker']
+        # O329-①(2026-08-18 司令拍板:速二矿 opener):O321 的「防御总量
+        # 前置」 opener 把 forge+双塔+双电池+双兵营全塞主基,实证主基
+        # 5-7 塔吃掉 290-350s 的 750+ 矿,Nexus 只能靠收入残差攒到
+        # 360s+ 派工(落成 377-500s);而电脑 Zerg 二矿 119-150s(录像
+        # 实测)——经济差从开矿时点滚起,15 轮调参胜率不动的总根。
+        # 重写为「水晶→兵营→速二矿」的人类宗师节奏(司令观赛口径):
+        # - 主基防御链(双塔/双电池)整体移出 opener:防御重心迁 2 矿,
+        #   由 bot 层 O329-③ 分矿预置塔链(Nexus 在途即铺电+首塔)+
+        #   O329-④ F2 迁矿(建造槽先喂分矿,主基塔归零)负责;
+        # - Nexus 不写进 build order(选址/时机要读战场):由 bot 层
+        #   O329-② 速二矿钉点(t≥105+矿≥400,开动 ≤120s 向电脑看齐,
+        #   rush 确认 fuse 弃权走旧防御路径);
+        # - forge(18)/core(19)保留在 Nexus 资金窗之后:forge 是分矿
+        #   塔链前置,core 是电池/追猎前置;GW2(22)保留(波前双兵营
+        #   叉子产能,o315 实证单兵营 4-5 叉是天花板);
+        # - 叉 4 只(16/20/23/25):波前最低地面线,配合分矿 2 塔+电池
+        #   +口袋地形(O328)接 305-320s 首波。
+        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 worker', '12 supply', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 zealot', '17 worker', '18 forge', '19 core', '20 zealot', '20 supply', '21 worker', '22 gateway', '23 zealot', '24 worker', '24 supply', '25 zealot', '26 worker', '27 worker', '28 zealot', '28 supply', '29 worker']
 
     # O194:Zerg Rush 专用开局。O193 Rush game_01 实证 Timing 开局在 Rush 下
     # forge 07:25/首叉 08:14/首炮 08:44 才落地,狗群 03:20 已到家,物理空窗被滚雪球。
