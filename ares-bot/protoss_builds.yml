@@ -84,14 +84,15 @@ Builds:
         # - forge(18)/core(19)保留在 Nexus 资金窗之后:forge 是分矿
         #   塔链前置,core 是电池/追猎前置;GW2(22)保留(波前双兵营
         #   叉子产能,o315 实证单兵营 4-5 叉是天花板);
-        # - 叉 2 只(16/20,O330-② 司令战术:前期不出/少出作战兵种,
-        #   叉只用于堵口和侦查,省下的 200 矿给分矿塔阵+科技链;
-        #   O329 的 4 叉在波前守备中边际最低,塔+电池性价比更高);
+        # - 叉 0 只(O331 司令战术升级:2 矿开工前零战斗兵种,防御完全
+        #   交给塔+电池;O330 的 2 叉(16/20)在钉点修复后本就在 Nexus
+        #   开工(~135s)之后触发,但 Nexus 延迟时叉会抢跑吃矿——直接从
+        #   opener 拿掉,波前地面由 bot 层 rush/威胁响应按需补);
         # O330-①(o329a game_01 实证):速开钉点矿门 400→350/at 105→100 ——
         #   全值矿门被 opener 后续步抽水,钉点整局哑火(O251 361s 兜底);
         # O330-③(o329b game_01 实证):SG 钉点让位扩张 —— 342s 连拍 4 次
         #   SG(150/150)抢光二矿资金窗,单基地到死;2 基地/Nexus 在途才放行。
-        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 worker', '12 supply', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 zealot', '17 worker', '18 forge', '19 core', '20 zealot', '20 supply', '21 worker', '22 gateway', '23 worker', '24 worker', '24 supply', '25 worker', '26 worker', '27 worker', '28 worker', '28 supply', '29 worker']
+        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 worker', '12 supply', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 worker', '17 worker', '18 forge', '19 core', '20 worker', '20 supply', '21 worker', '22 gateway', '23 worker', '24 worker', '24 supply', '25 worker', '26 worker', '27 worker', '28 worker', '28 supply', '29 worker']
 
     # O194:Zerg Rush 专用开局。O193 Rush game_01 实证 Timing 开局在 Rush 下
     # forge 07:25/首叉 08:14/首炮 08:44 才落地,狗群 03:20 已到家,物理空窗被滚雪球。
