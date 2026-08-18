@@ -340,6 +340,21 @@ def pre_fleet_cap(base: int, per_enemy: float, hard_max: int, enemy_army: int) -
     return max(base, min(hard_max, round(enemy_army * per_enemy)))
 
 
+def unknown_zt_floor_cap(now: float, visible_enemy: int, wave_incoming: bool) -> int:
+    """O314-③(o313b game_02/03 实证):ZT unknown 死窗叉 cap 波窗内放开。纯逻辑,可单测。
+
+    O255-③ 的 cap 3(死窗只要矿耗叉子省气)与 O298-③ 的钉点 floor 全停,
+    在 O312 早二矿(241-265s 落成)落地后变成绞索:game_02/03 二矿已落,
+    304s 波(敌 20-27)到脸时叉 cap 仍 3 → 我 11-13 supply 对 20-27,
+    分矿 373-409s 失守。波窗(t≥240)且敌可见 ≥4 → cap 8(pre_fleet
+    max 全量,叉子是此时唯一的矿耗战力);wave_incoming 保持 5(O279);
+    其余保持 3(O255-③ 省气语义)。
+    """
+    if now >= 240.0 and visible_enemy >= 4:
+        return 8
+    return 5 if wave_incoming else 3
+
+
 def ground_floor_gateways(
     has_pre_fleet: bool,
     transition_active: bool,

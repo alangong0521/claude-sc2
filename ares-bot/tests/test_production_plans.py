@@ -150,7 +150,9 @@ from bot.production_plans import (  # noqa: E402
     transition_timing_sprint,
     transition_expand_at_210,
     cancel_presumed_forge,
-    tower_yields_gateway_chain,    transition_tech_frozen,
+    tower_yields_gateway_chain,
+    transition_tech_frozen,
+    unknown_zt_floor_cap,
     two_base_guard_point,
     main_defense_first,
     unknown_verdict_defense,
@@ -2949,6 +2951,18 @@ class TestO133TimingDefense(unittest.TestCase):
         self.assertTrue(ground_floor_active(False, 4))
         self.assertFalse(ground_floor_active(False, 3))
         self.assertFalse(ground_floor_active(False, 0))
+
+    def test_unknown_zt_floor_cap(self):
+        # O314-③(o313b game_02/03 实证):波窗(t≥240)敌可见 ≥4 → cap 8
+        self.assertEqual(unknown_zt_floor_cap(300.0, 20, False), 8)
+        self.assertEqual(unknown_zt_floor_cap(240.0, 4, False), 8)
+        # 敌可见 <4 → 保持 O255-③ 省气语义
+        self.assertEqual(unknown_zt_floor_cap(300.0, 3, False), 3)
+        # 窗未到 → 保持原样
+        self.assertEqual(unknown_zt_floor_cap(200.0, 20, False), 3)
+        # wave_incoming → 5(O279,不受敌数影响)
+        self.assertEqual(unknown_zt_floor_cap(200.0, 0, True), 5)
+        self.assertEqual(unknown_zt_floor_cap(300.0, 3, True), 5)
 
     def test_zerg_timing_unknown_floor(self):
         # O255-③:Zerg Timing + unknown + t≥220 + 舰队未出 → 死窗叉子 floor

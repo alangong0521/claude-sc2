@@ -2275,12 +2275,14 @@ class ProductionManager(Manager):
             # 主基带电 2x2 槽归零(带电余=0 反复出现)——塔链无电自救,
             # 防御窗干等死。no_placement 且带电槽 0 → 钉点补电(O55/O295-①
             # 同构;critical 钉点等钱=钱到即开工,can_afford 守卫防穷局钉死)。
+            # O314-②(o313b game_03 实证):not_viable(等钱)也查带电余 ——
+            # 波后银行 15-105,塔(150)等不起先钉电(100);且 can_afford 门
+            # 与 critical 钉点语义矛盾(钉点就是等钱),穷局恰恰最该钉。
             if (
-                _dispatch == "no_placement"
+                _dispatch in ("no_placement", "not_viable")
                 and self._slot_counts_at(
                     self.ai.start_location, BuildingSize.TWO_BY_TWO
                 )[0] == 0
-                and self.ai.can_afford(UnitID.PYLON)
             ):
                 self._dispatch_structure(
                     UnitID.PYLON, self.ai.start_location, critical=True
@@ -4138,9 +4140,13 @@ class ProductionManager(Manager):
             # O309-②:白送上界(同 O306-③口径),超线不拉,留经济火种
             # O310-②(o309a game_01/02/05 实证):0 塔时白送线 14→8 ——
             # 敌 8-9 地面塔未就绪照拉 ×6,10s 骤减 4-6,纯喂。
+            # O314-③(o313b game_03 实证):塔口径 6→4 —— 敌 20 塔 1 时
+            # 线 20 恰好不触发,×6 协防两轮农 20→11;O94 矿线协防
+            # 比 O256 塔下协防弱(无塔罩),线应更紧:塔1→18、塔2→22。
             hopeless=worker_last_stand_hopeless(
                 enemy_near, cannons_ready,
                 hopeless_base=(8 if cannons_ready == 0 else 14),
+                hopeless_per_cannon=4,
             ),
         )
         # O136-③:坡口墙模式未封口 + 敌地面近家 ≥2 → 协防去墙缝肉身填缝
@@ -5190,13 +5196,19 @@ class ProductionManager(Manager):
             # 银行出);常规 floor 通道(rush 确认/敌可见 ≥4)不受影响。
             # O279:首波预警期(敌兵成型情报到手)叉 cap 3→5 —— 墙缝/塔阵
             # 多两条命,波 40-60s 后到脸正好折跃完。
+            # O314-③(o313b game_02/03 实证):波窗(t≥240)敌可见 ≥4 →
+            # cap 8 —— 早二矿落定后 cap 3 是绞索(我 11-13 vs 敌 20-27)。
             floor_cap=(
                 min(
                     pre_fleet_cap(
                         pf.cap, pf.per_enemy, pf.max,
                         self._visible_enemy_army_count(),
                     ),
-                    5 if self._wave_incoming else 3,
+                    unknown_zt_floor_cap(
+                        self.ai.time,
+                        self._visible_enemy_army_count(),
+                        self._wave_incoming,
+                    ),
                 )
                 if self._floor_unknown_zt
                 else pre_fleet_cap(
