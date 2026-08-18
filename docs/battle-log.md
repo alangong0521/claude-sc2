@@ -8279,3 +8279,31 @@ ares `ResourceManager._assign_workers_to_mineral_patches` 只给**未指派**农
 - A:继续 A 案微调;B:回 o306 水位转防守总量(双兵营爆叉+塔3
   电池2,~350s 再开二矿);C:ZT 挂起保持现状,先打其它未打穿
   组合(Zerg Rush/Power、Terran 各风格 N=5)。
+
+## O315(司令拍板 B 案):回 o306 开矿口径 + ZT 防御窗双兵营
+
+**日期**：2026-08-17
+
+### 改动(单测 675 绿,import 冒烟过)
+
+**回退(A 案开矿时机族,保留其余全部独立改进)**:
+1. `zerg_timing_expand_allowed` 调用点:回 280s 窗/首塔前提
+   (去 at=200/gw_ready 传参,函数签名保留备查)。
+2. O216i 闸:恢复「首塔就绪才开矿」(去 GW1 替代前提)。
+3. first_expand_at:回 180s 下限。
+4. O251 首扩钉点:回 280s/首塔前提(O313-③ threat 闸保留)。
+
+**B 案增量**:
+5. **ZT 防御窗双兵营**(`_zt_defense_window` = presumed/rush确认/
+   unknown):_timing_gateway_cap 1→2 —— O249b 禁 transition 后 ZT
+   恒单兵营(~28s/叉,300s 仅 4-5 叉 = 我 8-10 supply 天花板,
+   o314d game_03/04 实证);双兵营 ~14s/叉,300s 可达 7-8 叉
+   (16 supply),配塔 3(O313-①)+电池 2(O256-③)接 20-supply 波。
+   forge 优先(O94-B)/首叉优先(O126-①)顺序闸原样。
+
+### 保留的 A 案遗产(独立改进,不回退)
+
+O307 三点(holding 自愈/holding 放 cyber/地面保底)、O308 三点
+(GW1 先于 forge/添油初版/炮塔串行化)、O309  latch、O310-②、
+O313 三点(塔地板 3 后置/需求封顶/threat 闸)、O314 三点
+(叉 cap 波窗 8/补电扩 not_viable/O94 线 6→4)。

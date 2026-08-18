@@ -2867,23 +2867,14 @@ class ProductionManager(Manager):
                 or (
                     # O278-②:首扩窗 320→280,与分矿口预置塔(t≥250)联动
                     # O281:踩点检查对着首扩目标点(口袋矿),不是 natural
-                    # O312(A 案):窗 280→200 + GW1 就绪可作防御前提
-                    # (口袋矿不在波路径上;波中不拍由 _wave_incoming 把守)
                     # O313-③(o311b game_01 实证):threat 激活期不拍首扩 ——
                     # _wave_incoming 只管预警,接触后 threat 常驻期间钉点
                     # = 400 矿冻结 + 农民往波路径上送(485s 波中拍矿,
                     # 矿 405 烂银行、基地 562s 失守)。
+                    # O315(B 案):O312 的 200s 窗/GW1 前提回退(280s/首塔)。
                     not self._threat_active
-                    and self.ai.time >= 200.0
-                    and (
-                        self._cannons_ready_peak >= 1
-                        or any(
-                            s.is_ready
-                            for s in self.manager_mediator.get_own_structures_dict[
-                                UnitID.GATEWAY
-                            ]
-                        )
-                    )
+                    and self.ai.time >= 280.0
+                    and self._cannons_ready_peak >= 1
                     and self._zt_enemy_near_expand_target() == 0
                 )
             )
@@ -4337,11 +4328,28 @@ class ProductionManager(Manager):
             and self._ai_build == "timing"
         ):
             _timing_gateway_cap = 2
+        # O315(B 案,司令 2026-08-17 拍板):ZT 防守总量 —— presumed/unknown
+        # 防御窗同样双兵营。O249b 禁 transition 后 ZT 恒单兵营(~28s/叉,
+        # 300s 仅 4-5 叉 = 我 8-10 supply 的天花板,o314d game_03/04 实证);
+        # 双兵营交错 ~14s/叉,300s 可达 7-8 叉(配塔 3+电池 2 接 20 波)。
+        _zt_defense_window = (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and (
+                self._presumed_rush
+                or self._rush_confirmed
+                or self._floor_unknown_zt
+            )
+        )
+        if _zt_defense_window:
+            _timing_gateway_cap = 2
         if (
             tr is not None
             and not self._sprint_active  # O129:冲刺期兵营链由手动防链独管
             and transition_needs_gateways(
-                self._transition_active, have, _timing_gateway_cap
+                self._transition_active or _zt_defense_window,
+                have,
+                _timing_gateway_cap,
             )
             and not gateway_chain_after_first_zealot(
                 have,
@@ -5474,14 +5482,11 @@ class ProductionManager(Manager):
         # O216i(o216h-lane2 game_01 实证):Zerg Timing 首塔未就绪不开矿 ——
         # 196s 派 Nexus 时 0 塔,银行被塔链/科技抽干,Nexus 工人钉点后撤,
         # 306s 波到脸 0 塔被推平(O216a 150s 无防强开教训复现)。防御先行。
-        # O312(A 案):防御前提放宽 —— 首塔就绪 **或 GW1 已拍**(含在建)
-        # 即可开矿。O216a 的「无防」是零塔零兵营;GW1 在链 = 叉子产能 +
-        # presumed 塔链并行,口袋矿(O281)又不在波行进路径上。
+        # O315(B 案):O312 的 GW1 替代前提回退 —— 恢复「首塔就绪才开矿」。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and self._cannons_ready_peak < 1
-            and not self._structure_present_or_pending(UnitID.GATEWAY)
         ):
             return False
         # O282(o281 双 lane 0-9 尸检):口袋矿首扩激活 → 不看主基前线
@@ -5512,15 +5517,10 @@ class ProductionManager(Manager):
             ),
             self._zt_enemy_near_expand_target(),  # O281:对着首扩目标点(口袋矿)
             self._cannons_ready_peak,
-            # O312(A 案):窗 280→200 + GW1 就绪可作防御前提(口袋矿
-            # 不在波路径上,防御链并行在主基/分矿口铺)
-            at=200.0,
-            gw_ready=any(
-                s.is_ready
-                for s in self.manager_mediator.get_own_structures_dict[
-                    UnitID.GATEWAY
-                ]
-            ),
+            # O315(B 案,司令 2026-08-17 拍板):O312 的 200s 窗/GW1 前提
+            # 回退(280s/首塔)—— A 案三轮 Harder 0+1+0/15 未跑赢基线:
+            # 单矿经济撑不起[nexus+forge+塔+农民+8叉]三线投入,波窗
+            # 恰在投入期。防守总量优先,二矿回首波后(~350s)。
         ):
             return False
         ae = self._flow.auto_expand
@@ -5541,10 +5541,9 @@ class ProductionManager(Manager):
             # 降到 180s 让 Nexus 资金窗在首波间隙出现;二矿存活率=胜率。
             # 150s 实证(O216a game_01):forge/首塔尚未就绪,无防御强开被滚雪球,
             # 回调到 180s 等基础防御落位。
-            # O312(A 案,GM 式经济优先):回调 150s —— O216a 的「无防强开」
-            # 是零塔零兵营;现防御前提(GW1/首塔)在 O216i 闸处独立把守,
-            # 本闸只管时间。150s 触发 ~200-270s 落成,直取胜局画像(309s)。
-            _first_expand_at = max(_first_expand_at, 150.0)
+            # O315(B 案):O312 的 150s 回退 180s —— A 案三轮实测:早开矿与
+            # 首波防守抢同一份钱,波窗(300-330s)恰在投入期,防不住=白搭。
+            _first_expand_at = max(_first_expand_at, 180.0)
         # O96(o95 局1 实证):过渡期兵营未到 cap 不开矿 —— 局1 二矿 t≈290
         # 抢走 400 矿,兵营#2 拖到 t≈280,单兵营 7 叉迎 30-supply 波。
         # 「已有+在建」口径与 _build_extra_production 同源。
