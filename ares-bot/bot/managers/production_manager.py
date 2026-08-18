@@ -93,6 +93,7 @@ from bot.production_plans import (
     expand_pin_workers_ok,
     mothership_economy_ok,
     sg2_pin_economy_ok,
+    sg_pin_expand_ok,
     zt_fast_expand_pin,
     zt_defense_at_natural,
     gas_gated_stargate_target,
@@ -6707,6 +6708,14 @@ class ProductionManager(Manager):
             )
             and not self._structure_present_or_pending(UnitID.STARGATE)
             and not self._zt_pocket_expand_active()
+            # O330-③(o329b game_01 实证):SG 让位扩张 —— 新 opener 无首塔
+            # 后「口袋攒钱期」守卫失效,342s 连拍 4 次 SG 抢光二矿资金窗,
+            # 单基地到死;2 基地/Nexus 在途放行,单基地硬时限 360s。
+            and sg_pin_expand_ok(
+                self.ai.townhalls.amount,
+                self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
+                self.ai.time,
+            )
         ):
             _rc = self._dispatch_structure(
                 UnitID.STARGATE, self.ai.start_location, critical=True

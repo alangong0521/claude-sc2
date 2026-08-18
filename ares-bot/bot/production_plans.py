@@ -851,8 +851,8 @@ def zt_fast_expand_pin(
     townhalls: int,
     nexus_in_flight: int,
     rush_confirmed: bool,
-    at: float = 105.0,
-    cost: float = 400.0,
+    at: float = 100.0,
+    cost: float = 350.0,
 ) -> bool:
     """O329-②(司令 2026-08-18 拍板):速二矿钉点判据。纯逻辑,可单测。
 
@@ -862,6 +862,10 @@ def zt_fast_expand_pin(
     走旧防御先行路径(O251 硬饱和钉点 280s+ 兜底)。与 O216i 的
     「首塔就绪才开矿」不冲突:本钉点独立于 _want_dynamic_expand,
     防御由 O329-③ 分矿预置塔链随 Nexus 并行到位。
+    O330-①(o329a game_01 实证):门槛 400→350、at 105→100 ——
+    矿门取造价全值时,opener 后续步(16叉/18forge/19core)在攒钱
+    窗内持续抽水,矿永远摸不到 400,钉点整局哑火(O251 361s 兜底
+    才开);350 近可负担门 + 驻点等钱,走位 ~15s 到账即开工。
     """
     return (
         townhalls == 1
@@ -870,6 +874,18 @@ def zt_fast_expand_pin(
         and now >= at
         and minerals >= cost
     )
+
+
+def sg_pin_expand_ok(townhalls: int, nexus_in_flight: int, now: float, hard_at: float = 360.0) -> bool:
+    """O330-③(o329b game_01 实证):SG 钉点让位扩张判据。纯逻辑,可单测。
+
+    O329-① 新 opener 无首塔 → O323 SG 钉点的「口袋攒钱期让位」守卫
+    (要首塔就绪才激活)整局失效,342-366s 连拍 4 次 SG(150/150)
+    抢光二矿资金窗,单基地到死。2 基地运转或 Nexus 在途即放行
+    (舰队科技不拖,司令「重心升级科技」);仍单基地时硬时限 360s
+    后放行(防 O261 死窗零对空的旧教训)。
+    """
+    return townhalls >= 2 or nexus_in_flight > 0 or now >= hard_at
 
 
 def zt_defense_at_natural(

@@ -57,6 +57,7 @@ from bot.production_plans import (  # noqa: E402
     mothership_economy_ok,
     sg2_pin_economy_ok,
     zt_fast_expand_pin,
+    sg_pin_expand_ok,
     zt_defense_at_natural,
     forge_before_first_gateway,
     gateway_chain_after_first_zealot,
@@ -3519,16 +3520,25 @@ class TestO329FastExpand(unittest.TestCase):
     防御塔+电池聚在一起才有效,主基分散铺塔 = 2 矿裸奔被一波推。"""
 
     def test_zt_fast_expand_pin(self):
-        # t≥105 + 矿≥400 + 单基地 + 无在途 + 非 rush → 钉
-        self.assertTrue(zt_fast_expand_pin(120.0, 400.0, 1, 0, False))
+        # t≥100 + 矿≥350 + 单基地 + 无在途 + 非 rush → 钉(O330-① 新门槛)
+        self.assertTrue(zt_fast_expand_pin(120.0, 350.0, 1, 0, False))
         # 时间/矿门槛
-        self.assertFalse(zt_fast_expand_pin(104.0, 400.0, 1, 0, False))
-        self.assertFalse(zt_fast_expand_pin(120.0, 399.0, 1, 0, False))
+        self.assertFalse(zt_fast_expand_pin(99.0, 350.0, 1, 0, False))
+        self.assertFalse(zt_fast_expand_pin(120.0, 349.0, 1, 0, False))
         # rush 确认 = fuse 弃权(走旧防御先行路径)
         self.assertFalse(zt_fast_expand_pin(120.0, 400.0, 1, 0, True))
         # 已有在途/已多基地不重拍
         self.assertFalse(zt_fast_expand_pin(120.0, 400.0, 1, 1, False))
         self.assertFalse(zt_fast_expand_pin(120.0, 400.0, 2, 0, False))
+
+    def test_sg_pin_expand_ok(self):
+        # 2 基地或 Nexus 在途 → 放行(舰队科技不拖)
+        self.assertTrue(sg_pin_expand_ok(2, 0, 300.0))
+        self.assertTrue(sg_pin_expand_ok(1, 1, 300.0))
+        # 单基地无在途且 <360s → 拦(o329b game_01:342s SG 抢二矿资金窗)
+        self.assertFalse(sg_pin_expand_ok(1, 0, 342.0))
+        # 单基地硬时限 360s 后放行(防 O261 死窗零对空)
+        self.assertTrue(sg_pin_expand_ok(1, 0, 360.0))
 
     def test_zt_defense_at_natural(self):
         # Nexus 在途或分矿存在 → 防御重心在 2 矿(主基塔归零)
