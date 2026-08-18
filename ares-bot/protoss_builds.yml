@@ -69,15 +69,21 @@ Builds:
     # 把 build order 的矿物压力压到最低，给二矿留出资金。
     CarrierOpenerZergTiming:
         ConstantWorkerProductionTill: 0
-        # O193-①(o192-vh-zerg-timing/rush game_01 实证):8 农民开局第一个 PYLON
-        # 在 11 supply 触发时农民被派出,但接下来两个 PROBE 会把 100 矿花掉,
-        # 农民钉点空转 20s+。推迟到 12 supply,让 PYLON 农民派出时已有 100+ 矿。
-        # O199(o198-vh-zerg-timing 0-3 实证):PaladinoTerminalLE 400s Roach 波到脸时
-        # 只有 1 座炮塔且 F2 自动补塔全部 not_viable/taken,基地裸奔。build order 直接
-        # 铺 2 座炮塔并提前到 24/28 supply,给地面防御一个硬底线。
-        # O200(o199b-vh-zerg-timing game_04/05 AbyssalReefLE 430-470s 早崩):2 塔仍
-        # 不够稳,把第一座塔再提前到 24 supply,forge 后连下 24/28 双塔。
-        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 worker', '12 supply', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 worker', '17 worker', '18 core', '19 worker', '20 supply', '20 worker', '21 forge', '22 worker', '23 gateway', '24 photoncannon', '25 worker', '26 zealot', '27 worker', '28 supply', '28 photoncannon', '29 zealot', '30 worker', '31 supply']
+        # O321(2026-08-18 司令拍板 A 案:opener 级大改):15 轮(O307-O320)
+        # 调参总账 VH 0/65、Harder ~10% —— 败因不是参数是执行:runner 与
+        # bot 层(presumed 包/F2/兵营链)在波前抢同一份钱,每条链都慢半拍。
+        # 重写为「防御总量前置」开局,把 14 轮尸检收敛出的胜局剖面
+        # (塔2+电池2+双兵营+叉4-6 @ ~280s)直接写死进 build order:
+        # - GW1(13)先于 forge(17):首叉 ~180s(O308-①实证 forge-first 拖死首叉)
+        # - cyber(18)→电池(21/26):塔阵续航(O52 双电池奶塔 ~3 倍存活)
+        # - forge(17)→塔(19/24):首塔 ~200s(o315/o316 实证 281s = 波同帧到脸)
+        # - GW2(22):双兵营 ~14s/叉接 280-310s 波(o315 实证单兵营 4-5 叉是天花板)
+        # - forge→塔之间不插 worker(O201/O202:首塔每插一个 worker 晚 15-20s);
+        #   不放 gas(bot 层 O13/O165 按基地补气,早期气矿 75 矿抢链)
+        # - 不写 Nexus:开矿由 bot 层 O278/O251 按波间隙闸执行(波中不拍是铁律)
+        # 执行期(本 opener 未完成前)bot 层防御开销全部噤声,
+        # 见 production_manager._carrier_rush_opener_early(已扩到本 opener)。
+        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 worker', '12 supply', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 zealot', '17 forge', '18 core', '19 photoncannon', '19 worker', '20 zealot', '20 supply', '21 shieldbattery', '22 gateway', '23 zealot', '24 photoncannon', '24 worker', '25 supply', '25 zealot', '26 shieldbattery', '27 worker', '28 zealot', '28 supply', '29 worker']
 
     # O194:Zerg Rush 专用开局。O193 Rush game_01 实证 Timing 开局在 Rush 下
     # forge 07:25/首叉 08:14/首炮 08:44 才落地,狗群 03:20 已到家,物理空窗被滚雪球。

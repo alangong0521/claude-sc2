@@ -1510,6 +1510,12 @@ class ProductionManager(Manager):
                 # O220:无防基地强制注册(豁免下方 dispatch_viable 守卫)
                 or _defenseless_base
             )
+            # O321(A 案):ZT opener 执行期 F2 整段噤声 —— 重写后的
+            # CarrierOpenerZergTiming 自带完整防御链(forge+双塔+双电池+
+            # 双兵营),presumed/unknown/sprint/无防各入口都会让 PSD 与
+            # runner 抢矿抢工(15 轮调参胜率不动的执行层病根);opener
+            # 完成(或 2 塔在途/落地)后自动交还(与 O202 ZergRush 同语义)。
+            and not self._carrier_rush_opener_early()
             # O119-①(o118b 局3/4/5 实证):科技攒钱预留激活 → F2 塔重建/电池
             # 整段让位 —— 局3/4/5 SG 停滞 100-300s,watchdog 报 no_money:
             # 钱被 F2 重建持续吃掉。预留激活 ⟹ 非威胁非 rush(判据内含),
@@ -7148,9 +7154,17 @@ class ProductionManager(Manager):
         在该 opener 下,build order 已负责 forge+双塔的硬防御链;
         在 build order 完成或至少 2 座 photoncannon 在途/落地前,
         禁止 PSD/_presumed_defense_chain 插手,防止派工/矿物竞争把塔 timing 拖崩。
+
+        O321(2026-08-18 司令拍板 A 案):覆盖扩到 CarrierOpenerZergTiming ——
+        重写后的 ZT opener 自带完整防御链(forge+双塔+双电池+双兵营),
+        执行期 bot 层防御开销(presumed 包/F2/PSD)全部噤声,否则 runner
+        与 bot 层在波前抢同一份钱(15 轮调参胜率不动的执行层病根)。
         """
         bor = getattr(self.ai, "build_order_runner", None)
-        if bor is None or bor.chosen_opening != "CarrierOpenerZergRush":
+        if bor is None or bor.chosen_opening not in (
+            "CarrierOpenerZergRush",
+            "CarrierOpenerZergTiming",
+        ):
             return False
         if bor.build_completed:
             return False
