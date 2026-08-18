@@ -4589,6 +4589,27 @@ class ProductionManager(Manager):
             else "E9:威胁解除,恢复运营"
         )
         self.ai._events.append({"t": round(self.ai.time, 1), "msg": msg})
+        # O322-③(o321b game_01 实证):threat 激活瞬间撤销未开工 Nexus 钉点 ——
+        # 波在脸时钉点工往分矿走 = 农民+资金窗双捐(game_01:490s 落成、
+        # 498s 波到、506s 分矿失守;O313-③ 只拦新钉,存量钉没人管)。
+        # 钉点语义本就是「驻点等钱」(未付款),撤销零成本,波后重评。
+        if (
+            self._threat_active
+            and self._opp_race == "zerg"
+            and self._ai_build == "timing"
+        ):
+            _tracker = self.manager_mediator.get_building_tracker_dict
+            _cancelled = 0
+            for _tag, _info in list(_tracker.items()):
+                if _info[TRACKER_ID] == UnitID.NEXUS:
+                    self.manager_mediator.get_building_counter[UnitID.NEXUS] -= 1
+                    _tracker.pop(_tag)
+                    _cancelled += 1
+            if _cancelled:
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O322:威胁激活,撤销{_cancelled}个未开工Nexus钉点",
+                })
 
     def _update_transition_state(self) -> None:
         """O92 过渡形态状态机(只挂配了 transition 的流派,现仅 carrier)。
@@ -5183,7 +5204,13 @@ class ProductionManager(Manager):
                 _cap2 = pf.cap2
                 # O255-③:unknown 死窗 floor 不产追猎 —— 追猎吃气(125/50)
                 # 直接抢 SG/FB 资金窗(O253 实证 0-7);死窗只要矿耗叉子。
-                if self._floor_unknown_zt:
+                # O322-①(o321b 三局实证):t≥360 且气 ≥250 解禁 —— unknown
+                # 窗贯穿全局时追猎恒 0,400-650s 舰队真空期军队质量 ~25
+                # supply 对敌 38-90 波;胜局(o230)靠的正是 21-25 追猎海。
+                # 气已烂在银行(SG 未拍用不掉),追猎吃的是死钱不是窗。
+                if self._floor_unknown_zt and not (
+                    self.ai.time >= 360.0 and self.ai.vespene >= 250.0
+                ):
                     _cap2 = 0
                 # O236:Nexus 钉点期间追猎 floor 归零(125 矿/只),与探机暂停
                 # 一起把 400 矿资金窗让给二矿;pinning 解除自动恢复。
@@ -7159,12 +7186,18 @@ class ProductionManager(Manager):
         重写后的 ZT opener 自带完整防御链(forge+双塔+双电池+双兵营),
         执行期 bot 层防御开销(presumed 包/F2/PSD)全部噤声,否则 runner
         与 bot 层在波前抢同一份钱(15 轮调参胜率不动的执行层病根)。
+        O322-②(o321b game_02 实证):噤声加 300s 时限 —— runner forge 步
+        卡壳 ~230s(银行 1340、塔 0),bot 层电力自救被噤声连带关闭;
+        300s 后无论 runner 完成与否 bot 层恢复接管(仅 ZT opener;
+        ZergRush 的 O202 语义不变,走完原判据)。
         """
         bor = getattr(self.ai, "build_order_runner", None)
         if bor is None or bor.chosen_opening not in (
             "CarrierOpenerZergRush",
             "CarrierOpenerZergTiming",
         ):
+            return False
+        if bor.chosen_opening == "CarrierOpenerZergTiming" and self.ai.time >= 300.0:
             return False
         if bor.build_completed:
             return False
