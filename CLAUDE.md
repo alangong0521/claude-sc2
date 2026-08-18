@@ -138,6 +138,10 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 > 逐帧核对）→ ≥3 个有据改进点 → 落地代码（纯函数+单测）→ py_compile +
 > 单测全绿 → 双 lane bench 验证 → battle-log 三段式记账（改动/结果/改进点）
 > → commit+push。验证不过就回退或继续修，不允许带未验证的改动开下一轮。
+> **import 冒烟必做（o314 实证）**：`poetry run python -c "import sys;
+> sys.path.insert(0,'ares-sc2/src'); import bot.managers.production_manager,
+> bot.main"` —— py_compile 不查 import 解析、单测不 import 生产模块，
+> 漏 import 的 NameError 要到 bench 局内才爆(整轮 9/10 ERROR 白跑)。
 >
 > **第一性原理审计维度（司令 2026-08-17 补充）**：尸检不只盯败因标签，
 > 每轮从「资源→产能→战力」的第一性原理过一遍，至少覆盖（不限于）：
