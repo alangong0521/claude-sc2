@@ -1844,18 +1844,13 @@ class ProductionManager(Manager):
             # 集火 6s 一座塔,单电池奶不住;双电池互充+奶塔把塔存活拉长 ~3 倍,
             # 给决死协防的农民/叉子换输出时间。100 矿出自死窗期 1300+ 银行。
             # O260-③:第二块电池同样让 SG 先派工(舰队科技优先)。
-            # O317-③(o316a game_03 实证):前提 SG→cyber+首塔 —— SG 在链的
-            # 要求让电池地板从未在首波窗(280-330s)生效(game_03 仅 1 电池
-            # 超载,塔 30s 内被集火拆光、农 20→5);电池只需要 cyber,E3d 顾虑
-            # (PSD 为电池先补 cyber 阻塞 forge+首塔)由「cyber 已在链 + 首塔
-            # 就绪」前提覆盖——不为电池提前补 cyber,链到即保。presumed 窗
-            # 同步放开(原 presumed 一律 0)。
+            # O317-③(cyber+首塔前提、presumed 放开)已证伪回退(o317 双系列
+            # Harder 0/10):电池 200 矿提前到波前窗,与叉/塔抢同一份钱。
             if (
-                (_unknown_defense or _presumed_rush)
+                _unknown_defense
                 and self._opp_race == "zerg"
                 and self._ai_build == "timing"
-                and self._structure_present_or_pending(UnitID.CYBERNETICSCORE)
-                and self._cannons_ready_peak >= 1
+                and self._structure_present_or_pending(UnitID.STARGATE)
             ):
                 batt = max(batt, 2)
             # O102-②/O132-②:过渡期塔封顶(cap=3)—— 第 4+ 座塔的钱
@@ -3433,18 +3428,28 @@ class ProductionManager(Manager):
         交还 F2 正常防御链(调用方条件保证)。
         """
         home = self.ai.start_location
-        # O317-①(o316a game_01 实证):forge 先于墙 —— 墙链(水晶→GW→forge
-        # 上墙)串行阻塞,墙工在途/等钱时 forge 被卡 55→250s(银行 510、
-        # 塔 0、首波 304s 裸接)。先把普通 forge 拍下去(塔链前提),
-        # 墙链在 forge 拍下后再排(墙=封口加分项,不该挡塔链)。
-        # O168/O207 的 early_core_missing 保护对本块同样生效(非 ZT 流
-        # 核心科技缺失期连 forge 一起跳过)。
-        if (
-            not self._structure_present_or_pending(UnitID.FORGE)
-            and not (
-                self._early_core_missing and not self._is_zerg_rush_timing()
-            )
-        ):
+        # O136-①:坡口墙链(O257 起抽为 _wall_build_chain, presumed 链与
+        # ZT unknown 窗共用);True=墙工在途/等钱,调用方串行返回
+        # O317-①(forge 先于墙)已证伪回退(o317 双系列 Harder 0/10):
+        # 墙(物理封口)被推到 forge+首塔之后,波前封口不完整;且 o316a
+        # game_01 的「墙卡 forge 195s」病根是墙链 churn,不是顺序。
+        if self._wall_build_chain(home):
+            return
+        # O168:8 农民开局 carrier 核心科技(CYBERNETICCORE/STARGATE/FLEETBEACON)
+        # 缺失期间，presumed 链连 forge 一起跳过，把 150 矿留给科技链。
+        # 真实 rush 局 _rush_active 为真 → _early_core_missing 为假 → 链正常走。
+        # O207:vs Zerg Rush/Timing 不能等 cybercore 排队再铺 forge——timing 波
+        # 273-289s 到脸，cybercore 90s 才排，等 cybercore 再 forge 首塔赶不上。
+        if self._early_core_missing and not self._is_zerg_rush_timing():
+            return
+        # ① forge(未拍才补;present_or_pending 守卫在上)
+        # O147-①:forge 走关键件豁免派工(钉点驻点等钱 = 钱到立刻开工,
+        # O118 时代 forge 95-110 靠它;_build_core_structure 的 can_afford
+        # 守卫 + O139 禁钉把 forge 治回 125-155,o146b 局1 实证 153)
+        # O206(o205-vh-zerg-power 败局实证):Power/Macro 局里 _presumed_rush
+        # 长期触发,关键件豁免把农民钉在 FORGE 3.5min+ 不采矿。仅在地
+        # rush_confirmed(情报/接触证实)时才豁免;plain presumed 走资金守卫。
+        if not self._structure_present_or_pending(UnitID.FORGE):
             self._dispatch_structure(
                 UnitID.FORGE, home,
                 critical=(
@@ -3456,18 +3461,6 @@ class ProductionManager(Manager):
                 ),
             )
             return
-        # O136-①:坡口墙链(O257 起抽为 _wall_build_chain, presumed 链与
-        # ZT unknown 窗共用);True=墙工在途/等钱,调用方串行返回
-        if self._wall_build_chain(home):
-            return
-        # O168:8 农民开局 carrier 核心科技(CYBERNETICCORE/STARGATE/FLEETBEACON)
-        # 缺失期间，presumed 链连 forge 一起跳过，把 150 矿留给科技链。
-        # 真实 rush 局 _rush_active 为真 → _early_core_missing 为假 → 链正常走。
-        # O207:vs Zerg Rush/Timing 不能等 cybercore 排队再铺 forge——timing 波
-        # 273-289s 到脸，cybercore 90s 才排，等 cybercore 再 forge 首塔赶不上。
-        if self._early_core_missing and not self._is_zerg_rush_timing():
-            return
-        # ① forge 已由 O317-① 提到墙链之前(此处保留就绪口径供 ② 首塔用)
         _forge_ready = any(
             s.is_ready
             for s in self.manager_mediator.get_own_structures_dict[UnitID.FORGE]
