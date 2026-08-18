@@ -538,6 +538,24 @@ class CombatManager(Manager):
                 )
             )
             _force_push = _force_push or _golden_push
+            # O325-②:黄金窗 near-miss 簿记(30s 节流)—— 舰队达线但被追猎/
+            # 腐化闸挡住的窗口直接可见,下轮尸检不用逐帧重建。
+            if (
+                _is_zerg_timing
+                and not _golden_push
+                and getattr(self.ai, "time", 0.0) >= 650.0
+                and _fleet_count >= 3
+                and self.ai.time - getattr(self, "_o325_nm_ts", 0.0) > 30.0
+            ):
+                self._o325_nm_ts = self.ai.time
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O325:黄金窗near-miss(舰队{_fleet_count},"
+                        f"追{self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.STALKER)},"
+                        f"腐化{sum(1 for u in self.ai.enemy_units if u.type_id == UnitID.CORRUPTOR)})"
+                    ),
+                })
             if not (
                 (
                     _force_push

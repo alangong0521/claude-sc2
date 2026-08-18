@@ -3121,6 +3121,29 @@ class ProductionManager(Manager):
                 self.ai.train(UnitID.ORACLE)
                 self._built_single_oracle = True
 
+        # O325-③(司令观察③):母舰隐身力场 —— FB 就绪且 t≥700 出母舰,
+        # 给暴风/追猎/地面提供持续隐身,敌无反隐时空军无法锁定,
+        # 针对 850s+ 腐化/大龙波下舰队 48s 蒸发(o324b game_04:
+        # 暴风 6→0)的生存短板。400/400 出自中局气烂银行(常态 1000+)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.time >= 700.0
+            and any(s.is_ready for s in structures_dict[UnitID.FLEETBEACON])
+            and self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.MOTHERSHIP
+            ) == 0
+            and not cy_unit_pending(self.ai, UnitID.MOTHERSHIP)
+            and self.ai.can_afford(UnitID.MOTHERSHIP)
+        ):
+            for _th in self.ai.townhalls.ready.idle:
+                _th.train(UnitID.MOTHERSHIP)
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O325:母舰下水(隐身力场保舰队)",
+                })
+                break
+
     # ────────────────────────────── Terran 生产层 (M1) ──────────────────────────────
     def _update_terran(self) -> None:
         """人族生产:全部借 ares 种族无关/人族支持的宏行为,不手写建造顺序。

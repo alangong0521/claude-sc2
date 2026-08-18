@@ -1887,13 +1887,15 @@ class TestO94FirstWaveDefense(unittest.TestCase):
 
     def test_zt_golden_window_push(self):
         # O302:t≥650 + 舰队 ≥3 + 追猎 ≥8 → 黄金窗推进(O303-② 参数)
+        # O325-①:追猎阈 8→6(o324b game_04:暴风6+追6@800s=胜局编成被挡)
+        self.assertTrue(zt_golden_window_push(650.0, 3, 6))
         self.assertTrue(zt_golden_window_push(650.0, 3, 8))
         self.assertTrue(zt_golden_window_push(750.0, 3, 12))   # o302b-g01 场景
         # 窗口前不推
         self.assertFalse(zt_golden_window_push(649.9, 6, 20))
         # 舰队/追猎不足不推
         self.assertFalse(zt_golden_window_push(750.0, 2, 20))
-        self.assertFalse(zt_golden_window_push(750.0, 3, 7))
+        self.assertFalse(zt_golden_window_push(750.0, 3, 5))
         # 自定义阈值
         self.assertTrue(zt_golden_window_push(600.0, 3, 8, min_t=600.0, min_fleet=3, min_stalkers=8))
         # O304-②:可见腐化 >2 → 否决(快尖塔局无黄金窗,不送暴风)

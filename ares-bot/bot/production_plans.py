@@ -3037,7 +3037,7 @@ def zt_golden_window_push(
     stalker_count: int,
     min_t: float = 650.0,
     min_fleet: int = 3,
-    min_stalkers: int = 8,
+    min_stalkers: int = 6,
     corruptors: int = 0,
     max_corruptors: int = 2,
 ) -> bool:
@@ -3056,6 +3056,8 @@ def zt_golden_window_push(
     O304-②(o303a game_05 实证):快尖塔局腐化 723s 就出场,无克制窗
     根本不存在 —— 黄金窗推进把 6 暴风送进腐化区喂掉。可见腐化
     >max_corruptors → 否决(该局没有黄金窗,蹲守等配方)。
+    O325-①(o324b game_04 实证):追猎阈 8→6 —— 暴风6+追6@800s 就是
+    o305/o313 胜局编成,被 cap 8 挡在窗外,868s 腐化波收尸。
     """
     return (
         now >= min_t
