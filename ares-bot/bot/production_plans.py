@@ -902,6 +902,8 @@ def zt_zealot_yield(
     rush_confirmed: bool,
     threat_active: bool = False,
     wave_incoming: bool = False,
+    now: float = 0.0,
+    hard_at: float = 240.0,
 ) -> bool:
     """O332-②(o331 尸检+司令 doctrine):二矿开工前零兵种判据。纯逻辑,可单测。
 
@@ -918,8 +920,12 @@ def zt_zealot_yield(
     到门口(296s 敌 11 vs 我 2),此时才产叉 = 28s 折跃后 330s 才
     接战,晚 30s 被滚;_wave_incoming(O279 波预警,40-60s 提前量)
     即恢复产叉,波到脸时叉已列队。
+    O340-②(o339a game_03 实证):时间硬线兜底 —— 侦查早死局预警
+    不 latch、threat 接触(275.6s 敌 12 vs 我 1)才产叉 = 裸接;
+    波 280-310s 必来是 40 局取证规律,t≥hard_at 无条件恢复产叉
+    (此时 Nexus 资金窗早过,零兵种使命已完成)。
     """
-    if rush_confirmed or threat_active or wave_incoming:
+    if rush_confirmed or threat_active or wave_incoming or now >= hard_at:
         return False
     return townhalls < 2
 

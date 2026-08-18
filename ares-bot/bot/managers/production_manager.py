@@ -1090,6 +1090,7 @@ class ProductionManager(Manager):
                 self._rush_confirmed,
                 self._threat_active,
                 self._wave_incoming,
+                self.ai.time,
             )
         )
         # O279:预警 latch 接触即解除(威胁响应包接管,预警使命完成)
@@ -3140,9 +3141,30 @@ class ProductionManager(Manager):
             )
         ):
             self._o329_logged = True
+            self._o329_started_at = self.ai.time
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
                 "msg": "O329:速二矿启动(ExpansionController,120s向电脑看齐)",
+            })
+        # O340-③(o339a game_02 实证):首扩开工延迟诊断 —— O329 启动后
+        # Nexus 346s 未开工(104.6→450s),黑盒无数据;60s 节流记
+        # 矿/农/在途/holding/威胁,下轮尸检直接读延迟真因。
+        if (
+            getattr(self, "_o329_started_at", None) is not None
+            and self.ai.townhalls.amount == 1
+            and self.ai.time - self._o329_started_at > 60.0
+            and self.ai.time - getattr(self, "_o340_diag_ts", 0.0) > 60.0
+        ):
+            self._o340_diag_ts = self.ai.time
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O340:首扩未开工诊断(矿{self.ai.minerals:.0f},"
+                    f"农{self.ai.supply_workers},"
+                    f"在途{self.ai.not_started_but_in_building_tracker(UnitID.NEXUS)},"
+                    f"holding={self._expand_holding},"
+                    f"威胁={self._threat_active},rush={self._rush_active})"
+                ),
             })
         # O333-②(o332 双 lane 实证):forge 钉点随 Nexus 开工 —— opener
         # 摘除 forge/core/GW2 后(O329 钉点的 400 矿零竞争,开工 ~130s),
@@ -3160,7 +3182,12 @@ class ProductionManager(Manager):
                 or self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
             )
             and not self._structure_present_or_pending(UnitID.FORGE)
+            # O340-①(o339b game_05 实证):forge 钉点失败静默 —— 预置塔链
+            # 连报 tech_not_ready(108/138s)而 forge 钉点零事件,失败
+            # 环节不可读;rc 簿记 + 30s 节流(与其他钉点同款)。
+            and self.ai.time - getattr(self, "_o333_forge_last", 0.0) > 30.0
         ):
+            self._o333_forge_last = self.ai.time
             _rc = self._dispatch_structure(
                 UnitID.FORGE, self.ai.start_location, critical=True
             )
@@ -3169,6 +3196,11 @@ class ProductionManager(Manager):
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": "O333:forge钉点(Nexus在途,分矿塔链前置)",
+                })
+            elif _rc != "dispatched":
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O340:forge钉点失败={_rc}",
                 })
         # O338-②(o337a game_03 实证):GW2 钉点随 Nexus 开工 —— 单兵营
         # 28s/叉,波后补员是天花板(o315 实证 4-5 叉),敌 15-26 supply

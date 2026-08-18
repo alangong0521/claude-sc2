@@ -3561,6 +3561,11 @@ class TestO329FastExpand(unittest.TestCase):
         self.assertFalse(zt_zealot_yield(1, False, False, True))
         # 无预警无威胁且二矿未开工 → 仍零兵种
         self.assertTrue(zt_zealot_yield(1, False, False, False))
+        # 无预警无威胁但 t<240 → 仍零兵种
+        self.assertTrue(zt_zealot_yield(1, False, False, False, now=200.0))
+        # O340-②:t≥240 时间硬线 —— 侦查早死局预警不 latch,
+        # threat 接触(275s 敌12 vs 我1)才产叉 = 裸接;波必来是规律
+        self.assertFalse(zt_zealot_yield(1, False, False, False, now=240.0))
 
     def test_main_defense_bank_fuse(self):
         # 矿 ≥600 且 Nexus 未开工 → 熔断开(主基塔放行,o333a game_03
