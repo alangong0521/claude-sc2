@@ -5106,17 +5106,13 @@ class ProductionManager(Manager):
         # 回填(100 矿/个,波后 3→7 只)把 400 矿 Nexus 资金窗磨穿,
         # expand_reserve 三连停仍开不出 —— 叉子 floor 与追猎 cap2(O236)
         # 同口径:bases<2 且 Nexus 钉点未开工 → floor 全停;解除自动恢复。
-        # O317-③(o316a game_02 实证):波窗豁免 —— t≥240 且敌可见 ≥4 时
-        # 钉点不停 floor(与 O314-③ 同判据);钉点是波间隙特权,波在脸
-        # 时 floor 全停 = 叉 3-5 对 33 supply 波(game_02 468s 敌 33)。
+        # O317-②(波窗豁免)已证伪回退(o318 回退验证 Harder 0/5 未回
+        # 2/5 带):钉点期产兵吃掉 Nexus 资金窗的原始证据(o297a)更硬。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and self.ai.townhalls.amount < 2
             and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
-            and not (
-                self.ai.time >= 240.0 and self._visible_enemy_army_count() >= 4
-            )
         ):
             return spawn
         uid = getattr(UnitID, pf.id_name, None)
@@ -5160,12 +5156,7 @@ class ProductionManager(Manager):
                     and self.ai.townhalls.amount < 2
                     and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS)
                     > 0
-                    # O317-③:同叉 floor —— 波窗(t≥240+敌可见≥4)豁免,
-                    # 钉点是波间隙特权,波在脸时追猎核不归零。
-                    and not (
-                        self.ai.time >= 240.0
-                        and self._visible_enemy_army_count() >= 4
-                    )
+                    # O317-② 的 cap2 波窗豁免同步回退(o318 实证)。
                 ):
                     _cap2 = 0
                 elif self._opp_race == "zerg" and self._ai_build == "timing":
