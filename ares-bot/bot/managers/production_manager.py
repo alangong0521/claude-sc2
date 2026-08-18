@@ -3138,10 +3138,17 @@ class ProductionManager(Manager):
         # 摘除 forge/core/GW2 后(O329 钉点的 400 矿零竞争,开工 ~130s),
         # 分矿塔链的前置 forge 由 bot 层在 Nexus 开工(townhalls≥2 含
         # 在建)即 critical 拍回;core/GW2 走原科技链/追加产能。
+        # O338-①(o337a game_03/04/05 实证):再提前到「Nexus 在途」——
+        # 敌小股 270-300s 抄分矿时塔就绪差 10-30s(三局 379-507s 速败),
+        # forge 落成从 ~240s 提前到 ~185s,首塔就绪 ~245s 赶在小股前。
+        # 驻点等钱排在 Nexus 400 付款后,不吃速开资金窗。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and self.ai.townhalls.amount >= 2
+            and (
+                self.ai.townhalls.amount >= 2
+                or self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
+            )
             and not self._structure_present_or_pending(UnitID.FORGE)
         ):
             _rc = self._dispatch_structure(
@@ -3151,7 +3158,39 @@ class ProductionManager(Manager):
                 self._o333_forge_logged = True
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
-                    "msg": "O333:forge钉点(Nexus开工,分矿塔链前置)",
+                    "msg": "O333:forge钉点(Nexus在途,分矿塔链前置)",
+                })
+        # O338-②(o337a game_03 实证):GW2 钉点随 Nexus 开工 —— 单兵营
+        # 28s/叉,波后补员是天花板(o315 实证 4-5 叉),敌 15-26 supply
+        # 波两线(主基+分矿小股)时 4-6 叉顾此失彼;双兵营产能翻倍。
+        # 位置取最近非主基基地(分矿堵口,与 O216 墙兵营同区)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.townhalls.amount >= 2
+            and (
+                len(
+                    self.manager_mediator.get_own_structures_dict[UnitID.GATEWAY]
+                )
+                + self.manager_mediator.get_building_counter[UnitID.GATEWAY]
+            ) < 2
+        ):
+            _gw2_base = next(
+                (
+                    t.position
+                    for t in self.ai.townhalls
+                    if t.position.distance_to(self.ai.start_location) > 5.0
+                ),
+                self.ai.start_location,
+            )
+            _rc = self._dispatch_structure(
+                UnitID.GATEWAY, _gw2_base, critical=True
+            )
+            if _rc == "dispatched" and not getattr(self, "_o338_gw2_logged", False):
+                self._o338_gw2_logged = True
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O338:GW2钉点(Nexus开工,波前双兵营)",
                 })
         # Nexus 因矿恒 <475(dispatch_viable buffer)永远排不出,2 基地 44 农封顶
         # 被慢性磨死。硬饱和时对最近空闲扩张点钉点派 Nexus(驻点等钱,与

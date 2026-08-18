@@ -310,11 +310,20 @@ class CombatManager(Manager):
         —— 坡口墙/守军不能为一条狗离位;transition 期照常(残敌已在墙内)。
         """
         _pm = getattr(self.ai, "production_manager", None)
-        if _pm is not None and getattr(_pm, "_rush_active", False):
-            return None
+        # O338-③(o337a game_03/05 实证):rush 急性窗只豁免主基残敌
+        # (坡口墙/守军不为一条狗离位,O217 原证据);分矿残敌照清 ——
+        # E6 协防只记账不拉兵(main.py update_worker_evacuation),
+        # 小股 4-5 在分矿杀农拆 Nexus 时主基守军全程看戏,379-507s
+        # 三连速败。rush_active 时把清剿范围缩到非主基基地。
+        _rush_on = _pm is not None and getattr(_pm, "_rush_active", False)
         ths = list(self.ai.ready_townhalls)
         if not ths:
             return None
+        if _rush_on:
+            _main_pos = self.ai.start_location
+            ths = [t for t in ths if t.position.distance_to(_main_pos) > 5.0]
+            if not ths:
+                return None
         intruders = [
             u
             for u in self.ai.enemy_units
