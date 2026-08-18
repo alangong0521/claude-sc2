@@ -409,6 +409,11 @@ class ProductionManager(Manager):
         # O328:口袋矿选址缓存(townhalls==1 期静态;选址含 24 点环采样,
         # 不缓存则每帧多处调用重复算)
         self._pocket_target_cache = None
+        # O329/O334:速二矿钉点状态(失败计时/上次 rc/日志节流)
+        self._o329_fail_since = None
+        self._o329_last_rc = None
+        self._o329_rc_ts = 0.0
+        self._o329_fail_log_ts = 0.0
         # 流派配置(flows.yml,神族生产侧单一真相源);Terran/Zerg 路径不走它。
         self._flow: FlowConfig = FlowConfig.load(os.environ.get("BUILD"))
         # O184/O190/O208:Zerg Rush/Timing 直接强制进 transition，用 ground_spawn
