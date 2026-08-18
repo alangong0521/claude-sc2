@@ -1902,6 +1902,10 @@ class TestO94FirstWaveDefense(unittest.TestCase):
         self.assertFalse(zt_golden_window_push(750.0, 6, 12, corruptors=3))
         self.assertTrue(zt_golden_window_push(750.0, 6, 12, corruptors=2))
         self.assertTrue(zt_golden_window_push(750.0, 6, 12, corruptors=0))
+        # O326-③:尖塔可见 = 腐化 30-60s 内必到,整局否决(o325a game_04:
+        # 推时腐化 ≤2 过闸,28s 后 4-6,暴风喂转型)
+        self.assertFalse(zt_golden_window_push(750.0, 6, 12, corruptors=0, spire_seen=True))
+        self.assertTrue(zt_golden_window_push(750.0, 6, 12, corruptors=0, spire_seen=False))
 
     def test_pivot_stalker_cap(self):
         # O303-③:腐化 0-8 → cap 12(防追猎洪水)

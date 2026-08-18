@@ -3125,6 +3125,9 @@ class ProductionManager(Manager):
         # 给暴风/追猎/地面提供持续隐身,敌无反隐时空军无法锁定,
         # 针对 850s+ 腐化/大龙波下舰队 48s 蒸发(o324b game_04:
         # 暴风 6→0)的生存短板。400/400 出自中局气烂银行(常态 1000+)。
+        # O326-①(o325 全 10 局未出实证):townhalls.ready.idle 恒空
+        # (基地农民训练不间断),改用任意就绪基地排队(农民让一艘母舰,
+        # 400 矿的舰队保命符 > 8 个农民的采矿量)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -3136,13 +3139,13 @@ class ProductionManager(Manager):
             and not cy_unit_pending(self.ai, UnitID.MOTHERSHIP)
             and self.ai.can_afford(UnitID.MOTHERSHIP)
         ):
-            for _th in self.ai.townhalls.ready.idle:
-                _th.train(UnitID.MOTHERSHIP)
+            _nex = self.ai.townhalls.ready.first
+            if _nex is not None:
+                _nex.train(UnitID.MOTHERSHIP)
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": "O325:母舰下水(隐身力场保舰队)",
                 })
-                break
 
     # ────────────────────────────── Terran 生产层 (M1) ──────────────────────────────
     def _update_terran(self) -> None:
@@ -6541,6 +6544,30 @@ class ProductionManager(Manager):
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": "O323:SG钉点(t≥300+cyber就绪)",
+                })
+        # O326-②(o325 尸检):SG2 紧随 FB —— 单 SG 出 6 暴风要 ~260s,
+        # 舰队 6 艘拖到 950-990s,黄金窗(750-870s)推出时腐化 4-13 已
+        # 出场(o325a game_04 实证)。FB 拍下 + 首 SG 就绪 + 气 ≥400 +
+        # SG <2 → 钉点第二星门,双 SG 并行把舰队 6 艘提前 ~150s。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and any(s.is_ready for s in structures_dict[UnitID.STARGATE])
+            and self._structure_present_or_pending(UnitID.FLEETBEACON)
+            and self.ai.vespene >= 400.0
+            and (
+                len(structures_dict[UnitID.STARGATE])
+                + self.manager_mediator.get_building_counter[UnitID.STARGATE]
+            ) < 2
+            and not self._zt_pocket_expand_active()
+        ):
+            _rc = self._dispatch_structure(
+                UnitID.STARGATE, self.ai.start_location, critical=True
+            )
+            if _rc == "dispatched":
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O326:SG2钉点(FB+气400,黄金窗抢时间)",
                 })
 
         if not core_allowed:

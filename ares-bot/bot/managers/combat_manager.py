@@ -535,6 +535,11 @@ class CombatManager(Manager):
                         1 for u in self.ai.enemy_units
                         if u.type_id == UnitID.CORRUPTOR
                     ),
+                    # O326-③:尖塔可见 = 腐化 30-60s 内必到,整局否决
+                    spire_seen=any(
+                        s.type_id in (UnitID.SPIRE, UnitID.GREATERSPIRE)
+                        for s in self.ai.enemy_structures
+                    ),
                 )
             )
             _force_push = _force_push or _golden_push

@@ -3040,6 +3040,7 @@ def zt_golden_window_push(
     min_stalkers: int = 6,
     corruptors: int = 0,
     max_corruptors: int = 2,
+    spire_seen: bool = False,
 ) -> bool:
     """O302(司令 2026-08-17 拍板·先手压制专项):ZT 黄金窗推进闸。纯逻辑,可单测。
 
@@ -3058,7 +3059,12 @@ def zt_golden_window_push(
     >max_corruptors → 否决(该局没有黄金窗,蹲守等配方)。
     O325-①(o324b game_04 实证):追猎阈 8→6 —— 暴风6+追6@800s 就是
     o305/o313 胜局编成,被 cap 8 挡在窗外,868s 腐化波收尸。
+    O326-③(o325a game_04 实证):尖塔否决 —— 腐化计数闸反应太慢
+    (990s 推时腐化 ≤2 过闸,28s 后涨到 4-6,暴风喂转型);尖塔可见
+    = 腐化 30-60s 内必到(O304-②),整局按无黄金窗处理(蹲守等配方)。
     """
+    if spire_seen:
+        return False
     return (
         now >= min_t
         and fleet_count >= min_fleet
