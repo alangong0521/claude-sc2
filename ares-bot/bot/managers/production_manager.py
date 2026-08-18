@@ -1759,6 +1759,18 @@ class ProductionManager(Manager):
                 and not self._transition_active
             ):
                 cannons = min(cannons, _ec_min)
+            # O313-①(o312b game_03/04 实证):ZT 波窗(t≥240)塔地板 3 后置 ——
+            # 让位 min 链(fb_waiting/holding/O216d 的 FB 优先)把 ZT 地板
+            # 压穿:game_03 分矿 486s 失守时全场 1 塔、主基 0 塔到 440s,
+            # 31-supply 波到脸两基地合计 1-2 塔。O293-② 已确立「波前
+            # 3 塔 = 存活地板」,本闸把它挪到所有让位之后(串行化闸除外:
+            # 首塔就绪前的 0→1 阶段不受本闸影响,cannons≤1 原样)。
+            if (
+                self._opp_race == "zerg"
+                and self._ai_build == "timing"
+                and self.ai.time >= 240.0
+            ):
+                cannons = max(cannons, 3)
             # E3d:rush 期电池让位(要 CYBERNETICSCORE,_tech_required 阻塞塔链,
             # game_01 零炮塔败北);E3f:max_on_route=2 允许 2 座同建(塔目标随敌兵
             # 爬升,单线 ~29s 追不上两段式 rush)。两实例共用。
@@ -2854,7 +2866,12 @@ class ProductionManager(Manager):
                     # O281:踩点检查对着首扩目标点(口袋矿),不是 natural
                     # O312(A 案):窗 280→200 + GW1 就绪可作防御前提
                     # (口袋矿不在波路径上;波中不拍由 _wave_incoming 把守)
-                    self.ai.time >= 200.0
+                    # O313-③(o311b game_01 实证):threat 激活期不拍首扩 ——
+                    # _wave_incoming 只管预警,接触后 threat 常驻期间钉点
+                    # = 400 矿冻结 + 农民往波路径上送(485s 波中拍矿,
+                    # 矿 405 烂银行、基地 562s 失守)。
+                    not self._threat_active
+                    and self.ai.time >= 200.0
                     and (
                         self._cannons_ready_peak >= 1
                         or any(

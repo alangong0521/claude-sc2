@@ -594,6 +594,16 @@ def worker_last_stand(
     )
 
 
+def last_stand_demand_cap(enemy_ground_near: int) -> int:
+    """O313-②(o312b game_03 实证):决死协防首批拉人需求封顶。纯逻辑,可单测。
+
+    敌 10 地面塔 1 拉出 20 农民(2 倍过拉),10s 内 20 人全灭 ——
+    1v1 + 塔/电池输出已是优势交换比,超出敌数的部分是纯喂。
+    封顶 max(4, 敌地面数):小股(≤4)仍拉出最低响应量。
+    """
+    return max(4, enemy_ground_near)
+
+
 def worker_last_stand_hopeless(
     enemy_ground_near: int,
     cannons_near: int,

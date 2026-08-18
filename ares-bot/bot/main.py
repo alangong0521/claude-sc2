@@ -21,6 +21,7 @@ from bot.production_plans import (
     should_release_waiting_builder,
     worker_last_stand,
     worker_last_stand_hopeless,
+    last_stand_demand_cap,
     worker_transfer_count,
 )
 from bot.shield_battery import restore_with_batteries
@@ -460,8 +461,12 @@ def update_worker_last_stand(ai) -> None:
     )
     # O311-②:O310-① 首批封顶(2+4×塔)回退 —— o310b Harder 0/5,
     # 拉 3-6 人基地掉得更快;首批恢复全量拉(30s 添油 latch 保留)。
+    # O313-②(o312b game_03 实证):但加需求封顶 max(4,敌地面数) ——
+    # 敌 10 地面塔 1 拉出 20 农民(2 倍过拉),10s 内 20 人全灭;
+    # 1v1+塔输出已是优势,超出敌数的部分纯喂。
+    _pull_cap = last_stand_demand_cap(n)
     for w in ai.workers:
-        if not _can_pull:
+        if not _can_pull or pulled >= _pull_cap:
             break
         if w.tag in stand or w.tag not in gathering:
             continue

@@ -30,6 +30,7 @@ from bot.main import (  # noqa: E402
 )
 from bot.production_plans import (  # noqa: E402
     evacuation_clear,
+    last_stand_demand_cap,
     pick_evacuation_base,
     should_evacuate_workers,
     worker_last_stand,
@@ -75,8 +76,16 @@ class TestWorkerLastStand(unittest.TestCase):
         self.assertTrue(worker_last_stand(10, 1, 1, True))
         self.assertFalse(worker_last_stand(9, 1, 1, True))
 
-    def test_last_stand_hopeless(self):
-        # O306-③:白送上界 14+6×塔 —— 2 塔:26 及以下冲,27+ 游走保命
+    def test_last_stand_demand_cap(self):
+        # O313-②(o312b game_03 实证):首批拉人封顶 max(4,敌地面数) ——
+        # 敌 10 拉出 20(2 倍过拉)10s 全灭,超出敌数的部分纯喂
+        self.assertEqual(last_stand_demand_cap(10), 10)
+        self.assertEqual(last_stand_demand_cap(20), 20)
+        # 小股仍拉最低响应量 4
+        self.assertEqual(last_stand_demand_cap(2), 4)
+        self.assertEqual(last_stand_demand_cap(0), 4)
+
+    def test_last_stand_hopeless(self):        # O306-③:白送上界 14+6×塔 —— 2 塔:26 及以下冲,27+ 游走保命
         self.assertFalse(worker_last_stand_hopeless(20, 2))
         self.assertFalse(worker_last_stand_hopeless(26, 2))
         self.assertTrue(worker_last_stand_hopeless(27, 2))
