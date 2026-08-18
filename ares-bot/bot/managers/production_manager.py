@@ -95,6 +95,7 @@ from bot.production_plans import (
     sg2_pin_economy_ok,
     sg_pin_expand_ok,
     zt_zealot_yield,
+    main_defense_bank_fuse,
     zt_fast_expand_pin,
     zt_defense_at_natural,
     gas_gated_stargate_target,
@@ -2202,10 +2203,19 @@ class ProductionManager(Manager):
                 # 在途后封主基,但 115s 注册(presumed/F2)已在 200-300s
                 # 给主基铺 3-5 塔+电池(600-900 矿),正是钉点资金窗被
                 # 抽干的元凶;Nexus 开工前主基也不铺塔(rush 激活回退)。
+                # O334-③(o333a game_03 实证):银行熔断 —— 钉点哑故障局
+                # 银行烂到 1315 主基仍零塔(波 289s 裸接);矿 ≥600 且
+                # Nexus 未开工时主基塔放行(钱不是瓶颈),滞回 400 复位。
+                self._o334_bank_fuse = main_defense_bank_fuse(
+                    self.ai.minerals,
+                    nexus_started=self.ai.townhalls.amount >= 2,
+                    fuse_on=getattr(self, "_o334_bank_fuse", False),
+                )
                 _zt_no_main_def = (
                     self._opp_race == "zerg"
                     and self._ai_build == "timing"
                     and not self._rush_active
+                    and not self._o334_bank_fuse
                 )
                 # O76b 诊断(n5/o76 分矿恒 1 塔悬案):每基地首次注册 + 每 30s 每基地
                 # 塔数上报事件,定位「没注册 / 注册不建 / 建了被拆」哪一环。
@@ -3055,6 +3065,11 @@ class ProductionManager(Manager):
         # t≥105 + 矿 ≥400 + rush 未确认 → critical 钉口袋矿(O328 选址),
         # 开动 ≤120s 向电脑看齐;rush 确认 = fuse,走旧防御先行路径,
         # O251 硬饱和钉点(280s+)兜底。防御由 O329-③ 分矿预置塔链随行。
+        # O334-①(o333 双 lane 实证):钉点事件不再「一试即记成功」——
+        # o333 全轮 104-186s 的「钉点」事件背后,派工实际连续失败
+        # 200-400s(game_03 银行烂到 1315 仍零开工),rc 可见化:
+        # 结果变化即记 + 30s 节流,成功事件只在 dispatched 时记。
+        # O334-②:连续失败 >60s → 目标退回最近 natural(换落位自救)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -3065,18 +3080,53 @@ class ProductionManager(Manager):
                 self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
                 self._rush_confirmed,
             )
+            and self.ai.time - getattr(self, "_o329_rc_ts", 0.0) > 10.0
         ):
             _o329_target = self._zt_pocket_expand_target()
+            if (
+                getattr(self, "_o329_fail_since", None) is not None
+                and self.ai.time - self._o329_fail_since > 60.0
+            ):
+                _free_o329 = [
+                    el
+                    for el in self.ai.expansion_locations_list
+                    if not self.ai.townhalls.closer_than(5.0, el)
+                ]
+                if _free_o329:
+                    _o329_target = min(
+                        _free_o329,
+                        key=lambda el: min(
+                            el.distance_to(th) for th in self.ai.townhalls
+                        ),
+                    )
             if _o329_target is not None:
-                self._dispatch_structure(
+                _rc = self._dispatch_structure(
                     UnitID.NEXUS, _o329_target, critical=True, needs_power=False
                 )
-                if not getattr(self, "_o329_logged", False):
-                    self._o329_logged = True
-                    self.ai._events.append({
-                        "t": round(self.ai.time, 1),
-                        "msg": "O329:速二矿钉点(120s向电脑看齐)",
-                    })
+                if _rc == "dispatched":
+                    self._o329_fail_since = None
+                    if not getattr(self, "_o329_logged", False):
+                        self._o329_logged = True
+                        self.ai._events.append({
+                            "t": round(self.ai.time, 1),
+                            "msg": "O329:速二矿钉点(120s向电脑看齐)",
+                        })
+                else:
+                    if self._o329_fail_since is None:
+                        self._o329_fail_since = self.ai.time
+                    if _rc != getattr(self, "_o329_last_rc", None) or (
+                        self.ai.time - getattr(self, "_o329_fail_log_ts", 0.0) > 30.0
+                    ):
+                        self._o329_fail_log_ts = self.ai.time
+                        self.ai._events.append({
+                            "t": round(self.ai.time, 1),
+                            "msg": (
+                                f"O329:钉点派工失败={_rc}"
+                                f"(连续{self.ai.time - self._o329_fail_since:.0f}s)"
+                            ),
+                        })
+                self._o329_last_rc = _rc
+                self._o329_rc_ts = self.ai.time
         # O333-②(o332 双 lane 实证):forge 钉点随 Nexus 开工 —— opener
         # 摘除 forge/core/GW2 后(O329 钉点的 400 矿零竞争,开工 ~130s),
         # 分矿塔链的前置 forge 由 bot 层在 Nexus 开工(townhalls≥2 含

@@ -915,6 +915,28 @@ def zt_zealot_yield(townhalls: int, rush_confirmed: bool, threat_active: bool = 
     return townhalls < 2
 
 
+def main_defense_bank_fuse(
+    minerals: float,
+    nexus_started: bool,
+    fuse_on: bool,
+    on_at: float = 600.0,
+    off_at: float = 400.0,
+) -> bool:
+    """O334-③(o333a game_03 实证):主基塔封禁的银行熔断。纯逻辑,可单测。
+
+    O332-① 主基塔全程归零是为了保 Nexus 的 400 资金窗;但钉点派工
+    哑故障局(game_03:186-350s 连续失败)银行烂到 1315、主基仍零塔,
+    波 289s 到脸裸接 —— 此时钱不是瓶颈(400 早够),主基塔不抢
+    Nexus 资金窗。矿 ≥on_at 且 Nexus 未开工 → 熔断开(主基塔放行,
+    滞回 off_at 复位);Nexus 一开工立即复位(回 doctrine)。
+    """
+    if nexus_started or minerals < off_at:
+        return False
+    if minerals >= on_at:
+        return True
+    return fuse_on
+
+
 def zt_defense_at_natural(
     nexus_in_flight: int,
     has_expansion: bool,

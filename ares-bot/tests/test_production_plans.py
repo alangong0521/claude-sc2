@@ -59,6 +59,7 @@ from bot.production_plans import (  # noqa: E402
     zt_fast_expand_pin,
     sg_pin_expand_ok,
     zt_zealot_yield,
+    main_defense_bank_fuse,
     zt_defense_at_natural,
     forge_before_first_gateway,
     gateway_chain_after_first_zealot,
@@ -3554,6 +3555,18 @@ class TestO329FastExpand(unittest.TestCase):
         self.assertFalse(zt_zealot_yield(1, True))
         # O333-③:threat 激活豁免 —— 钉点晚局波到脸零叉零塔 = 359s 速败
         self.assertFalse(zt_zealot_yield(1, False, True))
+
+    def test_main_defense_bank_fuse(self):
+        # 矿 ≥600 且 Nexus 未开工 → 熔断开(主基塔放行,o333a game_03
+        # 银行 1315 主基零塔实证)
+        self.assertTrue(main_defense_bank_fuse(600.0, False, False))
+        # 滞回:熔断开后矿降到 450 仍开,<400 复位
+        self.assertTrue(main_defense_bank_fuse(450.0, False, True))
+        self.assertFalse(main_defense_bank_fuse(399.0, False, True))
+        # Nexus 一开工立即复位(回 doctrine)
+        self.assertFalse(main_defense_bank_fuse(800.0, True, True))
+        # 未达阈值且未开过 → 关
+        self.assertFalse(main_defense_bank_fuse(500.0, False, False))
 
     def test_zt_defense_at_natural(self):
         # Nexus 在途或分矿存在 → 防御重心在 2 矿(主基塔归零)
