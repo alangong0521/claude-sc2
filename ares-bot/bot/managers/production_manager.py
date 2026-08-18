@@ -569,6 +569,18 @@ class ProductionManager(Manager):
                 self.ai.townhalls,
                 key=lambda t: t.position.distance_to(self.ai.start_location),
             )
+            # O324-③:先补电再钉塔 —— 新矿常态无电(塔钉需要供电槽,
+            # 无电钉塔 = 新 stall 源);水晶自带电源(needs_power=False)。
+            if not any(
+                s.type_id == UnitID.PYLON and s.is_ready
+                and s.position.distance_to(_new_th.position) < 12
+                for s in self.ai.structures
+            ):
+                self._dispatch_structure(
+                    UnitID.PYLON, _new_th.position,
+                    closest_to=_new_th.position, needs_power=False,
+                    critical=True,
+                )
             _rc = self._dispatch_structure(
                 UnitID.PHOTONCANNON, _new_th.position,
                 closest_to=_new_th.position, critical=True,
@@ -1510,6 +1522,22 @@ class ProductionManager(Manager):
             + cy_unit_pending(self.ai, UnitID.TEMPEST)
             + cy_unit_pending(self.ai, UnitID.CARRIER)
         )
+        # O324-②(o315b/o316a/o321b/o323b 四局同一模式实证):银行熔断 ——
+        # 矿 485-1340 烂在银行 + 主基就绪塔 <3,资金预估守卫(dispatch_viable
+        # 的收入投影)在「大钱已在手」时仍按流量判穷,塔永远等下一帧。
+        # 存款 ≥500 就是支付能力本身,熔断注册+守卫,塔先落地再算账。
+        _ready_cannons_main = sum(
+            1 for s in self.ai.structures.ready
+            if s.type_id == UnitID.PHOTONCANNON
+            and s.position.distance_to(self.ai.start_location) < 25
+        )
+        _bank_rot = (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.time >= 240.0
+            and self.ai.minerals >= 500.0
+            and _ready_cannons_main < 3
+        )
         # O220(o217-lane2 game_02 实证):任一就绪基地 0 就绪塔 = 无防基地,
         # dispatch_viable 资金守卫在矿 20-70 振荡期永远不过 → 新矿落成 100s
         # 零塔被 4 地面抄家。无防基地 F2 必须注册(钉点几秒 > 裸奔 100s)。
@@ -1531,6 +1559,8 @@ class ProductionManager(Manager):
                 or self._timing_sprint
                 # O220:无防基地强制注册(豁免下方 dispatch_viable 守卫)
                 or _defenseless_base
+                # O324-②:银行熔断(矿≥500+塔<3,存款本身就是支付能力)
+                or _bank_rot
             )
             # O321(A 案):ZT opener 执行期 F2 整段噤声 —— 重写后的
             # CarrierOpenerZergTiming 自带完整防御链(forge+双塔+双电池+
@@ -1624,6 +1654,8 @@ class ProductionManager(Manager):
                 # O220:无防基地(任一就绪基地 0 就绪塔)同样豁免资金守卫 ——
                 # 新矿落成后矿振荡期守卫永假 = 基地裸奔被抄(o217-lane2 game_02)
                 or _defenseless_base
+                # O324-②:银行熔断同豁免(存款 ≥500 即支付能力,不等收入投影)
+                or _bank_rot
             )
             and not _gw_priority  # O131-②:排队型让位(2 塔后 GW 链优先)
             # O131-①/O135:扩张/舰队预留激活 → F2 同步暂停 —— O135 语义反转后
@@ -7257,6 +7289,24 @@ class ProductionManager(Manager):
             "CarrierOpenerZergRush",
             "CarrierOpenerZergTiming",
         ):
+            return False
+        # O324-①(o323b game_01/o321b game_02 实证):runner 步卡死看门狗 ——
+        # forge 步放置失败空转 200s+(银行 960-1340、塔 0、波到脸裸接),
+        # build_step 45s 不前进 → 噤声永久解除,bot 层接管(电力自救/
+        # 手动防链都在 bot 层,runner 放不了的电 bot 层能补)。
+        _step = bor.build_step
+        _last_step, _since = getattr(self, "_o324_runner_watch", (None, 0.0))
+        if _step != _last_step:
+            self._o324_runner_watch = (_step, self.ai.time)
+        elif self.ai.time - _since > 45.0 and not getattr(
+            self, "_o324_runner_stalled", False
+        ):
+            self._o324_runner_stalled = True
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": f"O324:runner步#{_step}卡死>45s,bot层接管防御链",
+            })
+        if getattr(self, "_o324_runner_stalled", False):
             return False
         if bor.chosen_opening == "CarrierOpenerZergTiming" and self.ai.time >= 300.0:
             return False
