@@ -2981,6 +2981,38 @@ class TestO133TimingDefense(unittest.TestCase):
         # 非 ZT 不受影响
         self.assertTrue(zerg_timing_expand_allowed(False, False, 100, 0, 0, 0))
 
+    def test_zerg_timing_expand_allowed_o312(self):
+        # O312(A 案 GM 式):窗 200 + GW1 就绪可作防御前提
+        # 200s + 0 塔 + GW1 就绪 + 家/分矿点无敌 → 放行
+        self.assertTrue(
+            zerg_timing_expand_allowed(
+                True, False, 200, 0, 0, 0, at=200.0, gw_ready=True
+            )
+        )
+        # 200s + 0 塔 + 无 GW1 → 仍不开(防御前提不空)
+        self.assertFalse(
+            zerg_timing_expand_allowed(
+                True, False, 200, 0, 0, 0, at=200.0, gw_ready=False
+            )
+        )
+        # 窗不到(199s)有 GW1 也不开
+        self.assertFalse(
+            zerg_timing_expand_allowed(
+                True, False, 199, 0, 0, 0, at=200.0, gw_ready=True
+            )
+        )
+        # 家 40 格有敌 / 分矿点有敌仍不开(波中不拍)
+        self.assertFalse(
+            zerg_timing_expand_allowed(
+                True, False, 200, 1, 0, 0, at=200.0, gw_ready=True
+            )
+        )
+        self.assertFalse(
+            zerg_timing_expand_allowed(
+                True, False, 200, 0, 1, 0, at=200.0, gw_ready=True
+            )
+        )
+
     def test_pick_pocket_expansion(self):
         # O281:口袋矿 = 离敌出生点最远的空闲扩张点;空入参 → None
         class _P:

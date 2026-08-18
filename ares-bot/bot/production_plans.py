@@ -2380,6 +2380,7 @@ def zerg_timing_expand_allowed(
     cannons_ready: int = 1,
     at: float = 280.0,
     hard_gate: float = 620.0,
+    gw_ready: bool = False,
 ) -> bool:
     """O258-①/O262-①/O263-①/O265/O278-②:ZT 二矿窗判据(防御驱动)。纯逻辑,可单测。
 
@@ -2388,6 +2389,11 @@ def zerg_timing_expand_allowed(
     O278-②(司令观察②):窗 320→280,与分矿口预置塔(t≥250 起铺水晶/塔/
     电池)联动 —— Nexus 落在已设防的口子上;280s 开工 ~355s 落成,
     卡在 O236 胜负线(≤400s)内。首塔就绪/家无敌/分矿点无敌前提不变。
+    O312(司令 2026-08-17 拍板 A 案,GM 式经济优先):窗 280→200 + 防御
+    前提放宽(首塔就绪 或 GW1 就绪)—— O265 的 220s 证伪发生在 natural
+    直开时代;O281 口袋矿(离波行进路径)落地后,早开的安全前提变了:
+    波打主基时口袋矿零压力落成。胜局二矿 309s vs 败局 478-546s 是
+    胜负线,200s 开工 ~270-310s 落成,直取胜局画像。
     """
     if not is_zerg_timing:
         return True
@@ -2395,7 +2401,7 @@ def zerg_timing_expand_allowed(
         return True
     return (
         now >= at
-        and cannons_ready >= 1
+        and (cannons_ready >= 1 or gw_ready)
         and enemy_home == 0
         and enemy_near_natural == 0
     )
