@@ -92,6 +92,8 @@ from bot.production_plans import (  # noqa: E402
     zt_vacuum_buffer_caps,
     zt_sg_pin_time_ok,
     pin_deadlock_fuse,
+    new_base_defense_pins,
+    pin_repin_blocked,
     gas_pull_thresholds,
     fb_fund_ground_yield,
     fb_fund_sg2_blocked,
@@ -3681,15 +3683,19 @@ class TestO329FastExpand(unittest.TestCase):
         )
 
     def test_sg_pin_expand_ok(self):
-        # 2 基地(含在建)→ 放行(舰队科技不拖)
+        # O363-③:t≥240 后连环门豁免(SG 与扩张并行预算)
         self.assertTrue(sg_pin_expand_ok(2, 0, 300.0))
-        # O332-③:「在途」不再放行 —— 驻点等钱的 Nexus 会被 SG 插队
-        # (o331a game_01:297s SG vs 395s 才开工的 Nexus)
-        self.assertFalse(sg_pin_expand_ok(1, 1, 300.0))
-        # 单基地无在途且 <360s → 拦(o329b game_01:342s SG 抢二矿资金窗)
-        self.assertFalse(sg_pin_expand_ok(1, 0, 342.0))
-        # 单基地硬时限 360s 后放行(防 O261 死窗零对空)
+        self.assertTrue(sg_pin_expand_ok(1, 1, 300.0))
+        self.assertTrue(sg_pin_expand_ok(1, 0, 342.0))
         self.assertTrue(sg_pin_expand_ok(1, 0, 360.0))
+        # t=250 单基地放行(o362a g3:SG 钉点 401s 等 Nexus 同 tick 才过)
+        self.assertTrue(sg_pin_expand_ok(1, 0, 250.0))
+        self.assertTrue(sg_pin_expand_ok(1, 0, 240.0))
+        # t=200 仍守旧闸:单基地无在途 → 拦(360 硬时限未到)
+        self.assertFalse(sg_pin_expand_ok(1, 0, 200.0))
+        self.assertFalse(sg_pin_expand_ok(1, 1, 200.0))
+        # t<240 时 2 基地(含在建)放行不变
+        self.assertTrue(sg_pin_expand_ok(2, 0, 200.0))
 
     def test_zt_zealot_yield(self):
         # 二矿开工前(单基地)+非 rush +非威胁 → 零兵种(司令 doctrine)
@@ -4238,13 +4244,15 @@ class TestO360MidGameEconomy(unittest.TestCase):
         self.assertFalse(cannon_global_capped(0, False))
 
     def test_gas_to_minerals_released(self):
-        # 双向缓解即解除:气 <500(烂气被花掉)
-        self.assertTrue(gas_to_minerals_released(499.9, 100.0))
-        # 矿 >400(矿荒已缓)—— o359b g1 的 194s 迟解除档(气 500+ 恒成立)
-        self.assertTrue(gas_to_minerals_released(694.0, 400.1))
-        # 两因俱在 → 仍按住(气 616-694 超冲 + 矿荒,o359a 实证档)
+        # O363-④b:纯气压滞回 —— 气 <250 才复采
+        self.assertTrue(gas_to_minerals_released(249.9, 100.0))
+        self.assertTrue(gas_to_minerals_released(0.0, 0.0))
+        # 矿 >400 不再解除(o362a g3:矿一缓就放回气矿,气照涨 +220)
+        self.assertFalse(gas_to_minerals_released(694.0, 400.1))
         self.assertFalse(gas_to_minerals_released(616.0, 250.0))
-        self.assertFalse(gas_to_minerals_released(500.0, 400.0))
+        self.assertFalse(gas_to_minerals_released(250.0, 400.0))
+        # 与 ZT 早窗触发档(气>300)的滞回带:250-300 之间按住
+        self.assertFalse(gas_to_minerals_released(280.0, 50.0))
 
     def test_gas_pull_window_expired(self):
         # 未在停气(None)→ 不炸
@@ -4283,6 +4291,33 @@ class TestO362TimingVacuumWindow(unittest.TestCase):
         self.assertTrue(pin_deadlock_fuse(20, 1, 320.0))
         # 边界:恰好 60s 不释放
         self.assertFalse(pin_deadlock_fuse(9, 1, 60.0))
+
+    def test_new_base_defense_pins(self):
+        # 新矿裸奔(forge+cyber 就绪,0 塔 0 电池)→ 塔+电池同钉
+        # (o362b g3 四矿 522s target=0 被连抄三次实证档)
+        self.assertEqual(new_base_defense_pins(True, True, 0, 0, 0, 0), (True, True))
+        # forge 未就绪 → 不钉塔(tech 闸),电池照钉
+        self.assertEqual(new_base_defense_pins(False, True, 0, 0, 0, 0), (False, True))
+        # cyber 未就绪 → 不钉电池,塔照钉
+        self.assertEqual(new_base_defense_pins(True, False, 0, 0, 0, 0), (True, False))
+        # 就绪+在途合并计数:1 就绪+1 在途 = 满 2 塔目标,不再重钉
+        self.assertEqual(new_base_defense_pins(True, True, 1, 1, 0, 0), (False, True))
+        # 1 塔在途(落成交接棒已在飞)→ 仍补第 2 塔
+        self.assertEqual(new_base_defense_pins(True, True, 1, 0, 0, 0), (True, True))
+        # 电池在途即不重钉
+        self.assertEqual(new_base_defense_pins(True, True, 2, 0, 0, 1), (False, False))
+        # 塔阵+电池齐 → 全停
+        self.assertEqual(new_base_defense_pins(True, True, 2, 0, 1, 0), (False, False))
+
+    def test_pin_repin_blocked(self):
+        # 封锁期内 → 禁重钉(o362b g2:30s 冷却一过被同一钉点夺回×4)
+        self.assertTrue(pin_repin_blocked(255.0, 315.0))
+        self.assertTrue(pin_repin_blocked(314.9, 315.0))
+        # 封锁到期 → 放行
+        self.assertFalse(pin_repin_blocked(315.0, 315.0))
+        self.assertFalse(pin_repin_blocked(400.0, 315.0))
+        # 无封锁(None)→ 放行
+        self.assertFalse(pin_repin_blocked(100.0, None))
 
     def test_zt_sg_pin_time_ok(self):
         # t=250 放行(o361b g1 的 643s 星门档要覆盖)
@@ -4346,30 +4381,25 @@ class TestO362TimingVacuumWindow(unittest.TestCase):
         self.assertFalse(fb_fund_probe_brake(60.0, 200.0, 19))
 
     def test_gas_pull_thresholds(self):
-        # ZT 且 t<360 → 早窗档 (300, 150)
-        self.assertEqual(gas_pull_thresholds(True, 359.9), (300.0, 150.0))
-        self.assertEqual(gas_pull_thresholds(True, 100.0), (300.0, 150.0))
+        # ZT 且 t<360 → 早窗档 (300, +inf)—— O363-④c:摘掉矿档并联,
+        # 气 >300 即停(o362b g1 气峰 684 零舰队实证)
+        self.assertEqual(gas_pull_thresholds(True, 359.9), (300.0, float("inf")))
+        self.assertEqual(gas_pull_thresholds(True, 100.0), (300.0, float("inf")))
         # ZT 且 t≥360 → 保持 500/200(舰队链开始吃气)
         self.assertEqual(gas_pull_thresholds(True, 360.0), (500.0, 200.0))
         # 非 ZT 全程 500/200
         self.assertEqual(gas_pull_thresholds(False, 100.0), (500.0, 200.0))
-        # 边界:触发档与 gas_to_minerals_needed 显式阈值配套
+        # 早窗触发:气 >300 不论矿高低(o362b g1 的矿 200-400 振荡带)
         self.assertTrue(
             gas_to_minerals_needed(
-                301.0, 149.9,
-                vespene_threshold=300.0, mineral_threshold=150.0,
+                301.0, 400.0,
+                vespene_threshold=300.0, mineral_threshold=float("inf"),
             )
         )
         self.assertFalse(
             gas_to_minerals_needed(
                 300.0, 149.9,
-                vespene_threshold=300.0, mineral_threshold=150.0,
-            )
-        )
-        self.assertFalse(
-            gas_to_minerals_needed(
-                301.0, 150.0,
-                vespene_threshold=300.0, mineral_threshold=150.0,
+                vespene_threshold=300.0, mineral_threshold=float("inf"),
             )
         )
 

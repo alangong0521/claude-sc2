@@ -813,9 +813,14 @@ def gas_pull_thresholds(
     t≥360(舰队链开始吃气)保持 500/200。返回 (气阈值, 矿阈值),
     触发(gas_to_minerals_needed)与解除(gas_to_minerals_released
     的气档)共用,防「触发 300/解除 <500」单帧振荡。
+    O363-④c(o362b g1 实证):早窗矿档摘掉 —— 「气>300 且 矿<150」
+    并联在矿不低时气照囤(g1 气峰 684 零舰队:矿 200-400 振荡期
+    触发恒假);早窗舰队科技未起、气本无消费者,气 >300 即停,
+    矿档 +inf(恒真)。解除档由 gas_to_minerals_released 的 250
+    滞回统一管,不在本函数。
     """
     if zerg_timing and now < early_until:
-        return (300.0, 150.0)
+        return (300.0, float("inf"))
     return (500.0, 200.0)
 
 
@@ -996,7 +1001,40 @@ def zt_second_cannon_pin_ok(
     return now < window_end and ready_cannons >= 1 and cannons_total < 2
 
 
-def sg_pin_expand_ok(townhalls: int, nexus_in_flight: int, now: float, hard_at: float = 360.0) -> bool:
+def new_base_defense_pins(
+    forge_ready: bool,
+    cyber_ready: bool,
+    cannons_near: int,
+    cannons_in_flight: int,
+    batteries_near: int,
+    batteries_in_flight: int,
+    cannon_target: int = 2,
+    battery_target: int = 1,
+) -> tuple[bool, bool]:
+    """O363-①(o362a/o362b 尸检):新矿落地即配塔的钉点判据。纯逻辑,可单测。
+
+    o362 最高频单一死法(6 局 2 局同死):新基地落成零塔裸奔 ——
+    o362a g2 敌 4 地面 515s 抄二矿杀 19 农;o362b g2 同法 605s 杀
+    16+18 农判死;o362b g3 四矿 522s target=0 被连抄三次。旧
+    O337-① 守卫两处漏:① for 循环钉完第一个分矿即 break,3/4 矿
+    整局没人管;② 30s 节流是全局单簿记,首矿吃掉节流后其余基地
+    排队。判据本体抽纯函数:返回 (钉塔, 钉电池) —— 塔走 forge
+    科技闸,电池走 cyber 科技闸;就绪+在途合并计数(防重钉),目标
+    默认 2 塔+1 电池(fb_fund 同款 critical 钉点通道在调用方,
+    threat 时该通道本就无视资金守卫,天然优先)。
+    """
+    pin_cannon = forge_ready and (cannons_near + cannons_in_flight) < cannon_target
+    pin_battery = cyber_ready and (batteries_near + batteries_in_flight) < battery_target
+    return pin_cannon, pin_battery
+
+
+def sg_pin_expand_ok(
+    townhalls: int,
+    nexus_in_flight: int,
+    now: float,
+    hard_at: float = 360.0,
+    exempt_at: float = 240.0,
+) -> bool:
     """O330-③(o329b game_01 实证):SG 钉点让位扩张判据。纯逻辑,可单测。
 
     O329-① 新 opener 无首塔 → O323 SG 钉点的「口袋攒钱期让位」守卫
@@ -1009,7 +1047,15 @@ def sg_pin_expand_ok(townhalls: int, nexus_in_flight: int, now: float, hard_at: 
     此时放 SG = 插队抢等钱中的 Nexus(297s SG vs 395s 才开工的
     Nexus);只认 townhalls≥2(含在建,Nexus 真开工)。
     nexus_in_flight 参数保留不再入判据(向后兼容调用方签名)。
+    O363-③(o362a 尸检):t≥exempt_at 后「单基地硬时限/扩张优先」整段
+    豁免 —— O362-③ 把时间门降到 240 后本判据成了连环门的下一环:
+    SG 钉点 401s 仍要等 Nexus 派工同 tick 才放行(o362a g3),SG
+    354-450s 全超 ≤300s 验收线。t≥240(cyber 就绪在调用方上游)
+    后 SG 与扩张并行预算,不再排在 Nexus 之后;can_afford 门在
+    调用方原样保留(买得起才派,派了即开工,O337-③ 教义)。
     """
+    if now >= exempt_at:
+        return True
     return townhalls >= 2 or now >= hard_at
 
 
@@ -1154,6 +1200,18 @@ def pin_deadlock_fuse(
     if workers < min_workers and active_pins > max_pins:
         return True
     return waiting_s > timeout
+
+
+def pin_repin_blocked(now: float, blocked_until: float | None) -> bool:
+    """O363-②b(o362b g2 实证):O307 撤派工后的防夺回冷却判据。纯逻辑,可单测。
+
+    o362b g2:开矿钉点等钱 290s —— O307 撤派工 4 次(255/317/393/460s),
+    每次 30s 冷却一过就被同一钉点夺回,二矿拖到 498s(胜局 128/241s)。
+    撤派工后给同型钉点打 60s 封锁(调用方写 blocked_until),期内禁止
+    重钉:资金/科技链真正解锁一轮,而不是「撤→钉→等→撤」空转。
+    None = 无封锁。
+    """
+    return blocked_until is not None and now < blocked_until
 
 
 def reserve_deadlock_break(
@@ -4642,7 +4700,7 @@ def cannon_global_capped(
 def gas_to_minerals_released(
     vespene: float,
     minerals: float,
-    vespene_threshold: float = 500.0,
+    vespene_threshold: float = 250.0,
     mineral_threshold: float = 400.0,
 ) -> bool:
     """O360-④(o359a/o359b 尸检):停气转矿解除判据。纯逻辑,可单测。
@@ -4652,8 +4710,15 @@ def gas_to_minerals_released(
     以下);o359b g1 触发后 194s 才解除(257.9→451.3)。解除改双向
     缓解即解:「气 <500(烂气被花掉)或 矿 >400(矿荒已缓)」——
     两个病因任治其一就放手,不再等气单独深跌。
+    O363-④b(o362a/o362b 尸检):改纯气压滞回 —— 「矿 >400 即解」
+    实证让停气形同虚设:矿一缓到 400 就把农民放回气矿,气根本压不
+    下去(o362a g3 触发后气照涨 +220,o362b g1 气峰 684),解除
+    事实上只剩 60s 棘轮在走。解除只认 气 <250:与 ZT 早窗触发档
+    (气 >300)留 50 滞回带,与常规触发档(500)留 250;60s 棘轮
+    保险丝(gas_pull_window_expired)保留为兜底。minerals 参数保留
+    不再入判据(向后兼容签名)。
     """
-    return vespene < vespene_threshold or minerals > mineral_threshold
+    return vespene < vespene_threshold
 
 
 def gas_pull_window_expired(
