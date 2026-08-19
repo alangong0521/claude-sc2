@@ -60,6 +60,9 @@ from bot.production_plans import (  # noqa: E402
     fb_saving_window,
     forge_pin_affordable,
     mothership_economy_ok,
+    mothership_window_open,
+    tempest_dump_suppressed,
+    cannon_capped,
     sg2_pin_economy_ok,
     zt_fast_expand_pin,
     sg_pin_expand_ok,
@@ -1917,15 +1920,24 @@ class TestO94FirstWaveDefense(unittest.TestCase):
         self.assertTrue(zt_golden_window_push(750.0, 3, 12))   # o302b-g01 场景
         # 窗口前不推
         self.assertFalse(zt_golden_window_push(649.9, 6, 20))
-        # 舰队/追猎不足不推
-        self.assertFalse(zt_golden_window_push(750.0, 2, 20))
-        self.assertFalse(zt_golden_window_push(750.0, 3, 5))
+        # 舰队/追猎不足不推(t<750 追猎阈仍为 6)
+        self.assertFalse(zt_golden_window_push(749.9, 2, 20))
+        self.assertFalse(zt_golden_window_push(700.0, 3, 5))
         # 自定义阈值
         self.assertTrue(zt_golden_window_push(600.0, 3, 8, min_t=600.0, min_fleet=3, min_stalkers=8))
-        # O304-②:可见腐化 >2 → 否决(快尖塔局无黄金窗,不送暴风)
-        self.assertFalse(zt_golden_window_push(750.0, 6, 12, corruptors=3))
-        self.assertTrue(zt_golden_window_push(750.0, 6, 12, corruptors=2))
-        self.assertTrue(zt_golden_window_push(750.0, 6, 12, corruptors=0))
+        # O354-③(o353 五局尸检):腐化上限 2→4 —— 腐化 3-4 放行(舰队
+        # 6-7 艘+敌腐化 0-4 正是被永久 near-miss 饿死的最佳窗口)
+        self.assertTrue(zt_golden_window_push(700.0, 6, 12, corruptors=3))
+        self.assertTrue(zt_golden_window_push(700.0, 6, 12, corruptors=4))
+        self.assertFalse(zt_golden_window_push(700.0, 6, 12, corruptors=5))
+        self.assertTrue(zt_golden_window_push(700.0, 6, 12, corruptors=2))
+        self.assertTrue(zt_golden_window_push(700.0, 6, 12, corruptors=0))
+        # O354-③:时间衰减 —— t≥750 追猎阈 6→4;t=800 追猎 4 放行,
+        # t=700 追猎 4 仍卡
+        self.assertTrue(zt_golden_window_push(800.0, 3, 4))
+        self.assertTrue(zt_golden_window_push(750.0, 3, 4))
+        self.assertFalse(zt_golden_window_push(749.9, 3, 4))
+        self.assertFalse(zt_golden_window_push(700.0, 3, 4))
         # O326-③:尖塔可见 = 腐化 30-60s 内必到,整局否决(o325a game_04:
         # 推时腐化 ≤2 过闸,28s 后 4-6,暴风喂转型)
         self.assertFalse(zt_golden_window_push(750.0, 6, 12, corruptors=0, spire_seen=True))
@@ -3686,9 +3698,12 @@ class TestO352Unlocks(unittest.TestCase):
         self.assertFalse(fb_missing_expand_hold(1, True, 30, 300.0))
 
     def test_forge_pin_affordable(self):
-        # O352-③:矿 <150 不派工/不驻点/不设 tracker;≥150 才钉
-        self.assertFalse(forge_pin_affordable(100.0))
-        self.assertFalse(forge_pin_affordable(149.0))
+        # O352-③:矿 <门 不派工/不驻点/不设 tracker;≥门 才钉
+        # O354-⑤(o353b game_01 实证):非威胁期门 150→100(矿 50-95 窗
+        # 150 门恒关,forge 拖到 361.6s)
+        self.assertFalse(forge_pin_affordable(50.0))
+        self.assertFalse(forge_pin_affordable(99.0))
+        self.assertTrue(forge_pin_affordable(100.0))
         self.assertTrue(forge_pin_affordable(150.0))
         self.assertTrue(forge_pin_affordable(300.0))
         # 自定义造价口径
@@ -3696,12 +3711,12 @@ class TestO352Unlocks(unittest.TestCase):
         self.assertTrue(forge_pin_affordable(120.0, price=120.0))
 
     def test_forge_pin_affordable_threat_exempt(self):
-        # O353-①:威胁期(threat/rush 激活)免门 —— 矿 <150 也钉(救命建筑,
-        # 驻点等钱是对的);非威胁期保持矿 ≥150 门
+        # O353-①:威胁期(threat/rush 激活)免门 —— 矿 <门 也钉(救命建筑,
+        # 驻点等钱是对的);非威胁期保持矿门(O354-⑤:150→100)
         self.assertTrue(forge_pin_affordable(100.0, threat_active=True))
         self.assertTrue(forge_pin_affordable(0.0, threat_active=True))
-        self.assertFalse(forge_pin_affordable(100.0, threat_active=False))
-        self.assertTrue(forge_pin_affordable(150.0, threat_active=False))
+        self.assertFalse(forge_pin_affordable(99.0, threat_active=False))
+        self.assertTrue(forge_pin_affordable(100.0, threat_active=False))
 
 
 class TestO353SprintFloorFb(unittest.TestCase):
@@ -3758,6 +3773,75 @@ class TestO353SprintFloorFb(unittest.TestCase):
         self.assertFalse(fb_saving_window(True, True))
         self.assertFalse(fb_saving_window(False, False))
         self.assertFalse(fb_saving_window(False, True))
+
+
+class TestO354CarrierMothershipWindow(unittest.TestCase):
+    """O354(o353 五局尸检):航母破零优先 / 母舰资金窗 / 静态防御封顶。"""
+
+    def test_tempest_dump_suppressed(self):
+        # O354-①:FB 就绪 + 气 ≥500 + 航母(含在产)<2 + 暴风 <4 → 抑制
+        self.assertTrue(tempest_dump_suppressed(0, 2, True, 500.0))
+        self.assertTrue(tempest_dump_suppressed(1, 3, True, 886.0))
+        # 航母 ≥2 → 恢复
+        self.assertFalse(tempest_dump_suppressed(2, 0, True, 886.0))
+        # 暴风 ≥4 → 恢复
+        self.assertFalse(tempest_dump_suppressed(0, 4, True, 886.0))
+        # FB 未就绪 / 气不够 → 不抑制(本就不在 O260 门内)
+        self.assertFalse(tempest_dump_suppressed(0, 0, False, 886.0))
+        self.assertFalse(tempest_dump_suppressed(0, 0, True, 499.0))
+
+    def test_mothership_window_open(self):
+        # O354-②:除 can_afford 外全满足 + 矿 <400 → 开窗
+        base = dict(
+            fb_ready=True, now=800.0, fleet_count=3, vespene=700.0,
+            bases=3, workers=40, motherships=0,
+        )
+        self.assertTrue(mothership_window_open(**base, minerals=399.0))
+        # 矿 ≥400 → 关窗(can_afford 达成,母舰直接点)
+        self.assertFalse(mothership_window_open(**base, minerals=400.0))
+        # 已有母舰(含在产)→ 关窗
+        self.assertFalse(
+            mothership_window_open(
+                **{**base, "motherships": 1}, minerals=100.0
+            )
+        )
+        # 各门槛缺一不开窗
+        self.assertFalse(
+            mothership_window_open(**{**base, "fb_ready": False}, minerals=100.0)
+        )
+        self.assertFalse(
+            mothership_window_open(**{**base, "now": 699.9}, minerals=100.0)
+        )
+        self.assertFalse(
+            mothership_window_open(**{**base, "fleet_count": 2}, minerals=100.0)
+        )
+        self.assertFalse(
+            mothership_window_open(**{**base, "vespene": 599.0}, minerals=100.0)
+        )
+        # 经济门(3 基地或 ≥36 农):2 基地 30 农不开,2 基地 36 农开
+        self.assertFalse(
+            mothership_window_open(
+                **{**base, "bases": 2, "workers": 30}, minerals=100.0
+            )
+        )
+        self.assertTrue(
+            mothership_window_open(
+                **{**base, "bases": 2, "workers": 36}, minerals=100.0
+            )
+        )
+
+    def test_cannon_capped(self):
+        # O354-④ 四象限:t≥600 且舰队 ≥4 且塔 ≥8 才封顶;威胁豁免
+        self.assertTrue(cannon_capped(700.0, 4, 8, False))
+        self.assertTrue(cannon_capped(700.0, 6, 13, False))
+        # 塔 <8 → 不封
+        self.assertFalse(cannon_capped(700.0, 4, 7, False))
+        # 舰队 <4 → 不封
+        self.assertFalse(cannon_capped(700.0, 3, 8, False))
+        # t <600 → 不封
+        self.assertFalse(cannon_capped(599.9, 4, 8, False))
+        # rush/threat 激活 → 豁免(被骑脸该补还得补)
+        self.assertFalse(cannon_capped(700.0, 4, 8, True))
 
 
 if __name__ == "__main__":

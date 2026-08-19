@@ -1467,20 +1467,23 @@ def fb_missing_expand_hold(
 
 def forge_pin_affordable(
     minerals: float,
-    price: float = 150.0,
+    price: float = 100.0,
     threat_active: bool = False,
 ) -> bool:
     """O352-③(o351 18 局尸检):forge 钉点近可负担门。纯逻辑,可单测。
 
     O333 钉点在 Nexus 开工帧 critical 派工,驻点工人 232-300s 反复等钱
     (钱被探机/GW2/SG/水晶同帧即时消费抢走),forge 落成迟到 237-354s;
-    O349 看门狗只是重排等钱循环。矿 ≥150(forge 造价)才实际派工;
+    O349 看门狗只是重排等钱循环。矿 ≥门(原 150=forge 造价)才实际派工;
     矿不够不派工、不驻点、不设 tracker(避免看门狗误清)。
     与 O262-③ 的 350 门同构。
     O353-①(o352 六局尸检):威胁豁免 —— threat/rush 激活期矿恒 <150,
     门成永久锁(g3 到死无 forge,首塔 tech_not_ready 空转 142-185s)。
     威胁期免门恢复 critical 驻点行为:驻点等钱是对的,forge 是救命建筑;
-    非威胁期保持矿 ≥150 门。
+    非威胁期保持矿门。
+    O354-⑤(o353b game_01 实证):非威胁期矿门 150→100 —— 非威胁期矿
+    254-380s 持续 50-95,150 门恒关,forge 拖到 361.6s;100 门在矿
+    100-149 窗内即派工驻点(等钱到 150 自然开工),威胁期免门不动。
     """
     if threat_active:
         return True
@@ -1496,6 +1499,93 @@ def fb_saving_window(sg_ready: bool, fb_present_or_pending: bool) -> bool:
     在 622s 还点 2 艘虚空)。窗内一切非关键开销让位 FB 钉点。
     """
     return sg_ready and not fb_present_or_pending
+
+
+def tempest_dump_suppressed(
+    carriers: int,
+    tempests: int,
+    fb_ready: bool,
+    vespene: float,
+    min_carriers: int = 2,
+    tempests_restore: int = 4,
+    min_gas: float = 500.0,
+) -> bool:
+    """O354-①(o353 五局尸检):O260 暴风兜底抑制 —— 航母破零优先。纯逻辑,可单测。
+
+    o353 实证:航母 4/5 局破零但峰值 1-2 —— O260 兜底(vespene≥500 门)
+    每帧抢矿点暴风(game_01 气 886 时点了第 7 艘暴风而非第 2 艘航母);
+    航母 350 矿 vs 暴风 300 矿,矿是唯一硬约束,气终局烂 1125-1301。
+    FB 已有实体 且 航母(含在产)<min_carriers 且 气 ≥min_gas 时,
+    O260 不点暴风,把矿留给 O239 的航母订单;暴风 ≥tempests_restore
+    或航母 ≥min_carriers 后 O260 恢复正常(返回 False)。
+    """
+    return (
+        fb_ready
+        and vespene >= min_gas
+        and carriers < min_carriers
+        and tempests < tempests_restore
+    )
+
+
+def mothership_window_open(
+    fb_ready: bool,
+    now: float,
+    fleet_count: int,
+    vespene: float,
+    bases: int,
+    workers: int,
+    motherships: int,
+    minerals: float,
+    min_t: float = 700.0,
+    min_fleet: int = 3,
+    min_gas: float = 600.0,
+    price: float = 400.0,
+) -> bool:
+    """O354-②(o353 五局尸检):母舰资金窗判据。纯逻辑,可单测。
+
+    o353 实证:母舰 0/5 —— O264/O325 经济门(FB+t≥700+fleet≥3,3 基地
+    或 ≥36 农)多局满足,但 can_afford(400 矿)恒假,矿被 O260/塔/农
+    每帧吃光;母舰隐身场正对腐化波(敌反隐仅眼虫),胜局配方里有母舰
+    位置。母舰出门槛除 can_afford 外全部满足(FB 就绪、t≥700、
+    fleet≥3、气 ≥600 同 O264 门、经济门过、无母舰含在产)且矿 <400
+    时开窗:调用方抑制 O260 暴风兜底与新塔/电池钉点,把资金窗让给
+    母舰;矿 ≥400 或条件不再满足时窗自动关(自校正,无 latch)。
+    窄域优先级修正,不是全局面资金冻结。
+    """
+    if motherships > 0 or minerals >= price:
+        return False
+    return (
+        fb_ready
+        and now >= min_t
+        and fleet_count >= min_fleet
+        and vespene >= min_gas
+        and mothership_economy_ok(bases, workers)
+    )
+
+
+def cannon_capped(
+    now: float,
+    fleet_count: int,
+    cannons: int,
+    threat_active: bool,
+    min_t: float = 600.0,
+    min_fleet: int = 4,
+    max_cannons: int = 8,
+) -> bool:
+    """O354-④(o353 五局尸检):静态防御封顶判据。纯逻辑,可单测。
+
+    o353 实证:败局塔峰值 8-13 座(≈1950 矿 ≈ 5 艘航母),舰队 ≥4 后
+    仍在补塔 —— 舰队卡在 4-7 艘的一半资金死因。t≥min_t 且舰队
+    (TEMPEST+CARRIER)≥min_fleet 且全局 PHOTONCANNON ≥max_cannons 时
+    不再新钉塔;rush/threat 激活时豁免(被骑脸时该补还得补)。
+    """
+    if threat_active:
+        return False
+    return (
+        now >= min_t
+        and fleet_count >= min_fleet
+        and cannons >= max_cannons
+    )
 
 
 def pivot_primary_id(verdict: str | None, carrier_id, tempest_id):
@@ -3428,8 +3518,10 @@ def zt_golden_window_push(
     min_fleet: int = 3,
     min_stalkers: int = 6,
     corruptors: int = 0,
-    max_corruptors: int = 2,
+    max_corruptors: int = 4,
     spire_seen: bool = False,
+    decay_t: float = 750.0,
+    decay_min_stalkers: int = 4,
 ) -> bool:
     """O302(司令 2026-08-17 拍板·先手压制专项):ZT 黄金窗推进闸。纯逻辑,可单测。
 
@@ -3451,9 +3543,19 @@ def zt_golden_window_push(
     O326-③(o325a game_04 实证):尖塔否决 —— 腐化计数闸反应太慢
     (990s 推时腐化 ≤2 过闸,28s 后涨到 4-6,暴风喂转型);尖塔可见
     = 腐化 30-60s 内必到(O304-②),整局按无黄金窗处理(蹲守等配方)。
+    O354-③(o353 五局尸检):黄金窗永久 near-miss —— game_01 从 728s
+    到 999s 报 12 次 near-miss,舰队 6-7 艘+敌腐化 0-4 的最佳窗口
+    不推,等腐化爬到 13-17 舰队原地蒸发;胜局 g3 的 740s 果断推进
+    就是胜因模板。放宽:腐化上限 2→4;t≥decay_t(750)后追猎阈
+    6→4 时间衰减(越晚越等不起齐编,窗口在关闭)。尖塔否决/时间/
+    舰队门不动。
     """
     if spire_seen:
         return False
+    # O354-③:时间衰减 —— t≥decay_t 后追猎门降到 decay_min_stalkers
+    # (只降不升,自定义更低阈不被 decay 抬升)。
+    if now >= decay_t:
+        min_stalkers = min(min_stalkers, decay_min_stalkers)
     return (
         now >= min_t
         and fleet_count >= min_fleet

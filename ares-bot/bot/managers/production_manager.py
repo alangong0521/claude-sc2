@@ -97,6 +97,9 @@ from bot.production_plans import (
     forge_pin_affordable,
     holding_abort_keep_first_expand,
     mothership_economy_ok,
+    mothership_window_open,
+    tempest_dump_suppressed,
+    cannon_capped,
     sg2_pin_economy_ok,
     sg_pin_expand_ok,
     zt_zealot_yield,
@@ -340,6 +343,9 @@ class ProductionManager(Manager):
         self._mineral_crisis_gas_stop: bool = False
         # O327-①:早窗气烂抽矿状态(150-420s 气 ≥400 且矿 ≤250,FB 就绪前)
         self._early_gas_pull: bool = False
+        # O354-②(o353 五局尸检):母舰资金窗旗标(每帧在 update 重算;
+        # O260 兜底与塔/电池钉点读取)。__init__ 初始化,不用 getattr 兜底。
+        self._ms_window: bool = False
         # O117-②:防御紧急旗标(rush确认/过渡/presumed 合成,每帧更新)——
         # main.py 的 O11 钉点撤回豁免读它(presumed 期塔工不再被撤回循环)
         self._defense_urgent: bool = False
@@ -354,6 +360,13 @@ class ProductionManager(Manager):
         # O353-②:冲刺中断滞回计时(连续 exit_grace 秒不满足才清零;
         # None=上一帧在冲刺或计时器已清零)
         self._sprint_false_since: float | None = None
+        # O354(o353b game_02 AttributeError 实证):forge 钉点族簿记
+        # 一律 __init__ 初始化 —— _o350_forge_fails 原先只在首次
+        # 派工成功分支置 0,首钉即 no_placement 时 += 1 直接炸全局。
+        self._o333_forge_last: float = 0.0
+        self._o333_forge_logged: bool = False
+        self._o349_forge_logged: bool = False
+        self._o350_forge_fails: int = 0
         # O133-②:过渡期 timing 防御冲刺旗标(update 头部每帧重算;
         # F2 注册闸/塔目标/_rush_gateway_boost/_build_extra_production 读)
         # O144-②:判据缺省关断(无差别冲刺在非 rush 局白吃矿)→ 恒 False
@@ -1621,6 +1634,36 @@ class ProductionManager(Manager):
             _fb_in_core
             and _fb_entities_now == 0
             and not self.ai.can_afford(UnitID.FLEETBEACON)
+        )
+        # O354-②(o353 五局尸检):母舰资金窗 —— 母舰出门槛除 can_afford
+        # 外全满足(FB 就绪/t≥700/舰队≥3/气≥600/经济门/无母舰)且矿 <400
+        # 时开窗,O260 暴风兜底与塔/电池钉点让位母舰资金(矿被 O260/塔/农
+        # 每帧吃光,母舰 0/5);矿 ≥400 或条件失效自动关窗。窄域优先级修正。
+        self._ms_window = (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and mothership_window_open(
+                fb_ready=_fb_entities_now > 0,
+                now=self.ai.time,
+                fleet_count=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER
+                    )
+                ),
+                vespene=self.ai.vespene,
+                bases=self.ai.townhalls.amount,
+                workers=self.ai.supply_workers,
+                motherships=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.MOTHERSHIP
+                    )
+                    + cy_unit_pending(self.ai, UnitID.MOTHERSHIP)
+                ),
+                minerals=self.ai.minerals,
+            )
         )
         _fleet_starved_capacity = (
             fleet_gas_starved(
@@ -3130,6 +3173,10 @@ class ProductionManager(Manager):
         # 点成暴风,永远攒不到 O239 航母门(新档 400),航母 18 局产出全 0;
         # 500 > 400 让气先跨航母门,航母买不起(can_afford 含 350 矿判)
         # 时才回落本兜底。
+        # O354-①(o353 五局尸检):航母破零优先 —— 航母(含在产)<2 且
+        # 暴风 <4 时不点暴风(game_01 气 886 点了第 7 艘暴风而非第 2 艘
+        # 航母;矿是唯一硬约束,留给 O239 的 350 矿航母订单)。
+        # O354-②:母舰资金窗内同抑制(矿让给母舰 400)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -3137,6 +3184,23 @@ class ProductionManager(Manager):
             and self._fb_entities_now > 0
             and not self.ai.can_afford(UnitID.CARRIER)
             and self.ai.can_afford(UnitID.TEMPEST)
+            and not self._ms_window
+            and not tempest_dump_suppressed(
+                carriers=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER
+                    )
+                    + cy_unit_pending(self.ai, UnitID.CARRIER)
+                ),
+                tempests=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST
+                    )
+                    + cy_unit_pending(self.ai, UnitID.TEMPEST)
+                ),
+                fb_ready=self._fb_entities_now > 0,
+                vespene=self.ai.vespene,
+            )
         ):
             for _sg in self.manager_mediator.get_own_structures_dict[
                 UnitID.STARGATE
@@ -3294,6 +3358,8 @@ class ProductionManager(Manager):
         # 同款状态源)免门 —— 威胁期矿恒 <150,门成永久锁(g3 到死
         # 无 forge,首塔 tech_not_ready 空转 142-185s);驻点等钱是
         # 对的,forge 是救命建筑。非威胁期保持矿 ≥150 门。
+        # O354-⑤(o353b game_01 实证):非威胁期门 150→100(矿 254-380s
+        # 持续 50-95,门恒关 forge 拖到 361.6s);威胁期免门不动。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -6721,6 +6787,42 @@ class ProductionManager(Manager):
         借出即从 _gas_stopped_tags 摘除,防 rush 解除的回气循环把建造工
         从建造点拽走)。失败环节由调用方写事件(下轮尸检直接读)。
         """
+        # O354-④(o353 五局尸检):静态防御封顶 —— 败局塔峰值 8-13 座
+        # (≈1950 矿 ≈ 5 艘航母),舰队 ≥4 后仍在补塔。t≥600 且舰队
+        # (TEMPEST+CARRIER)≥4 且全局塔 ≥8 → 不再新钉塔(返回 "capped");
+        # rush/threat 激活豁免(被骑脸时该补还得补)。集中在本入口,
+        # 覆盖 O337 分矿守卫/预置塔链/F2 手动钉点全部塔派工路径。
+        if sid == UnitID.PHOTONCANNON and cannon_capped(
+            now=self.ai.time,
+            fleet_count=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER
+                )
+            ),
+            cannons=(
+                len(
+                    self.manager_mediator.get_own_structures_dict[
+                        UnitID.PHOTONCANNON
+                    ]
+                )
+                + self.manager_mediator.get_building_counter[
+                    UnitID.PHOTONCANNON
+                ]
+            ),
+            threat_active=(self._rush_active or self._threat_active),
+        ):
+            return "capped"
+        # O354-②(o353 五局尸检):母舰资金窗 —— 窗内新塔/电池钉点让位
+        # 母舰 400 矿(母舰 0/5 的死因就是矿被塔/农/O260 每帧吃光);
+        # 窗随矿 ≥400 或条件失效自动关。窄域优先级修正,不是资金冻结。
+        if self._ms_window and sid in (
+            UnitID.PHOTONCANNON,
+            UnitID.SHIELDBATTERY,
+        ):
+            return "ms_window"
         if self.ai.not_started_but_in_building_tracker(sid) >= max_on_route:
             # O118-②(o117 局1/2/4 实证):taken 快回收 —— 条目工人已死立即清
             # (45s 周期对 190s 死局是 eternity);活着但闲置超 10s(被拽走/
