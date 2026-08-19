@@ -3965,17 +3965,20 @@ def expand_holding_should_abort(
     return holding_for > timeout and nexus_unstarted > 0 and not can_afford_nexus
 
 
-def holding_abort_keep_first_expand(is_zerg_timing: bool, townhalls: int) -> bool:
-    """O336-①(o335a game_02 实证):ZT 首扩的 holding abort 只解锁不撤销。纯逻辑,可单测。
+def holding_abort_keep_first_expand(is_zerg: bool, townhalls: int) -> bool:
+    """O336-①(o335a game_02 实证):Zerg 首扩的 holding abort 只解锁不撤销。纯逻辑,可单测。
 
     o335a game_02:O329 启动 104s,但 257s 首波 rush_active 解锁主基
     防御链(forge+2塔+电池+5叉+追猎 1150+ 矿),等钱的 Nexus 被 O307
     二连撤销(281/457s)→ 落成 578s vs 胜局 212-233s。首扩是全村
-    希望:撤销重派 = 工人再走 20s + 资金窗重算,只会更晚。ZT 首扩
+    希望:撤销重派 = 工人再走 20s + 资金窗重算,只会更晚。Zerg 首扩
     (townhalls==1)abort 时保留派工,仅释放 holding 30s 让科技链
     恢复(o306c 的科技冻结死因不回潮);3 矿+ 与原语义(撤销)不变。
+    O365-③a(o364b g1 实证):适用面 timing → zerg 全 build ——
+    rush 局同样被旧 O307 撤销路径坑(o364b g1 二矿裸建 69s 被拆),
+    O364-① 的 hold 分支被 _ai_build=="timing" 门住从未接线。
     """
-    return is_zerg_timing and townhalls == 1
+    return is_zerg and townhalls == 1
 
 
 def holding_allows_cyber(is_zerg_timing: bool, gateway_ready: bool) -> bool:
@@ -4891,3 +4894,156 @@ def escort_hard_cap(
     return escort_pull_cap(
         enemy_ground_near, workers, keep_mining=keep_mining, cap=cap
     )
+
+
+
+def gas_stop_requisition_ok(
+    structure_name: str, gathering_empty: bool, gas_stopped: int
+) -> bool:
+    """O365-①(o364b g3 实证):停气池建造派工放行+强征降级判据。
+    纯逻辑,可单测。
+
+    o364b g3:四矿落成前 1s 分矿补电 no_worker —— 采集池簿记=1
+    (虚高,O347-① 已证簿记含气矿工,select_worker 实际无人可选),
+    停气池=63 却被旧 builder_borrow_ok 的「采集池归零才借」整体
+    豁免,四矿零塔被敌 4 地面抄家撤 20 农,此后基地连掉。停气
+    农民本来在采矿,拉 1 人钉塔不伤停气(借出即从停气台账摘除,
+    同 O116-②)。塔/电池/补电(防御链)select_worker 失败即放行
+    停气池,不再要求采集池簿记归零;其余结构保持旧闸(防停气池
+    被奢侈品派工抽干)。
+    """
+    if gas_stopped <= 0:
+        return False
+    return gathering_empty or structure_name in (
+        "PHOTONCANNON",
+        "SHIELDBATTERY",
+        "PYLON",
+    )
+
+
+def gas_restore_needed(
+    minerals: float,
+    vespene: float,
+    carriers: int,
+    fb_ready: bool,
+    min_minerals: float = 600.0,
+    vespene_ceiling: float = 125.0,
+    max_carriers: int = 2,
+) -> bool:
+    """O365-②(o364b g3 实证):航母硬转化的气枯强制复气判据。纯逻辑,可单测。
+
+    o364b g3:矿 >600 窗口 908-948s(40s)气仅 7-79,can_afford
+    (250 气)恒假,硬转化 0 次且无日志,航母 0 —— 停气棘轮把气
+    锁死,矿烂银行换不成舰队。矿 >600 且气 <125 且航母(含在产)
+    <2 且 FB 就绪 → 调用方强制复气(每气矿回 3 人,解除停气
+    棘轮);气 ≥300(gas_restore_done)恢复正常,走原硬转化。
+    """
+    return (
+        fb_ready
+        and minerals >= min_minerals
+        and vespene < vespene_ceiling
+        and carriers < max_carriers
+    )
+
+
+def gas_restore_done(vespene: float, threshold: float = 300.0) -> bool:
+    """O365-②:强制复气完成判据(气 ≥300 恢复停气棘轮+硬转化)。
+    纯逻辑,可单测。300 > 航母 250 气价,复气一完成即够转化。"""
+    return vespene >= threshold
+
+
+def nexus_deal_confirmed(nexus_pending: int, townhalls: int) -> bool:
+    """O365-③c(o364a g3 假成交实证):Nexus 开工成交双条件判据。
+    纯逻辑,可单测。
+
+    旧成交单条件(tracker 无 NEXUS 条目)被保险丝 pop/静默回收
+    骗过:o364a g3 报「Nexus开工成交,放行」但 bases 全程=1
+    (358.3/418.4s O340 仍诊断首扩未开工)。成交 = tracker 真空
+    + Nexus 实体实证(townhalls ≥2,ares townhalls 含在建,见
+    O364-② 注释)双条件;hold 期内保险丝 pop 条目只满足前者,
+    不判成交(调用方重回 hold 并重派工)。
+    """
+    return nexus_pending == 0 and townhalls >= 2
+
+
+def nexus_deal_verify_failed(
+    now: float, deal_verify_at: float, townhalls: int
+) -> bool:
+    """O365-③b(o364a g3 实证):成交 T+15s placement 校验判据。
+    纯逻辑,可单测。
+
+    报成交后 deal_verify_at 时刻仍无 Nexus 实体(townhalls <2,
+    含在建口径)→ 假成交:调用方撤销成交、重回 hold 并重派工。
+    deal_verify_at=0(无待校验成交)不判。
+    """
+    return (
+        deal_verify_at > 0.0 and now >= deal_verify_at and townhalls < 2
+    )
+
+
+def nexus_pin_yield_gate(
+    minerals: float,
+    second_base_pinned: bool,
+    main_cannons_ready: int,
+    min_minerals: float = 400.0,
+    min_cannons: int = 2,
+) -> bool:
+    """O365-④(o364b g1 实证):第 3+ 塔/电池让位 Nexus 钉点判据。
+    纯逻辑,可单测。
+
+    o364b g1 倒挂:196-225s 先立 3 塔+2 电池(~500 矿),Nexus
+    ~318s 才钉,二矿 381.7s 比胜局晚 80s —— O364-① 的 hold 在
+    Nexus 钉点之后,根本轮不到武装。倒挂前置到钉点排队层:矿
+    ≥400(Nexus 钱已够)且二矿未钉(无实体无在途)且主基防御
+    ≥2 塔 → 调用方把第 3+ 塔/电池目标钳掉,Nexus 钉点独占银行。
+    主基 <2 塔(保命塔未齐)不让位。
+    """
+    return (
+        minerals >= min_minerals
+        and not second_base_pinned
+        and main_cannons_ready >= min_cannons
+    )
+
+
+def cyber_core_watchdog(
+    now: float, cyber_present_or_pending: bool, min_time: float = 180.0
+) -> bool:
+    """O365-⑤a(o364a g2 实证):BY 芯核兜底 watchdog 判据。纯逻辑,可单测。
+
+    o364a g2 全场无 BY 芯核(build yml ~474s 跑完即无后继,Timing
+    lane 更上游断链):科技链断在第一节无人发现。t >180s 且无
+    CYBERNETICSCORE 实体无在途 → 调用方最高优先 critical 钉点
+    (驻点等钱 = 资金走低时天然最优先;no_placement 走 O357
+    死槽换锚)并打事件。
+    """
+    return now >= min_time and not cyber_present_or_pending
+
+
+def evac_return_gas_stop_remark(worker_tag: int, gas_stopped_tags) -> bool:
+    """O365-⑤b(o364b g3 实证):E6 归队即重标停气判据。纯逻辑,可单测。
+
+    E6 归队农民 role 漂回 GATHERING 是停气泄漏主通道(复拽 4 次
+    实证):ares Mining 抢在 O364-③b 的 2s 校验环前按残留簿记把
+    人拽回气矿。归队帧对停气台账在册者直接重标 _GAS_STOP_ROLE,
+    不等校验环。
+    """
+    return worker_tag in gas_stopped_tags
+
+
+def anchor_retry_ok(
+    now: float,
+    np_since: float,
+    last_attempt_at: float,
+    np_window: float = 30.0,
+    retry_cd: float = 30.0,
+) -> bool:
+    """O365-⑤c(o364b g3 实证):手工锚点 per-base 持续重试判据。
+    纯逻辑,可单测。
+
+    旧簿记 taken/失败即销账,下次 no_placement 重等 30s 连续窗
+    —— 手工锚点 fired 一次后静默 121s(902-1023s 又空转)。改为
+    attempt 簿记跨失败保留:连续 no_placement ≥np_window 首开,
+    此后每 retry_cd 持续重试(每次外扩 1 格+打日志),仅派工
+    成功才销账(调用方)。last_attempt_at 传 -9999 = 从未试过。
+    """
+    return now - np_since >= np_window and now - last_attempt_at >= retry_cd

@@ -42,7 +42,14 @@ from bot.production_plans import (
     bank_production_target,
     base_defense_anchor,
     base_rebuild_active,
-    builder_borrow_ok,
+    gas_stop_requisition_ok,
+    gas_restore_needed,
+    gas_restore_done,
+    nexus_deal_confirmed,
+    nexus_deal_verify_failed,
+    nexus_pin_yield_gate,
+    cyber_core_watchdog,
+    anchor_retry_ok,
     cannon_target_capped,
     cannon_safe_anchor,
     carrier_quota_active,
@@ -456,6 +463,24 @@ class ProductionManager(Manager):
         # 台账(base key → 连续 no_placement 起点/已试外扩次数)。
         self._o364_cannon_np_since: dict = {}
         self._o364_anchor_attempts: dict = {}
+        # O365-②(o364b g3 实证):气枯强制复气状态(矿>600/气<125/
+        # 航母<2/FB 就绪触发,气≥300 解除恢复停气棘轮)与硬转化
+        # 诊断的 30s 节流时刻。__init__ 初始化,不用 getattr 兜底。
+        self._o365_gas_restore: bool = False
+        self._o365_carrier_diag_ts: float = 0.0
+        # O365-③b/③c(o364a g3 假成交实证):成交 T+15s placement
+        # 校验时刻(0=无待校验成交);保险丝 pop 后已重回 hold 的
+        # 边沿簿记(防每帧续杯把 45s 超时死锁保护续没)。
+        self._o364_deal_verify_at: float = 0.0
+        self._o364_pop_rehold: bool = False
+        # O365-④(o364b g1 实证):第 3+ 塔/电池让位 Nexus 钉点事件
+        # 30s 节流时刻(只节流言不节流钳制)。
+        self._o365_yield_log_ts: float = 0.0
+        # O365-⑤a(o364a g2 实证):BY 芯核 watchdog 事件 30s 节流时刻。
+        self._o365_cyber_wd_ts: float = 0.0
+        # O365-⑤c(o364b g3 实证):手工锚点 per-base 上次重试时刻
+        # (持续重试簿记;原 _o364_anchor_attempts 只记次数)。
+        self._o364_anchor_last: dict = {}
         # O117-②:防御紧急旗标(rush确认/过渡/presumed 合成,每帧更新)——
         # main.py 的 O11 钉点撤回豁免读它(presumed 期塔工不再被撤回循环)
         self._defense_urgent: bool = False
@@ -715,8 +740,11 @@ class ProductionManager(Manager):
             # 资金窗重算(281/457s 二连撤销 → 落成 578s vs 胜局
             # 212-233s);派工保留,仅释放 holding 30s 让科技链恢复
             # (o306c 的科技冻结死因不回潮)。
+            # O365-③a(o364b g1 实证):hold 分支的 timing 门改 zerg 全
+            # build —— 旧门下 rush 局回退旧 O307 撤销路径,二矿裸建
+            # 69s 被拆;首扩只解锁不撤销对 rush/power 同样成立。
             _o336_keep = holding_abort_keep_first_expand(
-                self._opp_race == "zerg" and self._ai_build == "timing",
+                self._opp_race == "zerg",
                 self.ai.townhalls.amount,
             )
             if not _o336_keep:
@@ -760,15 +788,78 @@ class ProductionManager(Manager):
             _expand_holding = False
         # O364-①:成交边沿簿记 —— Nexus 开工(tracker 无 NEXUS 条目)
         # 即放行资金窗(45s 超时在 nexus_fund_hold_active 内判)。
-        if (
-            self._o364_nexus_hold_armed
-            and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) == 0
+        # O365-③c(o364a g3 假成交实证):成交改双条件 —— tracker 真空
+        # + Nexus 实体实证(townhalls ≥2,含在建)。hold 期内保险丝
+        # pop/静默回收条目只满足前者:不判成交,重回 hold 45s 一次
+        # (_o364_pop_rehold 边沿簿记,防每帧续杯把超时死锁保护续没)
+        # 并重派工。
+        _nx_pending = self.ai.not_started_but_in_building_tracker(UnitID.NEXUS)
+        if self._o364_pop_rehold and _nx_pending > 0:
+            self._o364_pop_rehold = False  # 重钉已挂出,恢复正常 hold 流程
+        if self._o364_nexus_hold_armed and _nx_pending == 0:
+            if nexus_deal_confirmed(_nx_pending, self.ai.townhalls.amount):
+                self._o364_nexus_hold_armed = False
+                # O365-③b:报成交后 T+15s 校验 placement(防假成交)
+                self._o364_deal_verify_at = self.ai.time + 15.0
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O364:Nexus开工成交,luxury钉点放行",
+                })
+            elif not self._o364_pop_rehold:
+                self._o364_pop_rehold = True
+                self._o364_nexus_fund_hold_until = self.ai.time + 45.0
+                _rc = self._o365_repin_nexus()
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O365:Nexus条目消失无实体(非成交),重回hold+"
+                        f"重派工(派工={_rc})"
+                    ),
+                })
+            else:
+                # 持续重派工:pop 边沿的首次尝试多半撞上保险丝 30s
+                # 冷却(pin_fuse_cd),不补每帧重试 = o364a g3 的
+                # 「成交后 bases 全程=1」复现;冷却过后自然挂出,
+                # tracker 有条目后 _o364_pop_rehold 在上方清除。
+                self._o365_repin_nexus()
+        # O365-③b(o364a g3 实证):成交 T+15s placement 校验 ——
+        # o364a g3 报成交后 bases 全程=1(358.3/418.4s O340 仍诊断
+        # 首扩未开工)。校验失败 → 撤销成交、重回 hold 并重派工。
+        if nexus_deal_verify_failed(
+            self.ai.time, self._o364_deal_verify_at, self.ai.townhalls.amount
         ):
-            self._o364_nexus_hold_armed = False
+            self._o364_deal_verify_at = 0.0
+            self._o364_nexus_hold_armed = True
+            self._o364_nexus_fund_hold_until = self.ai.time + 45.0
+            _rc = self._o365_repin_nexus()
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
-                "msg": "O364:Nexus开工成交,luxury钉点放行",
+                "msg": (
+                    f"O365:成交T+15s校验失败(仍无Nexus实体),"
+                    f"撤销成交重回hold+重派工(派工={_rc})"
+                ),
             })
+        elif self._o364_deal_verify_at > 0.0 and self.ai.townhalls.amount >= 2:
+            self._o364_deal_verify_at = 0.0  # 校验通过销账
+        # O365-⑤a(o364a g2 实证):BY 芯核兜底 watchdog —— g2 全场无
+        # BY(build yml ~474s 跑完即无后继,Timing lane 更上游断链,
+        # O245 建台失败 ×12 只是下游症状)。t>180s 且无实体无在途 →
+        # 最高优先 critical 钉点:驻点等钱(资金走低时天然最优先,
+        # 不发明新预留),no_placement 由 _dispatch_pin_reanchor 的
+        # O357 死槽换锚处理;30s 节流打事件。
+        if cyber_core_watchdog(
+            self.ai.time,
+            self._structure_present_or_pending(UnitID.CYBERNETICSCORE),
+        ):
+            _cy_rc = self._dispatch_pin_reanchor(
+                UnitID.CYBERNETICSCORE, self.ai.start_location
+            )
+            if event_throttle_ok(self.ai.time, self._o365_cyber_wd_ts):
+                self._o365_cyber_wd_ts = self.ai.time
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O365:BY芯核watchdog钉点(派工={_cy_rc})",
+                })
         # O323-③(o321b game_01 实证):分矿落成即钉 1 塔(critical,驻点等钱)
         # —— 分矿塔常态靠 F2 余钱,落成后裸奔 30-100s 被波收(490s 落成
         # 506s 失守)。落成交接棒:先 1 塔保命,F2 后续按目标补齐。
@@ -922,7 +1013,17 @@ class ProductionManager(Manager):
                         _np0 = self._o364_cannon_np_since.setdefault(
                             _bk, self.ai.time
                         )
-                        if self.ai.time - _np0 >= 30.0:
+                        # O365-⑤c(o364b g3 实证):per-base 簿记+持续
+                        # 重试 —— 旧版 taken/其它失败即销账,下次
+                        # no_placement 重等 30s 连续窗,手工锚点 fired
+                        # 一次后静默 121s(902-1023s 又空转)。attempt
+                        # 簿记跨失败保留,30s 节流持续重试(每次外扩
+                        # 1 格+打日志),仅 dispatched 才销账。
+                        if anchor_retry_ok(
+                            self.ai.time,
+                            _np0,
+                            self._o364_anchor_last.get(_bk, -9999.0),
+                        ):
                             _mh = self.ai.mineral_field.closer_than(
                                 10, _exp_th.position
                             )
@@ -950,17 +1051,21 @@ class ProductionManager(Manager):
                                     pos=Point2((_ax, _ay)),
                                 )
                                 self._o364_anchor_attempts[_bk] = _att + 1
+                                self._o364_anchor_last[_bk] = self.ai.time
                                 self.ai._events.append({
                                     "t": round(self.ai.time, 1),
                                     "msg": (
-                                        f"O364:分矿塔手工锚点({_bk},"
-                                        f"外扩{_att}格,锚=({_ax:.0f},{_ay:.0f}))"
+                                        f"O365:分矿塔手工锚点重试({_bk},"
+                                        f"第{_att + 1}次,外扩{_att}格,"
+                                        f"锚=({_ax:.0f},{_ay:.0f}))"
                                     ),
                                 })
-                    else:
-                        # 派工恢复(dispatched/其它失败环节)→ 销空转台账
+                    elif _rc == "dispatched":
+                        # 派工成功 → 销空转/重试台账(taken/其它失败
+                        # 保留簿记,O365-⑤c 持续重试)
                         self._o364_cannon_np_since.pop(_bk, None)
                         self._o364_anchor_attempts.pop(_bk, None)
+                        self._o364_anchor_last.pop(_bk, None)
                 if _pin_batt:
                     # O363-①:电池同钉(fb_fund 同款 critical 钉点通道);
                     # 无电时 no_placement,下轮补电落成后重钉(30s 节流)
@@ -2671,6 +2776,50 @@ class ProductionManager(Manager):
                 # 主基目标(波打主基时塔照拉满)。
                 if cannons > 0 and not self._threat_active and not self._rush_active:
                     cannons = min(cannons, 1)
+            # O365-④(o364b g1 实证):倒挂前置到钉点排队层 —— g1 在
+            # 196-225s 先立 3 塔+2 电池(~500 矿),Nexus ~318s 才钉,
+            # 二矿 381.7s 比胜局晚 80s,O364-① 的 hold 根本没机会
+            # 武装。矿≥400(Nexus 钱够)且二矿未钉(无实体无在途)
+            # 且主基 ≥2 塔 → 第 3+ 塔/电池让位:F2 目标直接钳 2/2,
+            # Nexus 钉点独占银行;主基 <2 塔(保命塔未齐)不让位。
+            if (
+                self._opp_race == "zerg"
+                and self._ai_build in ("timing", "rush")
+                and nexus_pin_yield_gate(
+                    minerals=self.ai.minerals,
+                    second_base_pinned=(
+                        any(
+                            t.position.distance_to(self.ai.start_location) > 5.0
+                            for t in self.ai.townhalls
+                        )
+                        or self.ai.not_started_but_in_building_tracker(
+                            UnitID.NEXUS
+                        )
+                        > 0
+                        or self.manager_mediator.get_building_counter[
+                            UnitID.NEXUS
+                        ]
+                        > 0
+                    ),
+                    main_cannons_ready=sum(
+                        1
+                        for s in self.ai.structures.ready
+                        if s.type_id == UnitID.PHOTONCANNON
+                        and s.position.distance_to(self.ai.start_location) < 25
+                    ),
+                )
+            ):
+                cannons = min(cannons, 2)
+                batt = min(batt, 2)
+                if event_throttle_ok(self.ai.time, self._o365_yield_log_ts):
+                    self._o365_yield_log_ts = self.ai.time
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            f"O365:第3+塔/电池让位Nexus钉点"
+                            f"(矿={self.ai.minerals:.0f},目标钳2/2)"
+                        ),
+                    })
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
             # O207:非紧急状态下把 mor 压到 1，避免 PSD 一次派多个工人等钱
@@ -3776,6 +3925,26 @@ class ProductionManager(Manager):
         # train(绕过 SpawnController 比例分配,O239 同通道,每帧
         # 最多 1 座,30s 事件节流)。与 tempest_dump_suppressed 联动
         # 不打架:O354-① 已保证航母 <2 时 O260 不点暴风。
+        # O365-②(o364b g3 实证):硬转化条件诊断 —— 气枯窗口矿>600
+        # 持续 40s 零转化零日志(静默断点),下轮尸检无从读起。矿>600
+        # 且 FB 就绪时 30s 节流上报各条件命中状态(只节流言)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build in ("timing", "rush")
+            and self.ai.minerals > 600.0
+            and self._fb_entities_now > 0
+            and event_throttle_ok(self.ai.time, self._o365_carrier_diag_ts)
+        ):
+            self._o365_carrier_diag_ts = self.ai.time
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O365:硬转化诊断(FB=True,矿={self.ai.minerals:.0f},"
+                    f"气={self.ai.vespene:.0f},航母={self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER) + cy_unit_pending(self.ai, UnitID.CARRIER)},"
+                    f"复气={self._o365_gas_restore},"
+                    f"买得起={self.ai.can_afford(UnitID.CARRIER)})"
+                ),
+            })
         if (
             self._opp_race == "zerg"
             and self._ai_build in ("timing", "rush")
@@ -6384,11 +6553,55 @@ class ProductionManager(Manager):
                     f"矿{self.ai.minerals:.0f})"
                 ),
             })
-        if rush_gas_stop_window(
-            self._rush_active,
-            _stop_age,
-            window=45.0 if self._flow.transition is not None else float("inf"),
-        ) or self._mineral_crisis_gas_stop or self._early_gas_pull or self._o358_gas_pull:
+        # O365-②(o364b g3 实证):航母硬转化的气枯强制复气 —— 矿>600
+        # 窗口 908-948s(40s)气仅 7-79,can_afford(250气) 恒假,硬转化
+        # 0 次且无日志,航母 0。矿>600 且气<125 且航母<2 且 FB 就绪 →
+        # 强制复气:本帧起抑制一切停气分支(下方大 if 整段跳过),停气
+        # 池农民归 GATHERING 后 ares Mining 按每气矿 3 人自动补回;气
+        # ≥300 解除,停气棘轮恢复各自触发条件,硬转化走原通道。
+        if (
+            not self._o365_gas_restore
+            and self._opp_race == "zerg"
+            and self._ai_build in ("timing", "rush")
+            and gas_restore_needed(
+                minerals=self.ai.minerals,
+                vespene=self.ai.vespene,
+                carriers=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER
+                    )
+                    + cy_unit_pending(self.ai, UnitID.CARRIER)
+                ),
+                fb_ready=self._fb_entities_now > 0,
+            )
+        ):
+            self._o365_gas_restore = True
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O365:气枯强制复气(矿{self.ai.minerals:.0f},"
+                    f"气{self.ai.vespene:.0f},解除停气棘轮)"
+                ),
+            })
+        elif self._o365_gas_restore and gas_restore_done(self.ai.vespene):
+            self._o365_gas_restore = False
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O365:复气完成(气{self.ai.vespene:.0f}),"
+                    "恢复停气棘轮+硬转化"
+                ),
+            })
+        if not self._o365_gas_restore and (
+            rush_gas_stop_window(
+                self._rush_active,
+                _stop_age,
+                window=45.0 if self._flow.transition is not None else float("inf"),
+            )
+            or self._mineral_crisis_gas_stop
+            or self._early_gas_pull
+            or self._o358_gas_pull
+        ):
             gas_workers = self.manager_mediator.get_worker_to_vespene_dict
             # O359-②:拉动豁免集 —— 建造台账(BuildingManager 的责任,
             # O1/O2 教训)/侦查/E6 撤离/司令接管各有属主,不抢;其余
@@ -7738,7 +7951,8 @@ class ProductionManager(Manager):
         False 无区分度。四类失败:taken(同型已在途)/ tech_not_ready /
         no_placement(落位请求 None)/ no_worker(GATHERING 池被协防+停气
         +建造抽干,select_worker 恒 None —— 局3 首塔 218→266 的主嫌)。
-        no_worker 且 allow_borrow → 从停气池借(builder_borrow_ok;
+        no_worker 且 allow_borrow → 从停气池借(gas_stop_requisition_ok,
+        O365-①:塔/电池/补电不再要求采集池归零;
         借出即从 _gas_stopped_tags 摘除,防 rush 解除的回气循环把建造工
         从建造点拽走)。失败环节由调用方写事件(下轮尸检直接读)。
         """
@@ -7894,13 +8108,18 @@ class ProductionManager(Manager):
             target_position=worker_origin if worker_origin is not None else placement,
             force_close=True,
         )
-        if worker is None and allow_borrow and builder_borrow_ok(
+        if worker is None and allow_borrow and gas_stop_requisition_ok(
+            sid.name,
             not self.manager_mediator.get_unit_role_dict.get(
                 UnitRole.GATHERING, set()
             ),
             len(self._gas_stopped_tags),
         ):
             # O116-②:GATHERING 抽干 → 停气池借最近的建造工
+            # O365-①(o364b g3 实证):塔/电池/补电不再要求采集池簿记
+            # 归零 —— 簿记含气矿工虚高(O347-①),o364b g3 采集池=1
+            # (虚)、停气池=63 被整体豁免 → 四矿零塔 no_worker 被抄家。
+            # 停气农民在采矿,拉 1 人钉塔不伤停气(gas_stop_requisition_ok)。
             alive = {w.tag: w for w in self.ai.workers}
             candidates = [
                 alive[t] for t in self._gas_stopped_tags if t in alive
@@ -8131,6 +8350,27 @@ class ProductionManager(Manager):
             hold_until=self._o364_nexus_fund_hold_until,
             nexus_pending=self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
             threat_active=(self._rush_active or self._threat_active),
+        )
+
+    def _o365_repin_nexus(self) -> str:
+        """O365-③b/③c(o364a g3 实证):假成交/保险丝 pop 后的 Nexus
+        重派工 —— 目标选取同 O251(ZT 首扩口袋矿,否则最近空闲点),
+        critical 钉点驻点等钱。返回 _dispatch_structure 的 rc 供事件
+        取证;pin_fuse_cd(保险丝 30s 冷却)期内返回 "pin_fuse_cd",
+        冷却过后调用方的每帧重试自然挂出。"""
+        _free = [
+            el
+            for el in self.ai.expansion_locations_list
+            if not self.ai.townhalls.closer_than(5.0, el)
+        ]
+        if not _free:
+            return "no_expansion"
+        _target = self._zt_pocket_expand_target() or min(
+            _free,
+            key=lambda el: min(el.distance_to(th) for th in self.ai.townhalls),
+        )
+        return self._dispatch_structure(
+            UnitID.NEXUS, _target, critical=True, needs_power=False
         )
 
     def _first_cannon_anchor(self):

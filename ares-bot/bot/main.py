@@ -10,6 +10,7 @@ from bot.production_plans import (
     builder_is_waiting,
     builder_release_exempt,
     evacuation_clear,
+    evac_return_gas_stop_remark,
     idle_builder_alarm,
     is_combat_type,
     nexus_rebuild_viable,
@@ -268,7 +269,17 @@ def update_worker_evacuation(ai) -> None:
             w = next((x for x in ai.workers if x.tag == tag), None)
             if w is None or tag in ai._player_ctrl:
                 continue
-            ai.mediator.assign_role(tag=tag, role=UnitRole.GATHERING)
+            # O365-⑤b(o364b g3 实证):归队即重标停气 —— 归队农民 role
+            # 漂回 GATHERING 是停气泄漏主通道(复拽 4 次):ares Mining
+            # 抢在 O364-③b 的 2s 校验环前按残留簿记把人拽回气矿。
+            # 停气台账在册者归队帧直接重标 _GAS_STOP_ROLE,不等校验环。
+            _pm = getattr(ai, "production_manager", None)
+            if _pm is not None and evac_return_gas_stop_remark(
+                tag, getattr(_pm, "_gas_stopped_tags", set())
+            ):
+                ai.mediator.assign_role(tag=tag, role=_pm._GAS_STOP_ROLE)
+            else:
+                ai.mediator.assign_role(tag=tag, role=UnitRole.GATHERING)
             if ai.mineral_field:
                 w.gather(ai.mineral_field.closest_to(th if th is not None else w))
             returned += 1

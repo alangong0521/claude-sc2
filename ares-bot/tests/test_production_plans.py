@@ -101,6 +101,15 @@ from bot.production_plans import (  # noqa: E402
     gas_stop_release_blocked,
     carrier_hard_convert_ok,
     manual_cannon_anchor,
+    gas_stop_requisition_ok,
+    gas_restore_needed,
+    gas_restore_done,
+    nexus_deal_confirmed,
+    nexus_deal_verify_failed,
+    nexus_pin_yield_gate,
+    cyber_core_watchdog,
+    evac_return_gas_stop_remark,
+    anchor_retry_ok,
     pin_repin_blocked,
     gas_pull_thresholds,
     fb_fund_ground_yield,
@@ -4507,6 +4516,80 @@ class TestO362TimingVacuumWindow(unittest.TestCase):
         # 采矿底线不变:农民太少时少于 3
         self.assertEqual(escort_hard_cap(12, 8, keep_mining=6), 2)
         self.assertEqual(escort_hard_cap(12, 5, keep_mining=6), 0)
+
+
+class TestO365Fixes(unittest.TestCase):
+    """O365 五项修复的纯逻辑单测(o364a Timing 0/3 + o364b Rush 1/3 尸检)。"""
+
+    def test_gas_stop_requisition_ok(self):
+        # O365-①:塔/电池/补电 select_worker 失败即放行停气池,
+        # 不再要求采集池簿记归零(o364b g3 采集池=1虚/停气池=63 实证)
+        self.assertTrue(gas_stop_requisition_ok("PHOTONCANNON", False, 63))
+        self.assertTrue(gas_stop_requisition_ok("SHIELDBATTERY", False, 6))
+        self.assertTrue(gas_stop_requisition_ok("PYLON", False, 6))
+        # 采集池真空 → 任意结构保持旧闸(O116-② 行为不变)
+        self.assertTrue(gas_stop_requisition_ok("FLEETBEACON", True, 3))
+        # 非防御链结构且采集池非空 → 不强征(防停气池被奢侈品抽干)
+        self.assertFalse(gas_stop_requisition_ok("FLEETBEACON", False, 3))
+        self.assertFalse(gas_stop_requisition_ok("ROBOTICSFACILITY", False, 3))
+        # 停气池空 → 无人可征
+        self.assertFalse(gas_stop_requisition_ok("PHOTONCANNON", False, 0))
+
+    def test_gas_restore_needed(self):
+        # O365-②:矿>600 且气<125 且航母<2 且 FB 就绪 → 强制复气
+        self.assertTrue(gas_restore_needed(955.0, 7.0, 1, True))
+        self.assertTrue(gas_restore_needed(600.0, 124.9, 0, True))
+        self.assertFalse(gas_restore_needed(599.9, 7.0, 1, True))   # 矿不够
+        self.assertFalse(gas_restore_needed(955.0, 125.0, 1, True))  # 气未枯
+        self.assertFalse(gas_restore_needed(955.0, 7.0, 2, True))   # 航母够
+        self.assertFalse(gas_restore_needed(955.0, 7.0, 1, False))  # FB 未就绪
+
+    def test_gas_restore_done(self):
+        # O365-②:气 ≥300 复气完成(300 > 航母 250 气价)
+        self.assertTrue(gas_restore_done(300.0))
+        self.assertFalse(gas_restore_done(299.9))
+
+    def test_nexus_deal_confirmed(self):
+        # O365-③c:成交 = tracker 真空 + Nexus 实体(含在建)双条件
+        self.assertTrue(nexus_deal_confirmed(0, 2))
+        # 保险丝 pop/静默回收(条目消失但无实体)→ 不判成交(假成交防回)
+        self.assertFalse(nexus_deal_confirmed(0, 1))
+        # 条目还在 → 未成交
+        self.assertFalse(nexus_deal_confirmed(1, 2))
+
+    def test_nexus_deal_verify_failed(self):
+        # O365-③b:报成交后 T+15s 仍无 Nexus 实体 → 假成交回滚
+        self.assertTrue(nexus_deal_verify_failed(415.0, 415.0, 1))
+        self.assertTrue(nexus_deal_verify_failed(430.1, 415.0, 1))
+        self.assertFalse(nexus_deal_verify_failed(414.9, 415.0, 1))  # 未到点
+        self.assertFalse(nexus_deal_verify_failed(415.0, 415.0, 2))  # 实体在
+        self.assertFalse(nexus_deal_verify_failed(415.0, 0.0, 1))    # 无待校验
+
+    def test_nexus_pin_yield_gate(self):
+        # O365-④ 让位闸三象限:矿≥400 且二矿未钉 且主基≥2塔
+        self.assertTrue(nexus_pin_yield_gate(400.0, False, 2))
+        self.assertFalse(nexus_pin_yield_gate(399.9, False, 2))  # 矿不够
+        self.assertFalse(nexus_pin_yield_gate(500.0, True, 2))   # 二矿已钉
+        self.assertFalse(nexus_pin_yield_gate(500.0, False, 1))  # 保命塔未齐
+
+    def test_cyber_core_watchdog(self):
+        # O365-⑤a:t>180s 且无 BY 实体无在途 → watchdog 开火
+        self.assertTrue(cyber_core_watchdog(180.0, False))
+        self.assertFalse(cyber_core_watchdog(179.9, False))  # 太早
+        self.assertFalse(cyber_core_watchdog(300.0, True))   # BY 已在/在途
+
+    def test_evac_return_gas_stop_remark(self):
+        # O365-⑤b:停气台账在册者归队即重标,不在册者归 GATHERING
+        self.assertTrue(evac_return_gas_stop_remark(42, {42, 43}))
+        self.assertFalse(evac_return_gas_stop_remark(44, {42, 43}))
+        self.assertFalse(evac_return_gas_stop_remark(42, set()))
+
+    def test_anchor_retry_ok(self):
+        # O365-⑤c:连续 no_placement ≥30s 首开,此后每 30s 持续重试
+        self.assertFalse(anchor_retry_ok(920.0, 900.0, -9999.0))  # 连续窗未满
+        self.assertTrue(anchor_retry_ok(930.0, 900.0, -9999.0))   # 首开
+        self.assertFalse(anchor_retry_ok(950.0, 900.0, 930.0))    # 重试冷却中
+        self.assertTrue(anchor_retry_ok(960.0, 900.0, 930.0))     # 持续重试
 
 
 if __name__ == "__main__":
