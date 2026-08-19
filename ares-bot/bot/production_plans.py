@@ -777,6 +777,27 @@ def mineral_crisis_gas_stop(
     return vespene >= vespene_threshold and minerals <= _mineral_thr
 
 
+def gas_to_minerals_needed(
+    vespene: float,
+    minerals: float,
+    vespene_threshold: float = 800.0,
+    mineral_threshold: float = 300.0,
+) -> bool:
+    """O358-②(o357 尸检):矿气倒挂停气转矿触发判据。纯逻辑,可单测。
+
+    o357 实证:三局气峰 779/1184/2524,矿常年 5-300 —— 航母 350 矿、
+    母舰 300 矿、塔 150 矿全卡矿,6 气满采 + 塔/水晶/地面兵全吃矿;
+    o357a g3 母舰窗空开 60s(气 ≥400 成立但矿 <300 买不起),期间
+    分矿塔被压、940s 掉四矿。O157 的停气(气 ≥600/矿 ≤300 触发)
+    在矿 >500 即回气,锯齿震荡下气持续烂银行;本判据触发更高
+    (气 >800 = 明显烂银行)但解除更低(气 <500 才回气,调用方
+    滞回),把气农更久地按在矿簇上,把烂气换成母舰/航母缺的矿。
+    复用 O346/O347 的停气通道(_GAS_STOP_ROLE role 切换),不新
+    发明框架。解除由调用方滞回(气 <500)实现,本函数只管触发。
+    """
+    return vespene > vespene_threshold and minerals < mineral_threshold
+
+
 def early_gas_overflow_pull(
     now: float,
     vespene: float,
@@ -857,6 +878,9 @@ def zt_fast_expand_pin(
     rush_confirmed: bool,
     at: float = 100.0,
     cost: float = 475.0,
+    first_cannon_ready: bool = True,
+    cannon_window_end: float = 330.0,
+    cannon_reserve: float = 150.0,
 ) -> bool:
     """O329-②(司令 2026-08-18 拍板):速二矿钉点判据。纯逻辑,可单测。
 
@@ -876,13 +900,24 @@ def zt_fast_expand_pin(
     1→0 反复蒸发,开工拖到 466-759s;475 = 造价 400 + 走位窗
     buffer 75(与 _preposition 同判据,o335 胜局 212-233s 开工
     实证有效),钉点 ~140-160s、到位即开工 ~170-190s。
+    O358-⑤(o357 尸检):首塔资金优先于二矿 —— o357 实证首塔落成
+    281-365s vs ZT 首波 280-330s 零裕度,塔资金被 233-237s 的
+    二矿挤占(g1 塔链派工已出却干等 120s)。首塔未落成且 t<330
+    (首波窗)时矿门抬高到 造价 400 + 塔 150 = 550:Nexus 吃掉
+    400 后账上必剩 ≥150 给首塔;首塔落成或出窗(≥330s,首波已
+    到、塔链命运已定)后回 475 原门。验收口径:左上首塔 <300s。
     """
+    _gate = (
+        cost
+        if first_cannon_ready or now >= cannon_window_end
+        else 400.0 + cannon_reserve
+    )
     return (
         townhalls == 1
         and not rush_confirmed
         and nexus_in_flight == 0
         and now >= at
-        and minerals >= cost
+        and minerals >= _gate
     )
 
 
@@ -1491,23 +1526,35 @@ def forge_pin_affordable(
 
 
 def zt_forge_pin_gate(
-    townhalls: int,
+    gateway_ordered: bool,
     now: float,
-    min_t: float = 60.0,
+    minerals: float,
+    min_t: float = 75.0,
+    min_minerals: float = 200.0,
 ) -> bool:
     """O357-③(o356 尸检):ZT forge 钉点门 —— 确定性 forge-first。纯逻辑,可单测。
 
     o356 尸检:开局 forge 落点是 dice roll —— forge-first(104.5s,
     o355 胜局走这条)vs cyber-first(forge 等 O333 的 Nexus 钉点
     217-237s,o356a g3/o356b g3 走这条,首塔 301s+ 晚于 274-322s
-    致死窗)。钉点不再干等 Nexus 开工(townhalls≥2):t≥min_t 即
-    放行(forge_pin_affordable 的矿 ≥100 近可负担门不变,钱够下帧
-    即钉),forge ≤150s 落成从 dice roll 变确定性。60s 前不放行 —
-    opener 早期资金窗(水晶/兵营/钉点 400 矿)零干扰。rush 墙
+    致死窗)。钉点不再干等 Nexus 开工:t≥min_t 即放行
+    (forge_pin_affordable 的矿 ≥100 近可负担门不变,钱够下帧
+    即钉),forge ≤150s 落成从 dice roll 变确定性。rush 墙
     fallback(threat/rush 激活免矿门)与 ms_window/capped 拦截不在
     本门语义内,不受影响。
+    O358-①(o357 尸检,实锤 opener 回归):O357-③ 的
+    「townhalls≥2 or t≥60」让 forge 在 60s 吃掉 150 矿,GATEWAY
+    从 68.3s(o356 基线全部)右移到 104.5-132.6s,干等造 GATEWAY
+    (g1 103.9s/g3 100.7s),CYBERCORE 116-120→168-180s、首叉
+    180-225→261-265s、二矿 132-193→233-237s,首叉晚 40-80s 撞上
+    ZT 280-330s 首波。o356b g2 证明 forge 104.5s 与 gateway 68.3s
+    可兼得 —— 是门放太早,不是 forge-first 本身的代价。判据改
+    「GATEWAY 已下单(实体或在途)or (t≥75 且矿 ≥200)」:GATEWAY
+    下单前 forge 不抢 opener 资金;t≥75 且矿 ≥200(150 forge +
+    50 余量,GATEWAY 已在产)兜底放行,防 GATEWAY 卡死局 forge
+    永锁。验收口径:GATEWAY ≤75s 基线恢复 + forge 仍 ≤150s。
     """
-    return townhalls >= 2 or now >= min_t
+    return gateway_ordered or (now >= min_t and minerals >= min_minerals)
 
 
 def event_throttle_ok(now: float, last_ts: float, interval: float = 30.0) -> bool:
@@ -1571,6 +1618,7 @@ def mothership_window_open(
     min_fleet: int = 3,
     min_gas: float = 400.0,
     price: float = 400.0,
+    min_minerals: float = 300.0,
 ) -> bool:
     """O354-②(o353 五局尸检):母舰资金窗判据。纯逻辑,可单测。
 
@@ -1587,6 +1635,13 @@ def mothership_window_open(
     窗永不二次开(o354a g3 实证 O260 在气 389/364 合法泄气;母舰
     0/9)。400 < 500 让窗先开,窗内 O260 被抑制,气自然续涨到
     O264 下单门(600)。
+    O358-③(o357 尸检):开窗加矿判据 min_minerals=300 —— 窗语义
+    从「攒钱期」改「攒够了才开」。o357a g3 实证:气 ≥400 成立但
+    矿 <300 买不起,空窗 60s 期间塔/电池钉点被抑制,分矿塔被压、
+    940s 掉四矿 —— 窗判据与下单判据(矿)对齐:矿 <300 时抑制
+    防御链换来的钱也到不了 400,是净亏;矿 300-400 才是最后一脚
+    的冲刺窗,让位有价值。O355-① 窗内探机让位与 O356-② 窗内
+    抑制逻辑不变(窗开时仍生效)。
     """
     if motherships > 0 or minerals >= price:
         return False
@@ -1595,6 +1650,7 @@ def mothership_window_open(
         and now >= min_t
         and fleet_count >= min_fleet
         and vespene >= min_gas
+        and minerals >= min_minerals
         and mothership_economy_ok(bases, workers)
     )
 
@@ -1702,6 +1758,50 @@ def pin_reanchor(
         cands, key=lambda s: (not s[2], (s[0] - rx) ** 2 + (s[1] - ry) ** 2)
     )
     return (x, y)
+
+
+def reanchor_bases(
+    start_xy: tuple[float, float],
+    townhall_xys: list,
+) -> list:
+    """O358-④a(o357 尸检):换锚槽池的基地清单 —— 扩出主基拥挤圈。
+    纯逻辑,可单测。
+
+    o357 实证:o357a g1 机械台 330.0-330.4s 连发 5 次换锚(黑1→黑5),
+    365.4s 仍 no_placement,整局机械台=0 —— 5 个锚全在主基圈
+    (坐标 30-56,116-134 拥挤区),换锚 ≠ 换得出。锚池纳入分基/
+    副基(其它 townhall 的槽表),主基槽全黑/全占时还有圈外候选。
+    返回 [主基, 各基地...](取整坐标去重;主基恒在首位,主基有候选
+    时 pin_reanchor 的距离序仍优先主基附近)。
+    """
+    out: list = []
+    seen: set = set()
+    for x, y in [start_xy, *townhall_xys]:
+        key = (round(x), round(y))
+        if key not in seen:
+            seen.add(key)
+            out.append((x, y))
+    return out
+
+
+def reanchor_cooldown_until(
+    blacklist_len: int,
+    now: float,
+    min_black: int = 3,
+    cooldown: float = 60.0,
+) -> float | None:
+    """O358-④b(o357 尸检):换锚不收敛的冷却闸。纯逻辑,可单测。
+
+    o357 实证:机械台换锚 5 次仍 no_placement 后每 30s 节流空转
+    刷屏 + 占调度(g2 同剧情:958.6s 换锚×5 → 986.9/1123.5s 仍
+    失败)。拉黑 ≥min_black 次仍 no_placement → 放弃该建筑的
+    critical 钉点 cooldown 秒(返回冷却截止时刻);槽位随其它建筑
+    落成/电网扩张会释放,60s 后重试比每 30s 空转便宜。未达
+    min_black → None(不冷却,照常住换锚)。
+    """
+    if blacklist_len >= min_black:
+        return now + cooldown
+    return None
 
 
 def cannon_stall_rescue(

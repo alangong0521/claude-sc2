@@ -95,6 +95,7 @@ from bot.production_plans import (
     fb_missing_expand_hold,
     fb_saving_window,
     forge_pin_affordable,
+    gas_to_minerals_needed,
     holding_abort_keep_first_expand,
     mothership_economy_ok,
     mothership_window_open,
@@ -105,6 +106,8 @@ from bot.production_plans import (
     ms_window_fleet_suppressed,
     mothership_supply_ok,
     pin_reanchor,
+    reanchor_bases,
+    reanchor_cooldown_until,
     zt_forge_pin_gate,
     event_throttle_ok,
     tempest_dump_suppressed,
@@ -352,6 +355,9 @@ class ProductionManager(Manager):
         self._mineral_crisis_gas_stop: bool = False
         # O327-①:早窗气烂抽矿状态(150-420s 气 ≥400 且矿 ≤250,FB 就绪前)
         self._early_gas_pull: bool = False
+        # O358-②(o357 尸检):矿气倒挂停气转矿状态(气 >800 且矿 <300
+        # 触发,气 <500 滞回解除;复用 _GAS_STOP_ROLE 停气通道)。
+        self._o358_gas_pull: bool = False
         # O354-②(o353 五局尸检):母舰资金窗旗标(每帧在 update 重算;
         # O260 兜底与塔/电池钉点读取)。__init__ 初始化,不用 getattr 兜底。
         self._ms_window: bool = False
@@ -1666,6 +1672,9 @@ class ProductionManager(Manager):
         # O355-①(o354 六局尸检):气门 600→400(与 O260 的 500 泄气闸
         # 死锁,气永被压在 600 下,母舰 0/9);窗内追加探机让位(O355-①,
         # 见 _build_probes)。
+        # O358-③(o357 尸检):开窗加矿 ≥300 判据 —— o357a g3 空窗 60s
+        # (气够矿 <300 买不起),塔链让位期分矿被压掉四矿;窗改
+        # 「攒够了才开」(矿 300-400 冲刺窗),<300 不抑制防御链。
         self._ms_window = (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -3395,6 +3404,8 @@ class ProductionManager(Manager):
         # 哑故障 200-400s),ares 通道实战建成了全部 Nexus;且 holding
         # 自带锁钱(科技/塔让位 Nexus),正是 O333-② 想要的语义。
         # 此处只留一次事件簿记,rush 确认 fuse 弃权,O251 兜底不变。
+        # O358-⑤(o357 尸检):首塔未落成且 t<330 矿门 475→550(给
+        # 首塔留 150;首塔资金优先于二矿,验收:左上首塔 <300s)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -3405,6 +3416,7 @@ class ProductionManager(Manager):
                 self.ai.townhalls.amount,
                 self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
                 self._rush_confirmed,
+                first_cannon_ready=self._cannons_ready_peak >= 1,
             )
         ):
             self._o329_logged = True
@@ -3462,13 +3474,20 @@ class ProductionManager(Manager):
         # O357-③(o356 尸检):townhalls≥2 门改 zt_forge_pin_gate ——
         # 左上开局 forge 落点原是 dice roll(forge-first 104.5s vs
         # cyber-first 等 Nexus 钉点 217-237s,首塔 301s+ 晚于致死窗
-        # 274-322s);t≥60 即放行(矿 ≥100 近可负担门不变),forge
-        # ≤150s 落成成为确定性。rush 墙 fallback(threat/rush 免矿门)
-        # 不动。
+        # 274-322s);时间/资金门放行,forge ≤150s 落成成为确定性。
+        # rush 墙 fallback(threat/rush 免矿门)不动。
+        # O358-①(o357 尸检):O357-③ 的 t≥60 门吃掉 opener 的
+        # GATEWAY 资金(GATEWAY 68.3→104.5-132.6s,首叉晚 40-80s
+        # 撞 ZT 首波);门改「GATEWAY 已下单 or (t≥75 且矿≥200)」,
+        # 验收口径:GATEWAY ≤75s 基线恢复 + forge 仍 ≤150s。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and zt_forge_pin_gate(self.ai.townhalls.amount, self.ai.time)
+            and zt_forge_pin_gate(
+                gateway_ordered=self._structure_present_or_pending(UnitID.GATEWAY),
+                now=self.ai.time,
+                minerals=self.ai.minerals,
+            )
             and not self._structure_present_or_pending(UnitID.FORGE)
             and forge_pin_affordable(
                 self.ai.minerals,
@@ -5746,11 +5765,20 @@ class ProductionManager(Manager):
             or self.ai.time > 420.0
         ):
             self._early_gas_pull = False
+        # O358-②(o357 尸检):矿气倒挂停气转矿 —— 气 >800 且矿 <300
+        # 触发(o357 三局气峰 779/1184/2524 而矿常年 5-300,母舰窗
+        # 空开 60s 买不起 300 矿母舰实证);解除滞回气 <500 —— 比
+        # O157 的「矿 >500 即回气」按得更久,锯齿期烂气持续换矿。
+        # 复用本方法 _GAS_STOP_ROLE 停气通道,不新发明框架。
+        if gas_to_minerals_needed(self.ai.vespene, self.ai.minerals):
+            self._o358_gas_pull = True
+        elif self._o358_gas_pull and self.ai.vespene < 500.0:
+            self._o358_gas_pull = False
         if rush_gas_stop_window(
             self._rush_active,
             _stop_age,
             window=45.0 if self._flow.transition is not None else float("inf"),
-        ) or self._mineral_crisis_gas_stop or self._early_gas_pull:
+        ) or self._mineral_crisis_gas_stop or self._early_gas_pull or self._o358_gas_pull:
             gas_workers = self.manager_mediator.get_worker_to_vespene_dict
             gathering = self.manager_mediator.get_unit_role_dict.get(
                 UnitRole.GATHERING, set()
@@ -6513,6 +6541,9 @@ class ProductionManager(Manager):
             self.ai.townhalls.amount >= 2 or self._rush_confirmed
         ):
             self._o329_latched = False
+        # O358-⑤(o357 尸检):首塔未落成且 t<330 → 矿门 475→550
+        # (400 Nexus + 给首塔留 150;o357 首塔 281-365s 被 233-237s
+        # 二矿挤占实证)。验收口径:左上首塔 <300s。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -6522,6 +6553,7 @@ class ProductionManager(Manager):
                 self.ai.townhalls.amount,
                 self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
                 self._rush_confirmed,
+                first_cannon_ready=self._cannons_ready_peak >= 1,
             )
         ):
             return True
@@ -7154,10 +7186,20 @@ class ProductionManager(Manager):
         机械台同样三连 no_placement。验收口径:右下 forge 落成
         <150s。纯电问题(带电余=0)仍由 O356-① 自救水晶负责 —
         换锚与补电不冲突(几何走换锚,没电走补电)。
+        O358-④(o357 尸检):a) 槽池扩出主基拥挤圈 —— o357a g1
+        机械台 5 次换锚全在主基圈(坐标 30-56,116-134)仍
+        no_placement,整局机械台=0;候选槽纳入分基/副基槽表
+        (reanchor_bases)。b) 换锚 ≥3 次仍 no_placement → 冷却
+        60s 放弃 critical 钉点(避免每 30s 节流空转刷屏+占调度,
+        g2 958.6s 换锚×5 → 986.9/1123.5s 仍失败实证),冷却期
+        返回 "cooldown",60s 后重试(槽位随建筑落成释放)。
         """
         st = self._o357_reanchor.setdefault(
-            sid, {"anchor": None, "blacklist": []}
+            sid, {"anchor": None, "blacklist": [], "cooldown_until": 0.0}
         )
+        # O358-④b:冷却闸 —— 换锚不收敛期不派工不刷屏,60s 后重试
+        if self.ai.time < st["cooldown_until"]:
+            return "cooldown"
         rc = self._dispatch_structure(
             sid,
             base_location,
@@ -7176,6 +7218,18 @@ class ProductionManager(Manager):
         _key = (round(_tried[0]), round(_tried[1]))
         if _key not in st["blacklist"]:
             st["blacklist"].append(_key)
+        # O358-④b:拉黑 ≥3 次仍 no_placement → 开冷却(60s)
+        _cd = reanchor_cooldown_until(len(st["blacklist"]), self.ai.time)
+        if _cd is not None:
+            st["cooldown_until"] = _cd
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O358:{sid.name}换锚不收敛冷却"
+                    f"(黑{len(st['blacklist'])},60s后重试)"
+                ),
+            })
+            return "cooldown"
         _ramp = getattr(self.ai, "main_base_ramp", None)
         if _ramp is None or getattr(_ramp, "top_center", None) is None:
             return rc
@@ -7185,10 +7239,19 @@ class ProductionManager(Manager):
             if s.is_ready
         ]
         _heights = self.ai.game_info.terrain_height.data_numpy
-        _slots = [
-            (x, y, free, cy_pylon_matrix_covers(Point2((x, y)), _ready_pylons, _heights))
-            for x, y, free in self._free_3x3_slots_at(base_location)
-        ]
+        # O358-④a:槽池扩出主基 —— 主基 + 各分基/副基的 3x3 槽表
+        _slots = []
+        for _bx, _by in reanchor_bases(
+            (base_location.x, base_location.y),
+            [(th.position.x, th.position.y) for th in self.ai.townhalls],
+        ):
+            _slots.extend(
+                (
+                    x, y, free,
+                    cy_pylon_matrix_covers(Point2((x, y)), _ready_pylons, _heights),
+                )
+                for x, y, free in self._free_3x3_slots_at(Point2((_bx, _by)))
+            )
         _new = pin_reanchor(
             _slots, (_ramp.top_center.x, _ramp.top_center.y), st["blacklist"]
         )

@@ -59,6 +59,7 @@ from bot.production_plans import (  # noqa: E402
     fb_missing_expand_hold,
     fb_saving_window,
     forge_pin_affordable,
+    gas_to_minerals_needed,
     mothership_economy_ok,
     mothership_window_open,
     ms_window_probe_yield,
@@ -68,6 +69,8 @@ from bot.production_plans import (  # noqa: E402
     ms_window_fleet_suppressed,
     mothership_supply_ok,
     pin_reanchor,
+    reanchor_bases,
+    reanchor_cooldown_until,
     zt_forge_pin_gate,
     event_throttle_ok,
     tempest_dump_suppressed,
@@ -2488,6 +2491,23 @@ class TestO157MineralCrisisGasStop(unittest.TestCase):
         self.assertTrue(mineral_crisis_gas_stop(1500, 300, 4, bases=3))
 
 
+class TestO358GasToMinerals(unittest.TestCase):
+    """O358-②(o357 尸检):矿气倒挂停气转矿触发判据(气>800 且矿<300)。"""
+
+    def test_gas_to_minerals_needed(self):
+        # 触发象限:气 >800 且矿 <300(o357 三局气峰 779/1184/2524、
+        # 矿常年 5-300 的倒挂态)
+        self.assertTrue(gas_to_minerals_needed(1184.0, 100.0))
+        self.assertTrue(gas_to_minerals_needed(801.0, 299.9))
+        # 气够但矿也够 → 不倒挂,不动气农
+        self.assertFalse(gas_to_minerals_needed(1200.0, 300.0))
+        self.assertFalse(gas_to_minerals_needed(1200.0, 450.0))
+        # 矿紧但气未烂银行(≤800)→ 不触发(留给 O157/O327 的
+        # 既有判据;本判据只抓明显烂银行)
+        self.assertFalse(gas_to_minerals_needed(800.0, 100.0))
+        self.assertFalse(gas_to_minerals_needed(500.0, 50.0))
+
+
 class TestO118FirstCannonRace(unittest.TestCase):
     """O118(o117-vh-zerg-rush 1-4 尸检):taken 快回收 + 首塔安全锚点。"""
 
@@ -3583,6 +3603,26 @@ class TestO329FastExpand(unittest.TestCase):
         # 已有在途/已多基地不重拍
         self.assertFalse(zt_fast_expand_pin(120.0, 500.0, 1, 1, False))
         self.assertFalse(zt_fast_expand_pin(120.0, 500.0, 2, 0, False))
+        # O358-⑤(o357 尸检):首塔未落成且 t<330 → 矿门抬到 550
+        # (400 Nexus + 给首塔留 150;o357 首塔 281-365s 被 233-237s
+        # 二矿挤占实证)
+        self.assertFalse(
+            zt_fast_expand_pin(200.0, 475.0, 1, 0, False, first_cannon_ready=False)
+        )
+        self.assertFalse(
+            zt_fast_expand_pin(200.0, 549.9, 1, 0, False, first_cannon_ready=False)
+        )
+        self.assertTrue(
+            zt_fast_expand_pin(200.0, 550.0, 1, 0, False, first_cannon_ready=False)
+        )
+        # 首塔已落成 → 原 475 门(塔链资金已有着落,不拖二矿)
+        self.assertTrue(
+            zt_fast_expand_pin(200.0, 475.0, 1, 0, False, first_cannon_ready=True)
+        )
+        # 出窗(t≥330,首波已到) → 原 475 门(塔链命运已定,不再压二矿)
+        self.assertTrue(
+            zt_fast_expand_pin(330.0, 475.0, 1, 0, False, first_cannon_ready=False)
+        )
 
     def test_sg_pin_expand_ok(self):
         # 2 基地(含在建)→ 放行(舰队科技不拖)
@@ -3814,45 +3854,51 @@ class TestO354CarrierMothershipWindow(unittest.TestCase):
 
     def test_mothership_window_open(self):
         # O354-②:除 can_afford 外全满足 + 矿 <400 → 开窗
+        # O358-③:开窗还要矿 ≥300(窗=「攒够了才开」的 300-400
+        # 冲刺窗;<300 空窗压塔实证 o357a g3)
         base = dict(
             fb_ready=True, now=800.0, fleet_count=3, vespene=700.0,
             bases=3, workers=40, motherships=0,
         )
         self.assertTrue(mothership_window_open(**base, minerals=399.0))
+        self.assertTrue(mothership_window_open(**base, minerals=300.0))
+        # O358-③ 矿边界:299.9 不开(空窗不抑制防御链),300 开
+        self.assertFalse(mothership_window_open(**base, minerals=299.9))
+        self.assertFalse(mothership_window_open(**base, minerals=100.0))
         # 矿 ≥400 → 关窗(can_afford 达成,母舰直接点)
         self.assertFalse(mothership_window_open(**base, minerals=400.0))
         # 已有母舰(含在产)→ 关窗
         self.assertFalse(
             mothership_window_open(
-                **{**base, "motherships": 1}, minerals=100.0
+                **{**base, "motherships": 1}, minerals=350.0
             )
         )
         # 各门槛缺一不开窗
         self.assertFalse(
-            mothership_window_open(**{**base, "fb_ready": False}, minerals=100.0)
+            mothership_window_open(**{**base, "fb_ready": False}, minerals=350.0)
         )
         self.assertFalse(
-            mothership_window_open(**{**base, "now": 699.9}, minerals=100.0)
+            mothership_window_open(**{**base, "now": 699.9}, minerals=350.0)
         )
         self.assertFalse(
-            mothership_window_open(**{**base, "fleet_count": 2}, minerals=100.0)
+            mothership_window_open(**{**base, "fleet_count": 2}, minerals=350.0)
         )
         # O355-①:气门 600→400(与 O260 的 500 泄气闸死锁,o354 母舰 0/9)
         self.assertFalse(
-            mothership_window_open(**{**base, "vespene": 399.0}, minerals=100.0)
+            mothership_window_open(**{**base, "vespene": 399.0}, minerals=350.0)
         )
         self.assertTrue(
-            mothership_window_open(**{**base, "vespene": 400.0}, minerals=100.0)
+            mothership_window_open(**{**base, "vespene": 400.0}, minerals=350.0)
         )
         # 经济门(3 基地或 ≥36 农):2 基地 30 农不开,2 基地 36 农开
         self.assertFalse(
             mothership_window_open(
-                **{**base, "bases": 2, "workers": 30}, minerals=100.0
+                **{**base, "bases": 2, "workers": 30}, minerals=350.0
             )
         )
         self.assertTrue(
             mothership_window_open(
-                **{**base, "bases": 2, "workers": 36}, minerals=100.0
+                **{**base, "bases": 2, "workers": 36}, minerals=350.0
             )
         )
 
@@ -3976,6 +4022,30 @@ class TestO357ReanchorForgeFirstObservability(unittest.TestCase):
         self.assertIsNone(pin_reanchor(slots2, (0.0, 0.0), [(10, 0), (30, 0)]))
         self.assertIsNone(pin_reanchor([], (0.0, 0.0), []))
 
+    def test_reanchor_bases(self):
+        # O358-④a:锚池含分基 —— 主基恒在首位,分基/副基槽表入池
+        bases = reanchor_bases((30.0, 116.0), [(120.0, 40.0), (80.0, 90.0)])
+        self.assertEqual(bases[0], (30.0, 116.0))
+        self.assertIn((120.0, 40.0), bases)
+        self.assertIn((80.0, 90.0), bases)
+        self.assertEqual(len(bases), 3)
+        # 主基 Nexus 与 start_location 取整同点 → 去重不重复入池
+        self.assertEqual(
+            reanchor_bases((30.0, 116.0), [(30.4, 116.2)]),
+            [(30.0, 116.0)],
+        )
+        # 无分基 → 只回主基(单矿局逐位同旧行为)
+        self.assertEqual(reanchor_bases((30.0, 116.0), []), [(30.0, 116.0)])
+
+    def test_reanchor_cooldown_until(self):
+        # O358-④b:冷却闸 —— 拉黑 <3 不冷却(照常住换锚)
+        self.assertIsNone(reanchor_cooldown_until(0, 330.0))
+        self.assertIsNone(reanchor_cooldown_until(2, 330.0))
+        # 拉黑 ≥3 仍 no_placement → 冷却 60s(o357a g1 黑1→黑5
+        # 仍 no_placement、每 30s 空转刷屏实证)
+        self.assertEqual(reanchor_cooldown_until(3, 330.0), 390.0)
+        self.assertEqual(reanchor_cooldown_until(5, 958.6), 1018.6)
+
     def test_mothership_block_before_carrier(self):
         # O357-②:O264 母舰块必须在 O239 航母块之前执行(o356b g2
         # 两次同帧截胡实证);源码顺序回归锁,防后续改动悄悄挪回。
@@ -3994,15 +4064,22 @@ class TestO357ReanchorForgeFirstObservability(unittest.TestCase):
         self.assertEqual(src.count("_ms_order_ready = ("), 1)
 
     def test_zt_forge_pin_gate(self):
-        # O357-③:Nexus 开工(townhalls≥2)放行(旧 O333 语义保留)
-        self.assertTrue(zt_forge_pin_gate(2, 30.0))
-        self.assertTrue(zt_forge_pin_gate(3, 200.0))
-        # t≥60 即放行 —— forge ≤150s 落成确定性,不再 dice roll
-        self.assertTrue(zt_forge_pin_gate(1, 60.0))
-        self.assertTrue(zt_forge_pin_gate(1, 104.5))
-        # 单矿且 t<60 → 不钉(opener 早期资金窗零干扰)
-        self.assertFalse(zt_forge_pin_gate(1, 59.9))
-        self.assertFalse(zt_forge_pin_gate(1, 30.0))
+        # O358-①(o357 尸检):四象限 —— 判据「GATEWAY 已下单 or
+        # (t≥75 且矿≥200)」。
+        # ① GATEWAY 已下单 → 任意时刻放行(forge-first 不抢 opener)
+        self.assertTrue(zt_forge_pin_gate(True, 30.0, 0.0))
+        self.assertTrue(zt_forge_pin_gate(True, 60.0, 150.0))
+        # ② GATEWAY 未下单且 t<75 → 不钉(GATEWAY ≤75s 基线恢复;
+        # o357 实证 60s 放行把 GATEWAY 右移到 104.5-132.6s)
+        self.assertFalse(zt_forge_pin_gate(False, 60.0, 500.0))
+        self.assertFalse(zt_forge_pin_gate(False, 74.9, 500.0))
+        # ③ GATEWAY 未下单、t≥75 且矿 ≥200 → 兜底放行(forge ≤150s)
+        self.assertTrue(zt_forge_pin_gate(False, 75.0, 200.0))
+        self.assertTrue(zt_forge_pin_gate(False, 104.5, 300.0))
+        # ④ GATEWAY 未下单、t≥75 但矿 <200 → 不钉(opener 流水
+        # 高峰矿恒 <200,150 矿 forge 不插队)
+        self.assertFalse(zt_forge_pin_gate(False, 75.0, 199.9))
+        self.assertFalse(zt_forge_pin_gate(False, 120.0, 100.0))
 
     def test_event_throttle_ok(self):
         # O357-④:O340 同规约 30s 节流 —— 只节流言不节流行为
