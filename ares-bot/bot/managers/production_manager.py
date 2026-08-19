@@ -630,11 +630,24 @@ class ProductionManager(Manager):
                 if not _exp_pyl_ok or self._slot_counts_at(
                     _exp_th.position, BuildingSize.TWO_BY_TWO
                 )[0] == 0:
-                    self._dispatch_structure(
+                    # O344-③(o343 多局实证):分矿补电 rc 可见化 —— 守卫
+                    # 塔 no_placement 常驻(600s+)时补电水晶的成败
+                    # 不可读;结果变化即记 + 30s 节流。
+                    _prc = self._dispatch_structure(
                         UnitID.PYLON, _exp_th.position,
                         closest_to=_exp_th.position, needs_power=False,
                         critical=True,
                     )
+                    if _prc != "dispatched" and (
+                        _prc != getattr(self, "_o344_pyl_rc", None)
+                        or self.ai.time - getattr(self, "_o344_pyl_ts", 0.0) > 30.0
+                    ):
+                        self._o344_pyl_ts = self.ai.time
+                        self.ai._events.append({
+                            "t": round(self.ai.time, 1),
+                            "msg": f"O344:分矿补电失败={_prc}(共{_th_now}基地)",
+                        })
+                    self._o344_pyl_rc = _prc
                 if any(
                     s.is_ready
                     for s in self.manager_mediator.get_own_structures_dict[
@@ -3216,8 +3229,21 @@ class ProductionManager(Manager):
             and self.ai.time - getattr(self, "_o333_forge_last", 0.0) > 30.0
         ):
             self._o333_forge_last = self.ai.time
+            # O344-①(o343b game_02/03 实证):forge 落位改分矿 —— 主基
+            # 带电 3x3 槽被 GW/core/电池占满,forge 钉点连报
+            # no_placement(132-162s),分矿塔链整链卡死(274-300s 波
+            # 零塔滚穿,384-389s 速败);分矿槽位全新且 forge 本就是
+            # 分矿塔阵前置(司令防御集结 doctrine),一举两用。
+            _forge_base = next(
+                (
+                    t.position
+                    for t in self.ai.townhalls
+                    if t.position.distance_to(self.ai.start_location) > 5.0
+                ),
+                self.ai.start_location,
+            )
             _rc = self._dispatch_structure(
-                UnitID.FORGE, self.ai.start_location, critical=True
+                UnitID.FORGE, _forge_base, critical=True
             )
             if _rc == "dispatched" and not getattr(self, "_o333_forge_logged", False):
                 self._o333_forge_logged = True
@@ -3293,8 +3319,15 @@ class ProductionManager(Manager):
                 self.ai.supply_workers, self.ai.townhalls.amount, self.ai.time
             )
             and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) == 0
+            # O344-②(o343a game_02 实证):多矿(3 矿+)rush 闸改 threat 闸
+            # —— rush latch 在波 60-90s 一波下近半时间激活,三矿钉点
+            # 被无限封锁(2 基 47 农打 99 supply 滚死);波间隙(threat
+            # 翻假)即开,O274-①「波打主基正是分矿空窗」同教义。
+            # 首扩(townhalls==1)原语义不变(O274-① 已去 rush 闸)。
             and (
-                not self._rush_active or self.ai.townhalls.amount == 1
+                not self._rush_active
+                or self.ai.townhalls.amount == 1
+                or not self._threat_active
             )
             and self.ai.minerals >= 350.0
             # O279:首波预警期暂停扩张钉点 —— 波出门后往分矿点派工人/拍
