@@ -654,9 +654,16 @@ class ProductionManager(Manager):
                         or self.ai.time - getattr(self, "_o344_pyl_ts", 0.0) > 30.0
                     ):
                         self._o344_pyl_ts = self.ai.time
+                        # O346-②:失败事件带三池余量(下轮尸检直接读
+                        # no_worker 是 GATHERING 抽干还是 E6/停气锁池)
                         self.ai._events.append({
                             "t": round(self.ai.time, 1),
-                            "msg": f"O344:分矿补电失败={_prc}(共{_th_now}基地)",
+                            "msg": (
+                                f"O344:分矿补电失败={_prc}(共{_th_now}基地,"
+                                f"采集池={len(self.manager_mediator.get_unit_role_dict.get(UnitRole.GATHERING, set()))},"
+                                f"停气池={len(self._gas_stopped_tags)},"
+                                f"E6池={len(self.manager_mediator.get_unit_role_dict.get(UnitRole.CONTROL_GROUP_ONE, set()))})"
+                            ),
                         })
                     self._o344_pyl_rc = _prc
                 if any(
@@ -6673,6 +6680,26 @@ class ProductionManager(Manager):
                     candidates, key=lambda w: w.position.distance_to(placement)
                 )
                 self._gas_stopped_tags.discard(worker.tag)
+        if worker is None and allow_borrow:
+            # O346-①(o345 全 6 局实证):E6 撤离池借工 —— 连续小股抄矿
+            # 下 E6 池锁 10-23 农(敌 4-16 地面 latch),GATHERING 池
+            # 归零、停气池空,分矿补电/钉塔恒 no_worker(最缺塔的
+            # 窗口恰恰最没工人);撤离池是离建造点最近的闲工(敌退
+            # 前本来就在安全基地等),借出即从 _evac_bases 台账摘除,
+            # 防敌退回采循环把建造工拽走(与 O116-② 停气池借用同款)。
+            _evac_tags = self.manager_mediator.get_unit_role_dict.get(
+                UnitRole.CONTROL_GROUP_ONE, set()
+            )
+            if _evac_tags:
+                alive = {w.tag: w for w in self.ai.workers}
+                _evac_cands = [alive[t] for t in _evac_tags if t in alive]
+                if _evac_cands:
+                    worker = min(
+                        _evac_cands,
+                        key=lambda w: w.position.distance_to(placement),
+                    )
+                    for _info in getattr(self.ai, "_evac_bases", {}).values():
+                        _info.get("workers", set()).discard(worker.tag)
         if worker is None:
             return "no_worker"
         self.ai.mediator.build_with_specific_worker(
