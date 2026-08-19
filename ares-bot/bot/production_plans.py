@@ -4732,3 +4732,162 @@ def gas_pull_window_expired(
     后才允许再触发),防任何解除条件失效把停气钉成终局状态。
     """
     return pull_since is not None and now - pull_since >= window
+
+
+def nexus_fund_hold_active(
+    now: float,
+    hold_until: float,
+    nexus_pending: int,
+    threat_active: bool,
+) -> bool:
+    """O364-①(o363a g3 直接死因):Nexus 资金窗独占期判据。纯逻辑,可单测。
+
+    O336-① 旧自救「首扩等钱 >60s → 解锁科技链 30s」方向倒挂:解锁
+    期 SG(261s)/FB(325s)/3 风暴/Robo/Twilight ≈2000+ 矿科技消费
+    把 Nexus 的 400 矿窗永久挤掉(首扩 470s 到死没落成,单矿 31 农,
+    752s 被 54-supply 波破主基)。方向反转:等钱 >60s 时 luxury
+    钉点族 hold,Nexus 钉点独占资金窗;成交(nexus_pending=0 =
+    开工后 tracker 无 NEXUS 条目)/45s 超时(防死锁)/threat
+    豁免(被骑脸时塔/兵钱不能锁)三条件放行。
+    """
+    if threat_active or now >= hold_until:
+        return False
+    return nexus_pending > 0
+
+
+def nexus_fund_hold_blocks(structure_name: str, stargates_total: int) -> bool:
+    """O364-①:资金窗独占期被 hold 的 luxury 钉点族判据。纯逻辑,可单测。
+
+    hold 清单 = o363a g3 挤死 Nexus 资金窗的科技消费:SG 第 2+ 座
+    (首座是舰队链起点,不拦)/FB/ROBO/TWILIGHT;风暴/航母的
+    train 通道(O239/O260/O364-④)在调用方另闸,不经本判据。
+    """
+    if structure_name == "STARGATE":
+        return stargates_total >= 1
+    return structure_name in (
+        "FLEETBEACON",
+        "ROBOTICSFACILITY",
+        "TWILIGHTCOUNCIL",
+    )
+
+
+def new_base_cannon_fb_fund_exempt(
+    nexus_ready: bool,
+    cannons_near: int,
+    cannons_in_flight: int,
+) -> bool:
+    """O364-②(o363a g1/o363b 三局实证):新矿配塔提前到 Nexus 开工 ——
+    在建 Nexus 的首座塔豁免 FB 基金窗。纯逻辑,可单测。
+
+    o363 实证新矿配塔稳定晚 68-71s:落成时才开始攒 350 矿(2 塔+
+    1 电池),验收线 60s 稳定差一口气;o363a g1 塔链更被 fb_fund
+    窗压到落成后 272s(529s 才来)。开工即发钉点(落成时已在途/
+    已落成);资金紧张期(FB 基金窗)至少首座塔走 critical 不等窗,
+    已有 ≥1 塔(含在途)后回归基金窗纪律。
+    """
+    return (not nexus_ready) and (cannons_near + cannons_in_flight) == 0
+
+
+def gas_stop_leaking(
+    vespene_gain: float,
+    seconds: float,
+    threshold_per_10s: float = 15.0,
+) -> bool:
+    """O364-③b(o363 尸检):停气 30s 校验环的泄漏判定。纯逻辑,可单测。
+
+    触发后气照涨 +120~+184(斜率与触发前一致)= 农民被拽回气矿
+    (ares Mining 补气/角色漂移漏网)。校验环每 ~2s 核气增速,折算
+    10s 增速 >15(≈1 个气矿农民满采)即视为泄漏,调用方重复拉拽+
+    清簿记。seconds ≤0(首帧建档)不判。
+    """
+    if seconds <= 0:
+        return False
+    return vespene_gain / seconds * 10.0 > threshold_per_10s
+
+
+def gas_stop_release_blocked(
+    vespene: float,
+    fleet_count: int,
+    min_fleet: int = 6,
+    vespene_ceiling: float = 400.0,
+) -> bool:
+    """O364-③c(o363b g2 实证):停气解除加闸。纯逻辑,可单测。
+
+    60s 棘轮强制解除在「气 >400 且舰队(TEMPEST+CARRIER)<6」时
+    不放行 —— o363b g2 解除后 +354 漏回实证:气压没下去、舰队没
+    成型,放回气矿只是再烂一轮。气压滞回(气 <250)解除不受本闸
+    (调用方先行),本闸只拦棘轮兜底。
+    """
+    return vespene > vespene_ceiling and fleet_count < min_fleet
+
+
+def carrier_hard_convert_ok(
+    fb_ready: bool,
+    minerals: float,
+    carriers: int,
+    can_afford: bool,
+    min_minerals: float = 600.0,
+    max_carriers: int = 2,
+) -> bool:
+    """O364-④(o363b g2 实证):航母硬转化判据。纯逻辑,可单测。
+
+    矿烂银行局航母转化缺失:农 72/矿 955 烂银行,航母只有 1 艘
+    (O239 的气 ≥400 门在矿烂气平局不 trigger);Rush lane 航母
+    首产 755-900s vs Power 胜局 590-739s;舰队成分以暴风为主,
+    遇腐化 12-16 毫无还手力。FB 就绪 + 矿 >600 + 航母(含在产)
+    <2 + 买得起 → 调用方空闲星门直接 train(绕过 SpawnController
+    比例分配)。与 tempest_dump_suppressed 联动不打架:O354-①
+    已保证航母 <2 时 O260 不点暴风,矿窗不互抢。
+    """
+    return (
+        fb_ready
+        and minerals >= min_minerals
+        and carriers < max_carriers
+        and can_afford
+    )
+
+
+def manual_cannon_anchor(
+    nexus_xy: tuple,
+    mineral_xy: tuple | None,
+    attempt: int,
+    base_offset: float = 6.0,
+    step: float = 1.0,
+) -> tuple:
+    """O364-⑤a(o363a g1/g2 实证):分矿塔链 no_placement 手工锚点。
+    纯逻辑,可单测。
+
+    placement solver 黑格实证:主基 26 个水晶却报「带电 2x2 槽=0」,
+    O337 分矿守卫 no_placement 空转 271→512s(g2)/311→436s(g1)。
+    连续 30s no_placement 后不再依赖 solver:锚点 = Nexus 坐标沿
+    「Nexus→矿线质心」方向 base_offset 格(塔守矿线,同 O101-X
+    首塔教义),放不进每次外扩 step 格(attempt 递增,调用方簿记);
+    矿线取不到退化为正上方固定偏移。先立 1 塔再说(O357 死槽
+    换锚的「拉黑-重锚」同教义,锚由几何直算不走槽表)。
+    """
+    nx, ny = nexus_xy
+    dist = base_offset + attempt * step
+    dx, dy = 0.0, -1.0
+    if mineral_xy is not None:
+        vx, vy = mineral_xy[0] - nx, mineral_xy[1] - ny
+        norm = (vx * vx + vy * vy) ** 0.5
+        if norm > 0:
+            dx, dy = vx / norm, vy / norm
+    return (nx + dx * dist, ny + dy * dist)
+
+
+def escort_hard_cap(
+    enemy_ground_near: int,
+    workers: int,
+    keep_mining: int,
+    cap: int = 3,
+) -> int:
+    """O364-⑤b(o363a g2 实证):协防农民硬限量 ≤3。纯逻辑,可单测。
+
+    首波杀农 15(23→8)其中 6 个是协防拉出塔/电池射程送死的 ——
+    协防是拖延(塔下作战/穿矿甩包围)不是决战,3 农塔下足够,
+    ×6 纯放血。采矿底线逻辑复用 escort_pull_cap,只收 cap。
+    """
+    return escort_pull_cap(
+        enemy_ground_near, workers, keep_mining=keep_mining, cap=cap
+    )

@@ -41,6 +41,7 @@ from bot.production_plans import (  # noqa: E402
     escort_pull_cap,
     escort_worker_count,
     escort_stance,
+    escort_hard_cap,
     f2_dispatch_guard_bypassed,
     fleet_recall_target,
     extra_production_mineral_gate,
@@ -93,6 +94,13 @@ from bot.production_plans import (  # noqa: E402
     zt_sg_pin_time_ok,
     pin_deadlock_fuse,
     new_base_defense_pins,
+    new_base_cannon_fb_fund_exempt,
+    nexus_fund_hold_active,
+    nexus_fund_hold_blocks,
+    gas_stop_leaking,
+    gas_stop_release_blocked,
+    carrier_hard_convert_ok,
+    manual_cannon_anchor,
     pin_repin_blocked,
     gas_pull_thresholds,
     fb_fund_ground_yield,
@@ -4402,6 +4410,103 @@ class TestO362TimingVacuumWindow(unittest.TestCase):
                 vespene_threshold=300.0, mineral_threshold=float("inf"),
             )
         )
+
+    def test_nexus_fund_hold_active(self):
+        # O364-①:窗内 + Nexus 钉点在簿记(等钱)→ hold
+        self.assertTrue(nexus_fund_hold_active(100.0, 145.0, 1, False))
+        # 成交放行:pending=0(Nexus 开工,tracker 无条目)→ 不 hold
+        self.assertFalse(nexus_fund_hold_active(100.0, 145.0, 0, False))
+        # 45s 超时放行(防死锁)
+        self.assertFalse(nexus_fund_hold_active(145.0, 145.0, 1, False))
+        self.assertFalse(nexus_fund_hold_active(200.0, 145.0, 1, False))
+        # threat 豁免(被骑脸时塔/兵钱不能锁)
+        self.assertFalse(nexus_fund_hold_active(100.0, 145.0, 1, True))
+        # 未武装(hold_until=0)→ 不 hold
+        self.assertFalse(nexus_fund_hold_active(100.0, 0.0, 1, False))
+
+    def test_nexus_fund_hold_blocks(self):
+        # O364-① hold 清单:SG 第 2+ 座/FB/Robo/Twilight
+        self.assertTrue(nexus_fund_hold_blocks("STARGATE", 1))
+        self.assertTrue(nexus_fund_hold_blocks("STARGATE", 3))
+        self.assertTrue(nexus_fund_hold_blocks("FLEETBEACON", 0))
+        self.assertTrue(nexus_fund_hold_blocks("ROBOTICSFACILITY", 0))
+        self.assertTrue(nexus_fund_hold_blocks("TWILIGHTCOUNCIL", 0))
+        # 首座 SG 豁免(舰队链起点)
+        self.assertFalse(nexus_fund_hold_blocks("STARGATE", 0))
+        # 保命/经济件不在清单(塔/电池/水晶/Nexus 本身/锻造炉)
+        for name in ("PHOTONCANNON", "SHIELDBATTERY", "PYLON", "NEXUS", "FORGE"):
+            self.assertFalse(nexus_fund_hold_blocks(name, 2))
+
+    def test_new_base_cannon_fb_fund_exempt(self):
+        # O364-②:在建 Nexus + 0 塔(含在途)→ 首塔豁免 FB 基金窗
+        self.assertTrue(new_base_cannon_fb_fund_exempt(False, 0, 0))
+        # 已落成 → 回归基金窗纪律
+        self.assertFalse(new_base_cannon_fb_fund_exempt(True, 0, 0))
+        # 已有 ≥1 塔(就绪或在途)→ 不豁免
+        self.assertFalse(new_base_cannon_fb_fund_exempt(False, 1, 0))
+        self.assertFalse(new_base_cannon_fb_fund_exempt(False, 0, 1))
+
+    def test_gas_stop_leaking(self):
+        # O364-③b:10s 增速 >15 → 泄漏(被拽回)
+        self.assertTrue(gas_stop_leaking(4.0, 2.0))    # 折 20/10s
+        self.assertTrue(gas_stop_leaking(80.0, 10.0))  # o363 实测斜率 ~+8/s
+        # ≤15/10s → 正常(载货返回/尾账抖动)
+        self.assertFalse(gas_stop_leaking(3.0, 2.0))   # 折 15/10s
+        self.assertFalse(gas_stop_leaking(-50.0, 10.0))  # 花钱降气
+        # 首帧建档(seconds≤0)不判
+        self.assertFalse(gas_stop_leaking(100.0, 0.0))
+
+    def test_gas_stop_release_blocked(self):
+        # O364-③c:气 >400 且舰队 <6 → 棘轮不解除(o363b g2 +354 漏回)
+        self.assertTrue(gas_stop_release_blocked(500.0, 3))
+        self.assertTrue(gas_stop_release_blocked(401.0, 0))
+        # 舰队成型(≥6)→ 放行
+        self.assertFalse(gas_stop_release_blocked(500.0, 6))
+        # 气压已下去(≤400)→ 放行
+        self.assertFalse(gas_stop_release_blocked(400.0, 3))
+
+    def test_carrier_hard_convert_ok(self):
+        # O364-④ 三象限:FB 就绪 + 矿 >600 + 航母(含在产)<2 + 买得起 → 触发
+        self.assertTrue(carrier_hard_convert_ok(True, 955.0, 1, True))
+        self.assertTrue(carrier_hard_convert_ok(True, 600.0, 0, True))
+        # 矿不烂(<600)→ 不触发(留给 O239 气烂通道)
+        self.assertFalse(carrier_hard_convert_ok(True, 599.9, 1, True))
+        # 航母已 ≥2 → 不触发(转化完成,回比例分配)
+        self.assertFalse(carrier_hard_convert_ok(True, 955.0, 2, True))
+        # FB 未就绪 / 买不起 → 不触发
+        self.assertFalse(carrier_hard_convert_ok(False, 955.0, 1, True))
+        self.assertFalse(carrier_hard_convert_ok(True, 955.0, 1, False))
+
+    def test_manual_cannon_anchor(self):
+        # O364-⑤a:锚在 Nexus→矿线方向上 base_offset 格
+        ax, ay = manual_cannon_anchor((100.0, 100.0), (110.0, 100.0), 0)
+        self.assertAlmostEqual(ax, 106.0)
+        self.assertAlmostEqual(ay, 100.0)
+        # 放不进每次外扩 1 格(attempt 递增)
+        ax2, ay2 = manual_cannon_anchor((100.0, 100.0), (110.0, 100.0), 3)
+        self.assertAlmostEqual(ax2, 109.0)
+        self.assertAlmostEqual(ay2, 100.0)
+        # 对角矿线 → 单位方向
+        ax3, ay3 = manual_cannon_anchor((0.0, 0.0), (3.0, 4.0), 0)
+        self.assertAlmostEqual(ax3, 3.6)   # 6 * 3/5
+        self.assertAlmostEqual(ay3, 4.8)   # 6 * 4/5
+        # 矿线取不到 → 固定偏移退化(不崩)
+        ax4, ay4 = manual_cannon_anchor((50.0, 60.0), None, 1)
+        self.assertAlmostEqual(ax4, 50.0)
+        self.assertAlmostEqual(ay4, 53.0)
+        # 矿线质心与 Nexus 重合(零向量)→ 退化方向,不除零
+        ax5, ay5 = manual_cannon_anchor((50.0, 60.0), (50.0, 60.0), 0)
+        self.assertAlmostEqual(ax5, 50.0)
+        self.assertAlmostEqual(ay5, 54.0)
+
+    def test_escort_hard_cap(self):
+        # O364-⑤b:协防硬限量 ≤3(o363a g2 协防 6 农送死实证)
+        self.assertEqual(escort_hard_cap(8, 14, keep_mining=6), 3)
+        self.assertEqual(escort_hard_cap(20, 30, keep_mining=6), 3)
+        self.assertEqual(escort_hard_cap(3, 14, keep_mining=6), 3)
+        # 采矿底线不变:农民太少时少于 3
+        self.assertEqual(escort_hard_cap(12, 8, keep_mining=6), 2)
+        self.assertEqual(escort_hard_cap(12, 5, keep_mining=6), 0)
 
 
 if __name__ == "__main__":
