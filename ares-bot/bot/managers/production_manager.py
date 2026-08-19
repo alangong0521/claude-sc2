@@ -622,21 +622,32 @@ class ProductionManager(Manager):
                 # 旧口径只看有无就绪水晶;水晶在但 2x2 带电槽被塔/电池/
                 # 墙建筑占满(512-843s no_placement 常驻)时不补,塔阵
                 # 永远铺不开。口径同 O296-③ 主基(_slot_counts_at)。
+                # O345-①(o344 全 6 局实证):补电/钉塔的 taken 判据从全局
+                # 改局部 —— _dispatch_structure 的 taken 是全图同型计数,
+                # 别处在途水晶(前线走位水晶可飞 100s+)把分矿补电恒挡在
+                # taken(132-800s 全 6 局),分矿无电 → forge/塔全
+                # no_placement → E6「无塔」抄矿四连败。目标点 15 格内
+                # 无在途/在建水晶即放行(max_on_route=99 绕过全局计数)。
                 _exp_pyl_ok = any(
                     s.type_id == UnitID.PYLON and s.is_ready
                     and s.position.distance_to(_exp_th.position) < 12
                     for s in self.ai.structures
                 )
-                if not _exp_pyl_ok or self._slot_counts_at(
-                    _exp_th.position, BuildingSize.TWO_BY_TWO
-                )[0] == 0:
+                if (
+                    not _exp_pyl_ok
+                    or self._slot_counts_at(
+                        _exp_th.position, BuildingSize.TWO_BY_TWO
+                    )[0] == 0
+                ) and self._in_flight_near(
+                    UnitID.PYLON, _exp_th.position
+                ) == 0:
                     # O344-③(o343 多局实证):分矿补电 rc 可见化 —— 守卫
                     # 塔 no_placement 常驻(600s+)时补电水晶的成败
                     # 不可读;结果变化即记 + 30s 节流。
                     _prc = self._dispatch_structure(
                         UnitID.PYLON, _exp_th.position,
                         closest_to=_exp_th.position, needs_power=False,
-                        critical=True,
+                        critical=True, max_on_route=99,
                     )
                     if _prc != "dispatched" and (
                         _prc != getattr(self, "_o344_pyl_rc", None)
@@ -653,11 +664,18 @@ class ProductionManager(Manager):
                     for s in self.manager_mediator.get_own_structures_dict[
                         UnitID.FORGE
                     ]
+                ) and (
+                    _cn_near
+                    + self._in_flight_near(UnitID.PHOTONCANNON, _exp_th.position)
+                    < 2
                 ):
                     self._o323_cannon_last = self.ai.time
+                    # O345-①:塔钉同病 —— 主基在途塔把分矿塔恒挡 taken,
+                    # 目标点局部在途+就绪 <2 才钉(max_on_route=99 绕全局)。
                     _rc = self._dispatch_structure(
                         UnitID.PHOTONCANNON, _exp_th.position,
                         closest_to=_exp_th.position, critical=True,
+                        max_on_route=99,
                     )
                     self.ai._events.append({
                         "t": round(self.ai.time, 1),
@@ -716,14 +734,16 @@ class ProductionManager(Manager):
                 # O332-④:只有塔派工成功才置 fired;taken/失败记时间戳,
                 # 30s 后重试(守卫在上面的 if 条件里)。
                 self._o329_predef_last = self.ai.time
+                # O345-①:max_on_route=99 绕全局 taken(别处在途水晶/塔
+                # 不再挡分矿预置链;fired+30s 重试已含去重)。
                 self._dispatch_structure(
                     UnitID.PYLON, _pre_target,
                     closest_to=_place_at, needs_power=False,
-                    critical=True,
+                    critical=True, max_on_route=99,
                 )
                 _rc = self._dispatch_structure(
                     UnitID.PHOTONCANNON, _pre_target,
-                    closest_to=_place_at, critical=True,
+                    closest_to=_place_at, critical=True, max_on_route=99,
                 )
                 if _rc == "dispatched":
                     self._o329_predef_fired = True
@@ -6659,6 +6679,31 @@ class ProductionManager(Manager):
             worker=worker, structure_type=sid, pos=placement
         )
         return "dispatched"
+
+    def _in_flight_near(self, sid, pos, radius: float = 15.0) -> int:
+        """O345-①(o344 全 6 局实证):目标点附近在途+在建同型建筑数。
+
+        _dispatch_structure 的 taken 判据是全图同型计数 —— 别处在途
+        水晶/塔(前线走位水晶可飞 100s+、主基塔链)把分矿钉点恒挡在
+        taken(132-800s 全 6 局),分矿无电无塔被 E6「无塔」连抄。
+        局部口径:tracker 条目按派工工人当前位置归(走位中工人位置
+        即落点近似),在建(已开工)按建筑位置归。
+        """
+        n = 0
+        for _tag, _info in self.manager_mediator.get_building_tracker_dict.items():
+            if _info[TRACKER_ID] != sid:
+                continue
+            w = self.ai.workers.find_by_tag(_tag)
+            if w is not None and w.position.distance_to(pos) < radius:
+                n += 1
+        n += sum(
+            1
+            for s in self.ai.structures
+            if s.type_id == sid
+            and not s.is_ready
+            and s.position.distance_to(pos) < radius
+        )
+        return n
 
     def _slot_counts_at(self, base_location, size) -> tuple[int, int, int]:
         """O114-①(o113 局1 实证):(空闲且带电, 空闲, 总数) 槽口径 ——
