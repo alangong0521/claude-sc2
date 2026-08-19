@@ -148,6 +148,14 @@ from bot.production_plans import (
     fb_fund_ground_yield,
     fb_fund_sg2_blocked,
     fb_fund_probe_brake,
+    fb_safe_anchor,
+    fb_arrival_guard_active,
+    tempest_gas_dump_ok,
+    gas_stop_repull_action,
+    f2_clamp_supply_cap,
+    zt_expand_reserve_exempt,
+    fleet_formed_release_rush,
+    anchor_buildable,
     main_defense_bank_fuse,
     zt_fast_expand_pin,
     zt_defense_at_natural,
@@ -481,6 +489,16 @@ class ProductionManager(Manager):
         # O365-⑤c(o364b g3 实证):手工锚点 per-base 上次重试时刻
         # (持续重试簿记;原 _o364_anchor_attempts 只记次数)。
         self._o364_anchor_last: dict = {}
+        # O366-①c(o365 双 lane 尸检):FB 落成增防簿记 —— FB 就绪边沿
+        # 时刻(落成后 60s 增防窗)与事件 30s 节流;__init__ 初始化。
+        self._fb_completed_at: float | None = None
+        self._fb_guard_log_ts: float = 0.0
+        # O366-③b(o365b g3 实证):F2 钳 2/2 激活边沿簿记(True=上一帧
+        # 钳制生效;Nexus 钉点成交后打解钳事件,塔目标恢复)。
+        self._o366_f2_clamped: bool = False
+        # O366-④a(o365a g3 实证):O126 expand_reserve 威胁豁免 latch
+        # (zt_expand_reserve_exempt 的滞回态;敌 supply <20 才恢复)。
+        self._o366_expand_exempt: bool = False
         # O117-②:防御紧急旗标(rush确认/过渡/presumed 合成,每帧更新)——
         # main.py 的 O11 钉点撤回豁免读它(presumed 期塔工不再被撤回循环)
         self._defense_urgent: bool = False
@@ -1035,14 +1053,44 @@ class ProductionManager(Manager):
                                 if _mh
                                 else None
                             )
-                            _att = self._o364_anchor_attempts.get(_bk, 0)
-                            _ax, _ay = manual_cannon_anchor(
-                                (_exp_th.position.x, _exp_th.position.y),
-                                _mxy, _att,
-                            )
-                            _worker = self.ai.mediator.select_worker(
-                                target_position=Point2((_ax, _ay)),
-                                force_close=True,
+                            # O366-③c(o365a g1 实证):扇形锚 + 可建性
+                            # 过滤 —— o365a g1 三矿 (70,94) 手工锚点
+                            # 重试连败:旧版单射线外扩撞矿簇/不可建
+                            # 地形,游戏侧拒建(非 solver no_placement,
+                            # 重试只是换个坐标再被拒)。每帧最多走 8
+                            # 个候选(manual_cannon_anchor 的 8 向扇
+                            # 形),第一个过 anchor_buildable(2x2 足
+                            # 迹可建 + 避让矿簇/气矿)的才派工。
+                            _grid = self.ai.game_info.placement_grid.data_numpy
+                            _res_xy = [
+                                (m.position.x, m.position.y)
+                                for m in self.ai.mineral_field.closer_than(
+                                    15, _exp_th.position
+                                )
+                            ] + [
+                                (g.position.x, g.position.y)
+                                for g in self.ai.gas_buildings.closer_than(
+                                    15, _exp_th.position
+                                )
+                            ]
+                            _ax = _ay = None
+                            for _k in range(8):
+                                _att = self._o364_anchor_attempts.get(_bk, 0)
+                                _cx, _cy = manual_cannon_anchor(
+                                    (_exp_th.position.x, _exp_th.position.y),
+                                    _mxy, _att,
+                                )
+                                self._o364_anchor_attempts[_bk] = _att + 1
+                                if anchor_buildable(_grid, _cx, _cy, _res_xy):
+                                    _ax, _ay = _cx, _cy
+                                    break
+                            _worker = (
+                                self.ai.mediator.select_worker(
+                                    target_position=Point2((_ax, _ay)),
+                                    force_close=True,
+                                )
+                                if _ax is not None
+                                else None
                             )
                             if _worker is not None:
                                 self.ai.mediator.build_with_specific_worker(
@@ -1050,13 +1098,13 @@ class ProductionManager(Manager):
                                     structure_type=UnitID.PHOTONCANNON,
                                     pos=Point2((_ax, _ay)),
                                 )
-                                self._o364_anchor_attempts[_bk] = _att + 1
                                 self._o364_anchor_last[_bk] = self.ai.time
                                 self.ai._events.append({
                                     "t": round(self.ai.time, 1),
                                     "msg": (
                                         f"O365:分矿塔手工锚点重试({_bk},"
-                                        f"第{_att + 1}次,外扩{_att}格,"
+                                        f"第{_att + 1}次,扇形{_att % 8}向/"
+                                        f"外扩{_att // 8}格,"
                                         f"锚=({_ax:.0f},{_ay:.0f}))"
                                     ),
                                 })
@@ -1890,6 +1938,17 @@ class ProductionManager(Manager):
             self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.ZEALOT)
             + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.STALKER)
         )
+        # O366-④a(o365a g3 实证):expand_reserve 威胁豁免 latch ——
+        # o365a g3 在 599s 敌压境时 expand_reserve 仍锁死地面(兵力
+        # ={});敌可见 supply >30 或 t>500 强制豁免(滞回:<20 恢复)。
+        _o366_enemy_supply = sum(
+            self.ai.calculate_supply_cost(u.type_id)
+            for u in self.ai.enemy_units
+            if not u.is_structure and is_combat_type(u.type_id)
+        )
+        self._o366_expand_exempt = zt_expand_reserve_exempt(
+            _o366_enemy_supply, self.ai.time, self._o366_expand_exempt
+        )
         _spawn_pause = spawn_pause_reason(
             rebuild_nexus=_rebuild_nexus,
             expand_holding=self._expand_holding,
@@ -1902,12 +1961,10 @@ class ProductionManager(Manager):
             minerals=self.ai.minerals,
             nexus_price=self.ai.calculate_cost(UnitID.NEXUS).minerals,
             # O298-②:expand_reserve 敌情闸(与 O296-① carrier 闸同口径)
-            enemy_supply=sum(
-                self.ai.calculate_supply_cost(u.type_id)
-                for u in self.ai.enemy_units
-                if not u.is_structure and is_combat_type(u.type_id)
-            ),
+            enemy_supply=_o366_enemy_supply,
             own_supply=float(self.ai.supply_army),
+            # O366-④a:威胁豁免闸(上置 latch,带滞回)
+            expand_reserve_exempt=self._o366_expand_exempt,
             # O307-②:地面保底闸 —— 低于 12 supply(≈6 兵)不停产攒 Nexus。
             ground_supply=2.0 * _ground_army_now,
             # O224:transition 期 zealot 吃光 SG/FB 资金窗(SG ~500s/首舰 620+)。
@@ -2031,6 +2088,19 @@ class ProductionManager(Manager):
         # O216d:把实体计数挂到实例,供追加产能/塔帽读取,避免 FB pending 期间被星门抽干。
         self._fb_entities_now = _fb_entities_now
         self._fb_structures_now = _fb_structures_now
+        # O366-①c(o365 双 lane 尸检):FB 就绪边沿簿记 —— 落成后 60s
+        # 内 F2 主基 target 临时 +2(fb_arrival_guard_active,见 F2 段);
+        # FB 被拆(实体归零)销账,重建落成重新起窗。
+        if any(
+            s.is_ready
+            for s in self.manager_mediator.get_own_structures_dict[
+                UnitID.FLEETBEACON
+            ]
+        ):
+            if self._fb_completed_at is None:
+                self._fb_completed_at = self.ai.time
+        else:
+            self._fb_completed_at = None
         if _fb_entities_now == 0:
             if self._fb_missing_since is None:
                 self._fb_missing_since = self.ai.time
@@ -2064,6 +2134,11 @@ class ProductionManager(Manager):
         # 已开))—— o361b 窗开 5 次零成交:矿 <200 时 FB 永远买不起,
         # 不看资源的窗白压经济;窗内追加抑制 trickle 兵营单位(_effective_
         # spawn)/第 2+ 星门(O326)/45s 凑不够矿强制停探机(_probe_yield)。
+        # O366-①a(o365 双 lane 尸检):开窗触发 SG 就绪 → SG 在途/动工
+        # (sg_started)—— o365b g2 FB 自救 10+ 次 no_money:SG 落成才
+        # 开窗,300/200 早在 SG 建造期被塔/探机/升级吃光;动工即开
+        # 抑制,FB 钉点挂出时资金窗已攒好。窗内停气转矿让位(见
+        # _rush_gas_stop 的 O366-①a 闸,FB 的 200 气不被抽干)。
         _fb_fund_raw = fb_fund_window(
             sg_ready=any(s.is_ready for s in _sg_all),
             fb_entities=_fb_entities_now,
@@ -2073,6 +2148,7 @@ class ProductionManager(Manager):
             vespene=self.ai.vespene,
             minerals=self.ai.minerals,
             window_open=self._fb_fund_window,
+            sg_started=self._structure_present_or_pending(UnitID.STARGATE),
         )
         if _fb_fund_raw:
             if self._fb_fund_since is None:
@@ -2098,9 +2174,13 @@ class ProductionManager(Manager):
             })
         if _fb_fund_timed_out and not self._fb_fund_forced:
             # 超时强制按现状派工一次(防抑制本身把 FB 钉死),随后关窗。
+            # O366-①b:落点同 ZT 钉点 —— 主基塔阵后方锚(_fb_safe_anchor)。
             self._fb_fund_forced = True
             _fb_rc = self._dispatch_structure(
-                UnitID.FLEETBEACON, self.ai.start_location, critical=True
+                UnitID.FLEETBEACON,
+                self.ai.start_location,
+                closest_to=self._fb_safe_anchor(),
+                critical=True,
             )
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
@@ -2782,25 +2862,26 @@ class ProductionManager(Manager):
             # 武装。矿≥400(Nexus 钱够)且二矿未钉(无实体无在途)
             # 且主基 ≥2 塔 → 第 3+ 塔/电池让位:F2 目标直接钳 2/2,
             # Nexus 钉点独占银行;主基 <2 塔(保命塔未齐)不让位。
+            # O366-③b:钳制边沿簿记 —— 二矿钉点成交(实体/在途任一
+            # 成立,nexus_pin_yield_gate 的 second_base_pinned 口径)
+            # 即解钳打事件,塔目标回本系统常态值(F2 每帧重算,补塔
+            # 由 mor/O268-③ 裸矿多槽兜底)。
+            _o366_second_base_pinned = (
+                any(
+                    t.position.distance_to(self.ai.start_location) > 5.0
+                    for t in self.ai.townhalls
+                )
+                or self.ai.not_started_but_in_building_tracker(UnitID.NEXUS)
+                > 0
+                or self.manager_mediator.get_building_counter[UnitID.NEXUS]
+                > 0
+            )
             if (
                 self._opp_race == "zerg"
                 and self._ai_build in ("timing", "rush")
                 and nexus_pin_yield_gate(
                     minerals=self.ai.minerals,
-                    second_base_pinned=(
-                        any(
-                            t.position.distance_to(self.ai.start_location) > 5.0
-                            for t in self.ai.townhalls
-                        )
-                        or self.ai.not_started_but_in_building_tracker(
-                            UnitID.NEXUS
-                        )
-                        > 0
-                        or self.manager_mediator.get_building_counter[
-                            UnitID.NEXUS
-                        ]
-                        > 0
-                    ),
+                    second_base_pinned=_o366_second_base_pinned,
                     main_cannons_ready=sum(
                         1
                         for s in self.ai.structures.ready
@@ -2809,16 +2890,60 @@ class ProductionManager(Manager):
                     ),
                 )
             ):
-                cannons = min(cannons, 2)
-                batt = min(batt, 2)
+                # O366-③a(o365b g3 实证):钳位动态档 —— 敌可见 supply
+                # >35 时上限放宽到 4(o365b g3 钳 2/2 期被 42-supply
+                # 波滚死,E6 五次「塔 1/2 座压不住」);≤35 保持 2/2。
+                _o366_cap = f2_clamp_supply_cap(
+                    self._visible_enemy_army_supply()
+                )
+                cannons = min(cannons, _o366_cap)
+                batt = min(batt, _o366_cap)
+                self._o366_f2_clamped = True
                 if event_throttle_ok(self.ai.time, self._o365_yield_log_ts):
                     self._o365_yield_log_ts = self.ai.time
                     self.ai._events.append({
                         "t": round(self.ai.time, 1),
                         "msg": (
                             f"O365:第3+塔/电池让位Nexus钉点"
-                            f"(矿={self.ai.minerals:.0f},目标钳2/2)"
+                            f"(矿={self.ai.minerals:.0f},"
+                            f"目标钳{_o366_cap}/{_o366_cap})"
                         ),
+                    })
+            elif self._o366_f2_clamped:
+                self._o366_f2_clamped = False
+                if _o366_second_base_pinned:
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": "O366:Nexus钉点成交,F2钳制解除,塔目标恢复",
+                    })
+            # O366-①c(o365 双 lane 尸检):FB 落成增防 —— FB 在建/落成
+            # 后 60s 内敌可见地面 >8 → 主基 target 临时 +2,加在所有
+            # 钳制(O216d/O365-④ 等 min 链)之后:钳制管常态资金,本
+            # 闸管 FB 落成的生死窗(o365b g3 FB 落成 12s 被拔实证)。
+            if fb_arrival_guard_active(
+                now=self.ai.time,
+                fb_building=any(
+                    not s.is_ready
+                    for s in self.manager_mediator.get_own_structures_dict[
+                        UnitID.FLEETBEACON
+                    ]
+                ),
+                fb_completed_at=self._fb_completed_at,
+                enemy_ground_visible=sum(
+                    1
+                    for u in self.ai.enemy_units
+                    if not u.is_structure
+                    and not u.is_flying
+                    and u.type_id
+                    not in (UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE)
+                ),
+            ):
+                cannons += 2
+                if event_throttle_ok(self.ai.time, self._fb_guard_log_ts):
+                    self._fb_guard_log_ts = self.ai.time
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": f"O366:FB落成增防,主基塔target+2(={cannons})",
                     })
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
@@ -3992,13 +4117,33 @@ class ProductionManager(Manager):
         # 暴风 <4 时不点暴风(game_01 气 886 点了第 7 艘暴风而非第 2 艘
         # 航母;矿是唯一硬约束,留给 O239 的 350 矿航母订单)。
         # O354-②:母舰资金窗内同抑制(矿让给母舰 400)。
+        # O366-②b(o365 双 lane 尸检):气爆折现 —— o365 六局矿常年
+        # <200、气溢出 300-1700、星门 257-269s 就闲置:「买不起航母」
+        # 前提在矿枯局把烂气永久锁在银行。气 ≥400 且舰队(含在产)<8
+        # 时不再要求买不起航母(tempest_gas_dump_ok),空闲就绪星门
+        # 直接点风暴;航母 <2 优先仍由 tempest_dump_suppressed 保证。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and self.ai.vespene >= 500.0
             and self._fb_entities_now > 0
-            and not self.ai.can_afford(UnitID.CARRIER)
             and self.ai.can_afford(UnitID.TEMPEST)
+            and (
+                (
+                    self.ai.vespene >= 500.0
+                    and not self.ai.can_afford(UnitID.CARRIER)
+                )
+                or tempest_gas_dump_ok(
+                    self.ai.vespene,
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER
+                    )
+                    + cy_unit_pending(self.ai, UnitID.TEMPEST)
+                    + cy_unit_pending(self.ai, UnitID.CARRIER),
+                )
+            )
             and not self._ms_window
             # O364-①:Nexus 资金窗独占期风暴(250 矿)hold
             and not self._o364_nexus_fund_hold()
@@ -4017,6 +4162,9 @@ class ProductionManager(Manager):
                 ),
                 fb_ready=self._fb_entities_now > 0,
                 vespene=self.ai.vespene,
+                # O366-②b:折现分支气门降到 400,航母<2 优先的抑制闸
+                # 同步降到 400(否则 400-500 窗航母优先被架空)。
+                min_gas=400.0,
             )
         ):
             for _sg in self.manager_mediator.get_own_structures_dict[
@@ -6087,7 +6235,20 @@ class ProductionManager(Manager):
             # O203:舰队已转型成功且防御达标 → 强制解除 rush 经济锁,
             # 恢复 probe 生产、扩张、fleet spawn。若敌后续压家,_update_rush_state
             # 下帧会重新置位,不影响守家响应。
-            if self._fleet_transitioned and self._defense_score() >= 15.0:
+            # O366-④b(o365b g2 实证):「舰队成型」改判实际舰队数 ——
+            # 旧判据拿 _fleet_transitioned 旗标+防御评分当舰队,o365b
+            # g2 在舰队=0 时虚报解除 5 次;TEMPEST+CARRIER ≥3 才算成型。
+            if self._fleet_transitioned and fleet_formed_release_rush(
+                fleet_count=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER
+                    )
+                ),
+                defense_score=self._defense_score(),
+            ):
                 self._rush_active = False
                 self._rush_clear_since = None
                 self.ai._events.append({
@@ -6498,16 +6659,26 @@ class ProductionManager(Manager):
         # O363-④c(o362b g1 实证):早窗摘掉矿档并联 —— 「气>300 且
         # 矿<150」在矿不低时气照囤(g1 气峰 684 零舰队);早窗舰队
         # 科技未起、气本无消费者,气 >300 即停(矿档 +inf 恒真)。
+        # O366-②a(o365 双 lane 尸检):早窗气档 300→250 —— o365 六局
+        # 矿常年 <200、气溢出 300-1700、星门 257-269s 闲置;250-300
+        # 这段死钱正是矿枯窗,提前触发(见 gas_pull_thresholds)。
         _gp_vth, _gp_mth = gas_pull_thresholds(
             self._opp_race == "zerg" and self._ai_build == "timing",
             self.ai.time,
         )
+        # O366-①a(o365 双 lane 尸检):FB 基金窗内停气转矿让位 ——
+        # o365b g2/g3 死结实证:塔链、停气转矿、FB 基金窗三方抢同
+        # 一笔矿;停气把气压到 400 以下基金窗即关(窗判据气≥400),
+        # FB 的 200 气耗被抽干 → FB no_money/no_placement 自救连败。
+        # 窗开期间不触发新停气;已激活的停气随开窗即解除(保 FB
+        # 气耗;基金窗的矿攒积靠探机/塔/升级让位,不靠停气)。
         if (
             gas_to_minerals_needed(
                 self.ai.vespene, self.ai.minerals,
                 vespene_threshold=_gp_vth, mineral_threshold=_gp_mth,
             )
             and not _gas_pull_cooling
+            and not self._fb_fund_window
         ):
             if not self._o358_gas_pull and event_throttle_ok(
                 self.ai.time, self._o359_gas_log_ts
@@ -6524,7 +6695,8 @@ class ProductionManager(Manager):
                 self._o358_gas_pull_since = self.ai.time
             self._o358_gas_pull = True
         elif self._o358_gas_pull and (
-            gas_to_minerals_released(
+            self._fb_fund_window  # O366-①a:FB 基金窗开 → 停气让位
+            or gas_to_minerals_released(
                 self.ai.vespene, self.ai.minerals,
             )
             or (
@@ -6635,6 +6807,21 @@ class ProductionManager(Manager):
                             tag=w.tag, role=self._GAS_STOP_ROLE
                         )
                         _rm._remove_worker_from_vespene(w.tag)
+                    # O366-②c(o365 双 lane 尸检):停气中农民被 ares
+                    # Mining 补气重挂气矿簿记(role 未漂、簿记重挂)
+                    # —— 只摘簿记不下命令 = 农民保持 gather(气矿)
+                    # 指令照采气(校验环复拽 3-8 次/局、增速越拖越大
+                    # 的根因);摘簿记 + 立即下离气矿命令(与首次拉动
+                    # 同口径,gas_stop_repull_action)。
+                    _act = gas_stop_repull_action(
+                        w.tag in gas_workers, w.is_carrying_vespene
+                    )
+                    if _act != "none":
+                        _rm._remove_worker_from_vespene(w.tag)
+                        if _act == "return_resource":
+                            w.return_resource()
+                        elif self.ai.mineral_field:
+                            w.smart(self.ai.mineral_field.closest_to(w))
                     if w.is_idle and self.ai.mineral_field:
                         w.gather(self.ai.mineral_field.closest_to(w))
                 elif w.tag in gas_workers:
@@ -6674,6 +6861,18 @@ class ProductionManager(Manager):
                                 tag=w.tag, role=self._GAS_STOP_ROLE
                             )
                             self._gas_stopped_tags.add(w.tag)
+                            # O366-②c(o365 双 lane 尸检):复拽必须下
+                            # 离气矿命令 —— 旧版只改 role+台账,农民
+                            # 保持原 gather(气矿) 指令照采气,气增速
+                            # 压不下去 → 下次校验再判泄漏再复拽(空转
+                            # 循环,3-8 次/局、增速越拖越大)。
+                            _act = gas_stop_repull_action(
+                                True, w.is_carrying_vespene
+                            )
+                            if _act == "return_resource":
+                                w.return_resource()
+                            elif self.ai.mineral_field:
+                                w.smart(self.ai.mineral_field.closest_to(w))
                         if w.tag in self._gas_stopped_tags:
                             _rm._remove_worker_from_vespene(w.tag)
                             if self.ai.mineral_field:
@@ -8485,6 +8684,37 @@ class ProductionManager(Manager):
             ).items()
         ]
 
+    def _fb_safe_anchor(self):
+        """O366-①b(o365 双 lane 尸检):FB 派工落点 —— 主基塔阵后方锚。
+
+        o365b 实证:FB 落成 12s 即被蟑螂波顺手拆掉(g2 626.8s/g3
+        642.9s)—— 默认落位在基地朝向/坡口侧,敌地面一波就到脸。
+        强制选「离主基斜坡口最远的带电 3x3 空闲槽」(fb_safe_anchor,
+        槽表与 _dispatch_pin_reanchor 同口径:_free_3x3_slots_at +
+        cy_pylon_matrix_covers 电力标注);无带电空闲槽/无坡口信息 →
+        None(退回默认落位,别为落点把 FB 卡死)。重建同口径。
+        """
+        _ramp = getattr(self.ai, "main_base_ramp", None)
+        if _ramp is None or getattr(_ramp, "top_center", None) is None:
+            return None
+        _ready_pylons = [
+            s
+            for s in self.manager_mediator.get_own_structures_dict[UnitID.PYLON]
+            if s.is_ready
+        ]
+        _heights = self.ai.game_info.terrain_height.data_numpy
+        _slots = [
+            (
+                x, y, free,
+                cy_pylon_matrix_covers(Point2((x, y)), _ready_pylons, _heights),
+            )
+            for x, y, free in self._free_3x3_slots_at(self.ai.start_location)
+        ]
+        _anchor = fb_safe_anchor(
+            _slots, (_ramp.top_center.x, _ramp.top_center.y)
+        )
+        return Point2(_anchor) if _anchor is not None else None
+
     async def _build_core_structure(
         self, structure_id: UnitID, base: Point2 | None = None
     ) -> None:
@@ -9027,9 +9257,14 @@ class ProductionManager(Manager):
                             self._o364_nexus_fund_hold()
                             and nexus_fund_hold_blocks("FLEETBEACON", 0)
                         ):
+                            # O366-①b(o365b 尸检):FB 落点强制主基塔阵
+                            # 后方(离斜坡口最远的带电 3x3 槽)—— 默认
+                            # 落位被蟑螂波顺手拆(落成 12s 即消失),重建
+                            # 同口径(_fb_safe_anchor)。
                             self._dispatch_structure(
                                 UnitID.FLEETBEACON,
                                 self.ai.start_location,
+                                closest_to=self._fb_safe_anchor(),
                                 critical=True,
                             )
                     else:

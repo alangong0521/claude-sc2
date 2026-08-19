@@ -115,6 +115,14 @@ from bot.production_plans import (  # noqa: E402
     fb_fund_ground_yield,
     fb_fund_sg2_blocked,
     fb_fund_probe_brake,
+    fb_safe_anchor,
+    fb_arrival_guard_active,
+    tempest_gas_dump_ok,
+    gas_stop_repull_action,
+    f2_clamp_supply_cap,
+    zt_expand_reserve_exempt,
+    fleet_formed_release_rush,
+    anchor_buildable,
     main_defense_bank_fuse,
     zt_defense_at_natural,
     forge_before_first_gateway,
@@ -4398,19 +4406,20 @@ class TestO362TimingVacuumWindow(unittest.TestCase):
         self.assertFalse(fb_fund_probe_brake(60.0, 200.0, 19))
 
     def test_gas_pull_thresholds(self):
-        # ZT 且 t<360 → 早窗档 (300, +inf)—— O363-④c:摘掉矿档并联,
-        # 气 >300 即停(o362b g1 气峰 684 零舰队实证)
-        self.assertEqual(gas_pull_thresholds(True, 359.9), (300.0, float("inf")))
-        self.assertEqual(gas_pull_thresholds(True, 100.0), (300.0, float("inf")))
+        # ZT 且 t<360 → 早窗档 (250, +inf)—— O366-②a:气档 300→250
+        # (o365 六局矿 <200/气溢出 300-1700、星门 257-269s 闲置实证,
+        # 250-300 这段死钱正是矿枯窗);矿档 +inf 不变(O363-④c)
+        self.assertEqual(gas_pull_thresholds(True, 359.9), (250.0, float("inf")))
+        self.assertEqual(gas_pull_thresholds(True, 100.0), (250.0, float("inf")))
         # ZT 且 t≥360 → 保持 500/200(舰队链开始吃气)
         self.assertEqual(gas_pull_thresholds(True, 360.0), (500.0, 200.0))
         # 非 ZT 全程 500/200
         self.assertEqual(gas_pull_thresholds(False, 100.0), (500.0, 200.0))
-        # 早窗触发:气 >300 不论矿高低(o362b g1 的矿 200-400 振荡带)
+        # 早窗触发:气 >250 不论矿高低
         self.assertTrue(
             gas_to_minerals_needed(
-                301.0, 400.0,
-                vespene_threshold=300.0, mineral_threshold=float("inf"),
+                251.0, 400.0,
+                vespene_threshold=250.0, mineral_threshold=float("inf"),
             )
         )
         self.assertFalse(
@@ -4491,18 +4500,24 @@ class TestO362TimingVacuumWindow(unittest.TestCase):
         ax, ay = manual_cannon_anchor((100.0, 100.0), (110.0, 100.0), 0)
         self.assertAlmostEqual(ax, 106.0)
         self.assertAlmostEqual(ay, 100.0)
-        # 放不进每次外扩 1 格(attempt 递增)
+        # O366-③c:attempt 低 3 位选方向(45° 步进扇形)—— attempt 3
+        # = 矿线方向 +90°(同圈不外扩)
         ax2, ay2 = manual_cannon_anchor((100.0, 100.0), (110.0, 100.0), 3)
-        self.assertAlmostEqual(ax2, 109.0)
-        self.assertAlmostEqual(ay2, 100.0)
+        self.assertAlmostEqual(ax2, 100.0)
+        self.assertAlmostEqual(ay2, 106.0)
+        # 高位选圈:attempt 8 = 转满一圈回到矿线方向,外扩 1 格
+        ax2b, ay2b = manual_cannon_anchor((100.0, 100.0), (110.0, 100.0), 8)
+        self.assertAlmostEqual(ax2b, 107.0)
+        self.assertAlmostEqual(ay2b, 100.0)
         # 对角矿线 → 单位方向
         ax3, ay3 = manual_cannon_anchor((0.0, 0.0), (3.0, 4.0), 0)
         self.assertAlmostEqual(ax3, 3.6)   # 6 * 3/5
         self.assertAlmostEqual(ay3, 4.8)   # 6 * 4/5
-        # 矿线取不到 → 固定偏移退化(不崩)
+        # 矿线取不到 → 退化方向 + 扇形旋转(不崩);attempt 1 = +45°
         ax4, ay4 = manual_cannon_anchor((50.0, 60.0), None, 1)
-        self.assertAlmostEqual(ax4, 50.0)
-        self.assertAlmostEqual(ay4, 53.0)
+        _s = 0.7071067811865476
+        self.assertAlmostEqual(ax4, 50.0 + 6.0 * _s)
+        self.assertAlmostEqual(ay4, 60.0 - 6.0 * _s)
         # 矿线质心与 Nexus 重合(零向量)→ 退化方向,不除零
         ax5, ay5 = manual_cannon_anchor((50.0, 60.0), (50.0, 60.0), 0)
         self.assertAlmostEqual(ax5, 50.0)
@@ -4590,6 +4605,127 @@ class TestO365Fixes(unittest.TestCase):
         self.assertTrue(anchor_retry_ok(930.0, 900.0, -9999.0))   # 首开
         self.assertFalse(anchor_retry_ok(950.0, 900.0, 930.0))    # 重试冷却中
         self.assertTrue(anchor_retry_ok(960.0, 900.0, 930.0))     # 持续重试
+
+    def test_fb_fund_window_sg_started(self):
+        # O366-①a:SG 在途/动工即开窗(不等就绪)—— o365b g2 FB 自救
+        # 10+ 次 no_money:SG 落成才开窗,资金早在建造期被吃光
+        self.assertTrue(
+            fb_fund_window(False, 0, True, False, False, sg_started=True)
+        )
+        # SG 无实体无在途 → 仍不开窗
+        self.assertFalse(
+            fb_fund_window(False, 0, True, False, False, sg_started=False)
+        )
+        # 默认参数(不传 sg_started)维持旧口径:SG 就绪才开
+        self.assertFalse(fb_fund_window(False, 0, True, False, False))
+        # sg_started 不豁免其它判据(threat 仍关窗)
+        self.assertFalse(
+            fb_fund_window(False, 0, True, True, False, sg_started=True)
+        )
+
+    def test_fb_safe_anchor(self):
+        # O366-①b:离斜坡口最远的带电空闲槽
+        slots = [
+            (10.0, 10.0, True, True),    # 带电空闲,离坡口近
+            (40.0, 40.0, True, True),    # 带电空闲,离坡口最远
+            (30.0, 30.0, True, False),   # 不带电 → 不选
+            (50.0, 50.0, False, True),   # 被占 → 不选
+        ]
+        self.assertEqual(fb_safe_anchor(slots, (0.0, 0.0)), (40.0, 40.0))
+        # 无带电空闲槽 → None(调用方退回默认落位)
+        self.assertIsNone(
+            fb_safe_anchor([(10.0, 10.0, True, False)], (0.0, 0.0))
+        )
+        self.assertIsNone(fb_safe_anchor([], (0.0, 0.0)))
+
+    def test_fb_arrival_guard_active(self):
+        # O366-①c:FB 在建 + 敌地面 >8 → 增防
+        self.assertTrue(fb_arrival_guard_active(640.0, True, None, 9))
+        # 敌地面 ≤8 → 不增防
+        self.assertFalse(fb_arrival_guard_active(640.0, True, None, 8))
+        # 落成后 60s 窗内 → 增防
+        self.assertTrue(fb_arrival_guard_active(700.0, False, 642.9, 10))
+        # 出窗 → 不增防
+        self.assertFalse(fb_arrival_guard_active(703.0, False, 642.9, 10))
+        # 无 FB 实体 → 不增防
+        self.assertFalse(fb_arrival_guard_active(700.0, False, None, 20))
+
+    def test_tempest_gas_dump_ok(self):
+        # O366-②b:气 ≥400 且舰队 <8 → 折现(不要求买不起航母)
+        self.assertTrue(tempest_gas_dump_ok(400.0, 0))
+        self.assertTrue(tempest_gas_dump_ok(600.0, 7))
+        self.assertFalse(tempest_gas_dump_ok(399.9, 0))   # 气不够
+        self.assertFalse(tempest_gas_dump_ok(1000.0, 8))  # 舰队达标停折现
+
+    def test_gas_stop_repull_action(self):
+        # O366-②c:复拽动作映射 —— 载气卸货/未载气 smart/不在簿记不动
+        self.assertEqual(gas_stop_repull_action(True, True), "return_resource")
+        self.assertEqual(gas_stop_repull_action(True, False), "smart_mineral")
+        self.assertEqual(gas_stop_repull_action(False, True), "none")
+        self.assertEqual(gas_stop_repull_action(False, False), "none")
+
+    def test_f2_clamp_supply_cap(self):
+        # O366-③a:敌可见 supply >35 → 钳位上限 4;≤35 保持 2
+        self.assertEqual(f2_clamp_supply_cap(42.0), 4)
+        self.assertEqual(f2_clamp_supply_cap(35.1), 4)
+        self.assertEqual(f2_clamp_supply_cap(35.0), 2)
+        self.assertEqual(f2_clamp_supply_cap(0.0), 2)
+
+    def test_zt_expand_reserve_exempt(self):
+        # O366-④a:敌 supply >30 触发豁免,滞回 <20 恢复
+        self.assertFalse(zt_expand_reserve_exempt(29.0, 300.0, False))
+        self.assertTrue(zt_expand_reserve_exempt(31.0, 300.0, False))
+        # 滞回:豁免后 supply 25(20-30 之间)仍豁免
+        self.assertTrue(zt_expand_reserve_exempt(25.0, 300.0, True))
+        # 降到 <20 恢复预留
+        self.assertFalse(zt_expand_reserve_exempt(19.0, 300.0, True))
+        # t>500 时间档恒豁免(599s 兵力={} 实证)
+        self.assertTrue(zt_expand_reserve_exempt(0.0, 500.0, False))
+
+    def test_spawn_pause_expand_reserve_exempt(self):
+        # O366-④a:豁免期 expand_reserve 分支跳过(产线不停)
+        _kw = dict(
+            rebuild_nexus=False,
+            expand_holding=True,
+            is_zerg_timing=True,
+            nexus_unstarted=1,
+            minerals=100.0,
+            nexus_price=400.0,
+            enemy_supply=10.0,
+            own_supply=29.0,
+            ground_supply=20.0,
+        )
+        self.assertEqual(
+            spawn_pause_reason(**_kw), "zerg_timing_expand_reserve"
+        )
+        self.assertIsNone(
+            spawn_pause_reason(expand_reserve_exempt=True, **_kw)
+        )
+
+    def test_fleet_formed_release_rush(self):
+        # O366-④b:实际舰队(TEMPEST+CARRIER)≥3 且评分达标才解除
+        # (o365b g2 舰队=0 虚报 5 次实证)
+        self.assertFalse(fleet_formed_release_rush(0, 20.0))   # 舰队=0 虚报
+        self.assertFalse(fleet_formed_release_rush(2, 20.0))   # 舰队不足
+        self.assertFalse(fleet_formed_release_rush(3, 14.9))   # 评分不足
+        self.assertTrue(fleet_formed_release_rush(3, 15.0))
+
+    def test_anchor_buildable(self):
+        # O366-③c:2x2 足迹全可建 + 避让矿簇/气矿才放行
+        import numpy as np
+
+        grid = np.ones((10, 10), dtype=int)
+        self.assertTrue(anchor_buildable(grid, 5.0, 5.0))
+        # 足迹含不可建格 → 拒
+        grid[4, 4] = 0
+        self.assertFalse(anchor_buildable(grid, 5.0, 5.0))
+        grid[4, 4] = 1
+        # 越界 → 拒
+        self.assertFalse(anchor_buildable(grid, 0.0, 0.0))
+        self.assertFalse(anchor_buildable(grid, 10.0, 10.0))
+        # 压矿簇(<2.5 格)→ 拒;拉开距离 → 放行
+        self.assertFalse(anchor_buildable(grid, 5.0, 5.0, [(6.0, 5.0)]))
+        self.assertTrue(anchor_buildable(grid, 5.0, 5.0, [(8.0, 5.0)]))
 
 
 if __name__ == "__main__":

@@ -818,9 +818,15 @@ def gas_pull_thresholds(
     触发恒假);早窗舰队科技未起、气本无消费者,气 >300 即停,
     矿档 +inf(恒真)。解除档由 gas_to_minerals_released 的 250
     滞回统一管,不在本函数。
+    O366-②a(o365 双 lane 尸检):ZT 早窗气档 300→250 —— o365 六局
+    矿常年 <200、气溢出 300-1700,星门 257-269s 就闲置:气要烂到
+    300 才停,250-300 这段(≈2 个气农 40s 的死钱)正是矿枯窗;提前
+    到 250 触发,与解除档(气 <250)贴边 —— 触发即停、气压回 250
+    下才放人回气,滞回靠「停气侧只进不出」的实现(触发后 role
+    脱离 Mining)而非阈值差。非 ZT (500,200) 不动。
     """
     if zerg_timing and now < early_until:
-        return (300.0, float("inf"))
+        return (250.0, float("inf"))
     return (500.0, 200.0)
 
 
@@ -3871,6 +3877,7 @@ def spawn_pause_reason(
     own_supply: float = 9999.0,
     ground_supply: float = 9999.0,
     ground_floor: float = 12.0,
+    expand_reserve_exempt: bool = False,
 ) -> str | None:
     """O135(o134-vh-zerg-timing 0-5 尸检):产出永不暂停 —— 暂停型预留体系
     整体证伪。纯逻辑,可单测。
@@ -3901,7 +3908,8 @@ def spawn_pause_reason(
     if rebuild_nexus:
         return "rebuild_nexus"
     if (
-        is_zerg_timing
+        not expand_reserve_exempt  # O366-④a:敌 supply>30/t>500 豁免(调用方滞回)
+        and is_zerg_timing
         and expand_holding
         and nexus_unstarted > 0
         and minerals < nexus_price
@@ -4584,6 +4592,7 @@ def fb_fund_window(
     vespene: float = 400.0,
     minerals: float = 150.0,
     window_open: bool = False,
+    sg_started: bool = False,
 ) -> bool:
     """O360-②(o359b 尸检):FB 专项基金窗判据。纯逻辑,可单测。
 
@@ -4601,10 +4610,15 @@ def fb_fund_window(
     起,白压经济。改「气 ≥400(FB 200 气耗就绪,成交只差矿)且
     (矿 ≥150 或窗已开)」:矿 <150 时不开窗白抑制;窗开后矿波动不
     关窗(滞回 —— 抑制攒矿正是窗的职责)。
+    O366-①a(o365 双 lane 尸检):开窗触发从「SG 就绪」提前到「SG
+    在途/动工」(sg_started)—— o365b g2 FB 自救 10+ 次 no_money、
+    唯一落地 626.8s 仅 12s 即消失:SG 落成(~300s)才开窗,300/200
+    在 SG 建造期(~60s)早被塔/探机/升级吃光,窗开了也只剩空银行;
+    SG 一动工就开抑制,FB 钉点挂出时资金窗已攒好。
     """
     return (
         fb_in_core
-        and sg_ready
+        and (sg_ready or sg_started)
         and fb_entities == 0
         and not threat_active
         and not timed_out
@@ -4684,6 +4698,145 @@ def fb_fund_probe_brake(
     if window_open_s is None or window_open_s < timeout:
         return False
     return minerals < fb_minerals and workers >= min_workers
+
+
+def fb_safe_anchor(
+    slots: list,
+    ramp_xy: tuple[float, float],
+) -> tuple[float, float] | None:
+    """O366-①b(o365 双 lane 尸检):FB 落点保护锚 —— 主基塔阵后方。
+    纯逻辑,可单测。
+
+    o365b 实证:FB 唯一落地 626.8s 仅 12s 即消失(g3 落成 12s 被蟑螂
+    黄金窗拔掉)—— FB 落在默认钉点(基地朝向/坡口侧),敌地面一
+    波顺手就拆;重建 12 连败。派工锚强制选「离主基斜坡口最远的
+    带电 3x3 空闲槽」(塔阵/基地本体挡在前面,蟑螂要穿整条防线才
+    摸得到)。slots: [(x, y, free, powered), ...](_free_3x3_slots_at
+    加电力标注,与 _dispatch_pin_reanchor 同口径);无带电空闲槽 →
+    None(调用方退回默认落位,别为落点把 FB 卡死)。重建同口径
+    (每次派工都过本判据)。
+    """
+    rx, ry = ramp_xy
+    cands = [(x, y) for x, y, free, powered in slots if free and powered]
+    if not cands:
+        return None
+    return max(cands, key=lambda s: (s[0] - rx) ** 2 + (s[1] - ry) ** 2)
+
+
+def fb_arrival_guard_active(
+    now: float,
+    fb_building: bool,
+    fb_completed_at: float | None,
+    enemy_ground_visible: int,
+    window: float = 60.0,
+    min_enemy: int = 9,
+) -> bool:
+    """O366-①c(o365 双 lane 尸检):FB 落成增防闸。纯逻辑,可单测。
+
+    o365b g3 实证:FB 642.9s 落成 12s 即被蟑螂黄金窗拔掉 —— 落成
+    窗口敌地面一波到脸,塔目标还是常态值,防线没有为 FB 落成加厚。
+    FB 在建 或 落成后 window 秒内,敌可见地面 >8(min_enemy=9)→
+    调用方把主基塔 target 临时 +2(在 F2 全部钳制之后加,与 F2
+    钳制体系兼容:钳制管常态,本闸管 FB 落成的生死窗)。
+    """
+    if enemy_ground_visible < min_enemy:
+        return False
+    if fb_building:
+        return True
+    return fb_completed_at is not None and now - fb_completed_at < window
+
+
+def tempest_gas_dump_ok(
+    vespene: float,
+    fleet_total: int,
+    vespene_threshold: float = 400.0,
+    fleet_cap: int = 8,
+) -> bool:
+    """O366-②b(o365 双 lane 尸检):气爆折现判据。纯逻辑,可单测。
+
+    o365 实证:6 局矿常年 <200、气溢出 300-1700,星门 257-269s 就
+    闲置 —— O260 兜底要「气 ≥500 且买不起航母」才点风暴,矿枯局
+    烂气永远折不成舰队。放宽:气 ≥400 且舰队(TEMPEST+CARRIER 含
+    在产)<fleet_cap 时,O260 通道不再要求「买不起航母」,空闲就绪
+    星门直接点风暴(把烂气折成舰队)。与 tempest_dump_suppressed
+    联动不打架:航母(含在产)<2 时仍航母优先(本判据只在抑制闸
+    下游起效)。舰队 ≥8 停止折现(数量够了,气留给航母接力)。
+    """
+    return vespene >= vespene_threshold and fleet_total < fleet_cap
+
+
+def gas_stop_repull_action(in_gas_book: bool, carrying_vespene: bool) -> str:
+    """O366-②c(o365 双 lane 尸检):停气复拽的离气矿动作。纯逻辑,可单测。
+
+    o365 实证:停气校验环复拽 3-8 次/局、增速越拖越大 —— 根因是
+    O364-③b 校验环只改 role+台账,**不下离气矿命令**:被 ares
+    Mining 补气重挂簿记的农民保持原 gather(气矿) 指令继续采气,
+    气增速压不下去 → 下次校验再判泄漏再复拽(空转循环)。复拽必须
+    与首次拉动同口径下命令:载气 → return_resource(卸货即离气);
+    未载气 → smart 到最近矿簇;不在气矿簿记 → 不动。
+    """
+    if not in_gas_book:
+        return "none"
+    return "return_resource" if carrying_vespene else "smart_mineral"
+
+
+def f2_clamp_supply_cap(
+    enemy_supply: float,
+    low_cap: int = 2,
+    high_cap: int = 4,
+    supply_tier: float = 35.0,
+) -> int:
+    """O366-③a(o365b g3 实证):F2 钳位的动态档。纯逻辑,可单测。
+
+    o365b g3 实证:O365-④ 钳 2/2 期间每基地 target=2,E6 五次
+    「塔 1/2 座压不住」被 42-supply 波滚死 —— 钳制是给 Nexus 钉点
+    让资金的常态档,敌大波可见时还钳 2 = 拿基地换 Nexus。敌可见
+    supply >35 → 钳位上限放宽到 4(波防得住,Nexus 晚几秒);
+    ≤35 保持 2/2 原档。
+    """
+    return high_cap if enemy_supply > supply_tier else low_cap
+
+
+def zt_expand_reserve_exempt(
+    enemy_supply: float,
+    now: float,
+    prev_exempt: bool,
+    high: float = 30.0,
+    low: float = 20.0,
+    time_floor: float = 500.0,
+) -> bool:
+    """O366-④a(o365a g3 实证):O126 zerg_timing_expand_reserve 威胁
+    豁免闸(带滞回)。纯逻辑,可单测。
+
+    o365a g3 实证:599s 敌压境时 expand_reserve 仍锁死地面(兵力
+    ={},纯塔独木撑)—— O298-② 的「敌 supply < 我方」闸在我方
+    supply 也高时恒真,敌 40-76 supply 决胜波照停产。敌可见
+    supply >30 或 t>500 → 强制解除(豁免期产线不停);滞回:豁免
+    后敌 supply 降到 <20 才恢复预留(t>500 时间档不可逆,恒豁免)。
+    """
+    if now >= time_floor:
+        return True
+    if prev_exempt:
+        return enemy_supply >= low
+    return enemy_supply > high
+
+
+def fleet_formed_release_rush(
+    fleet_count: int,
+    defense_score: float,
+    min_fleet: int = 3,
+    min_score: float = 15.0,
+) -> bool:
+    """O366-④b(o365b g2 实证):O203「舰队成型解除 rush」改判实际
+    舰队数。纯逻辑,可单测。
+
+    o365b g2 实证:「舰队成型解除 rush」在舰队=0 时虚报 5 次 ——
+    旧判据拿 _fleet_transitioned(转型旗标)+防御评分当舰队,旗标
+    可以被 SG/FB 基建单独撑起,实际 TEMPEST+CARRIER=0 也「成型」。
+    改判实际舰队数(TEMPEST+CARRIER)≥min_fleet 且防御评分达标才
+    解除 rush 经济锁。
+    """
+    return fleet_count >= min_fleet and defense_score >= min_score
 
 
 def cannon_global_capped(
@@ -4867,16 +5020,62 @@ def manual_cannon_anchor(
     首塔教义),放不进每次外扩 step 格(attempt 递增,调用方簿记);
     矿线取不到退化为正上方固定偏移。先立 1 塔再说(O357 死槽
     换锚的「拉黑-重锚」同教义,锚由几何直算不走槽表)。
+    O366-③c(o365a g1 实证):单方向射线改 8 向扇形 —— o365a g1
+    三矿 (70,94) 手工锚点重试连败:旧实现只沿「Nexus→矿线」一条
+    射线外扩,该方向撞上矿簇本体/不可建地形时,attempt 递增只是
+    沿同一条死线越走越远(扩进矿线更不可建)。改扇形:attempt
+    低 3 位选方向(矿线方向起,每次 ±45° 旋转,8 向轮转),高
+    位选圈(每轮转完一圈外扩 step 格)—— 死方向 8 次尝试内
+    必然换向,不再在一条死线上空转。
     """
     nx, ny = nexus_xy
-    dist = base_offset + attempt * step
+    dist = base_offset + (attempt // 8) * step
     dx, dy = 0.0, -1.0
     if mineral_xy is not None:
         vx, vy = mineral_xy[0] - nx, mineral_xy[1] - ny
         norm = (vx * vx + vy * vy) ** 0.5
         if norm > 0:
             dx, dy = vx / norm, vy / norm
-    return (nx + dx * dist, ny + dy * dist)
+    # 8 向旋转表(45° 步进,从矿线方向起,先右后左交替)
+    _S = 0.7071067811865476  # √2/2
+    _ROT = (
+        (1.0, 0.0), (_S, _S), (_S, -_S), (0.0, 1.0),
+        (0.0, -1.0), (-_S, _S), (-_S, -_S), (-1.0, 0.0),
+    )
+    cos_a, sin_a = _ROT[attempt % 8]
+    rx, ry = dx * cos_a - dy * sin_a, dx * sin_a + dy * cos_a
+    return (nx + rx * dist, ny + ry * dist)
+
+
+def anchor_buildable(
+    grid,
+    x: float,
+    y: float,
+    resource_xys=(),
+    min_res_dist: float = 2.5,
+) -> bool:
+    """O366-③c(o365a g1 实证):手工锚点可建性过滤。纯逻辑,可单测。
+
+    o365a g1 三矿 (70,94) 实证:手工锚点重试连败 —— 锚点落在不可建
+    地形/矿簇本体上,游戏侧直接拒建(不是 solver no_placement,
+    重试只是换个坐标再被拒)。派工前先过滤:2x2 足迹四格全在
+    placement grid 可建格(1=可建),且离矿簇/气矿 ≥min_res_dist
+    (资源格 placement grid 不标,需显式避让)。grid =
+    game_info.placement_grid.data_numpy(越界 = 不可建)。
+    """
+    ax, ay = int(x), int(y)
+    height, width = grid.shape
+    for dx in (-1, 0):
+        for dy in (-1, 0):
+            cx, cy = ax + dx, ay + dy
+            if cx < 0 or cy < 0 or cy >= height or cx >= width:
+                return False
+            if grid[cy, cx] != 1:
+                return False
+    return all(
+        (x - rx) ** 2 + (y - ry) ** 2 >= min_res_dist * min_res_dist
+        for rx, ry in resource_xys
+    )
 
 
 def escort_hard_cap(
