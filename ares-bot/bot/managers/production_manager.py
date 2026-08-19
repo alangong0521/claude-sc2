@@ -3279,6 +3279,18 @@ class ProductionManager(Manager):
                     "msg": "O333:forge钉点(Nexus在途,分矿塔链前置)",
                 })
             elif _rc != "dispatched":
+                # O348-①(o347 全 6 局实证):forge no_placement 自救补电
+                # —— 分矿 forge 要电,132s 时全图带电 3x3 槽被 GW/core/
+                # nexus 占满(96 次失败/6 局),钉点空转整链卡死;
+                # no_placement 即在同基地钉一根水晶(自带电源),下轮
+                # 重试(30s 节流) forge 自然有位。O296-③ 主基首塔
+                # 自救的分矿版。
+                if _rc == "no_placement":
+                    self._dispatch_structure(
+                        UnitID.PYLON, _forge_base,
+                        closest_to=_forge_base, needs_power=False,
+                        critical=True, max_on_route=99,
+                    )
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": f"O340:forge钉点失败={_rc}",
