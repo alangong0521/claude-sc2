@@ -6700,6 +6700,21 @@ class ProductionManager(Manager):
                     )
                     for _info in getattr(self.ai, "_evac_bases", {}).values():
                         _info.get("workers", set()).discard(worker.tag)
+        if worker is None and allow_borrow:
+            # O347-①(o346 多局实证):气矿农民对 ares select_worker
+            # 不可见 —— 它只从「矿簇指派且未载货」挑选(resource_manager
+            # .py:400),气矿工(常态 6 个)永不入选;「采集池」簿记含
+            # 气矿工(虚高),小农经济局(14-17 农:6 气矿+搬运+建造)
+            # 可用矿工恒 0 → 分矿补电/forge/塔 no_worker 刷屏,首波
+            # 前塔链立不起来(o342-o346 速败系列总根)。直接从气矿
+            # 记账里就近摘一个 —— 气矿短期让位防御链(B4③ 停气同
+            # 哲学);build_with_specific_worker 接管 role/记账。
+            _geyser_tags = self.manager_mediator.get_worker_to_vespene_dict
+            _gcands = [w for w in self.ai.workers if w.tag in _geyser_tags]
+            if _gcands:
+                worker = min(
+                    _gcands, key=lambda w: w.position.distance_to(placement)
+                )
         if worker is None:
             return "no_worker"
         self.ai.mediator.build_with_specific_worker(
