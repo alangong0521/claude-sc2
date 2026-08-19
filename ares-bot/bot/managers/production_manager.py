@@ -109,6 +109,8 @@ from bot.production_plans import (
     reanchor_bases,
     reanchor_cooldown_until,
     zt_forge_pin_gate,
+    zt_cannon_pending_probe_yield,
+    zt_second_cannon_pin_ok,
     event_throttle_ok,
     tempest_dump_suppressed,
     cannon_capped,
@@ -358,9 +360,18 @@ class ProductionManager(Manager):
         # O358-②(o357 尸检):矿气倒挂停气转矿状态(气 >800 且矿 <300
         # 触发,气 <500 滞回解除;复用 _GAS_STOP_ROLE 停气通道)。
         self._o358_gas_pull: bool = False
+        # O359-②(o358 六局尸检):停气触发簿记的 30s 节流时刻
+        # (o358b g2 零停气事件=无簿记而非未接线,补观测)。
+        self._o359_gas_log_ts: float = 0.0
+        # O359-⑤(o358 六局尸检):波前第二塔钉点重试节流(30s,
+        # 失败重试同 O332-④ 规约);__init__ 初始化,不用 getattr 兜底。
+        self._o359_c2_last: float = 0.0
         # O354-②(o353 五局尸检):母舰资金窗旗标(每帧在 update 重算;
         # O260 兜底与塔/电池钉点读取)。__init__ 初始化,不用 getattr 兜底。
         self._ms_window: bool = False
+        # O359-④(o358 六局尸检):母舰窗防御档(保 O358-③ 的 300 矿底,
+        # 只拦塔/电池钉点);奢侈品档 _ms_window 无矿底(死锁修复)。
+        self._ms_window_defense: bool = False
         # O117-②:防御紧急旗标(rush确认/过渡/presumed 合成,每帧更新)——
         # main.py 的 O11 钉点撤回豁免读它(presumed 期塔工不再被撤回循环)
         self._defense_urgent: bool = False
@@ -810,6 +821,47 @@ class ProductionManager(Manager):
                     "t": round(self.ai.time, 1),
                     "msg": f"O329:分矿预置塔链(Nexus在途,派工={_rc})",
                 })
+        # O359-⑤(o358 六局尸检):波前第二塔钉点 —— 305-309s 致死波
+        # (12-16 狗+5-9 蟑螂,三局一致)单塔守不住(o358b g1 塔 257s
+        # 落成照样穿、342s 被拆归零);六局仅 o358a g3(首塔 149s)在
+        # 300s 前有 ≥2 塔,其余二塔 325-378s 或整局没有。首波窗
+        # (t<330)内首塔落成(就绪 ≥1)即 critical 钉第二塔,落点锚
+        # 首塔(塔阵同位,电力已由首塔链解决);总数(实体+在途)≥2
+        # 或出窗自停(自校正,无 latch)。失败重试 30s 节流(O332-④
+        # 同规约)。资金由 O359-③ 的塔等钱探机让位配套(同一笔
+        # 150 矿短窗预算)。验收口径:300s 前 ≥2 塔。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and zt_second_cannon_pin_ok(
+                self.ai.time,
+                sum(
+                    1
+                    for s in self.ai.structures.ready
+                    if s.type_id == UnitID.PHOTONCANNON
+                ),
+                len(self.manager_mediator.get_own_structures_dict[UnitID.PHOTONCANNON])
+                + self.manager_mediator.get_building_counter[UnitID.PHOTONCANNON],
+            )
+            and self.ai.time - self._o359_c2_last > 30.0
+        ):
+            self._o359_c2_last = self.ai.time
+            _c1 = next(
+                (
+                    s
+                    for s in self.ai.structures.ready
+                    if s.type_id == UnitID.PHOTONCANNON
+                ),
+                None,
+            )
+            _rc2 = self._dispatch_structure(
+                UnitID.PHOTONCANNON, _c1.position,
+                closest_to=_c1.position, critical=True, max_on_route=99,
+            )
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": f"O359:波前第二塔钉点(critical,派工={_rc2})",
+            })
         # O166: 这些闸在 update 尾部的方法(_spend_bank/_build_extra_production/
         # _build_forward_pylon)里也要读，挂到实例上避免 NameError。
         self._expand_holding = _expand_holding
@@ -1675,7 +1727,40 @@ class ProductionManager(Manager):
         # O358-③(o357 尸检):开窗加矿 ≥300 判据 —— o357a g3 空窗 60s
         # (气够矿 <300 买不起),塔链让位期分矿被压掉四矿;窗改
         # 「攒够了才开」(矿 300-400 冲刺窗),<300 不抑制防御链。
+        # O359-④(o358 六局尸检,母舰 0/6 实锤):O358-③ 的 300 矿底
+        # 对奢侈品抑制构成死锁 —— 矿恒 <300 → 窗不开 → O260/O239
+        # 不抑制 → 矿永远攒不到 400(o358b g2 矿峰值 250/1040-1319s)。
+        # 拆两档:_ms_window = 奢侈品档(O260/O239/舰队新单/探机让位,
+        # 抑制它们就是攒钱手段,无矿底);_ms_window_defense = 防御档
+        # (塔/电池钉点,保 300 矿底,o357a g3 空窗掉四矿的初衷不动)。
         self._ms_window = (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and mothership_window_open(
+                fb_ready=_fb_entities_now > 0,
+                now=self.ai.time,
+                fleet_count=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER
+                    )
+                ),
+                vespene=self.ai.vespene,
+                bases=self.ai.townhalls.amount,
+                workers=self.ai.supply_workers,
+                motherships=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.MOTHERSHIP
+                    )
+                    + cy_unit_pending(self.ai, UnitID.MOTHERSHIP)
+                ),
+                minerals=self.ai.minerals,
+                min_minerals=0.0,
+            )
+        )
+        self._ms_window_defense = (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and mothership_window_open(
@@ -2847,6 +2932,20 @@ class ProductionManager(Manager):
             ),
             workers=self.ai.supply_workers,
             now=self.ai.time,  # O146-②:竞速窗截止 200s(防 latch 压农民到终局)
+        ) or (
+            # O359-③(o358 六局尸检):塔等钱期探机让位 —— O358-⑤ 的
+            # 550 门只在钉点帧生效,o358a g1 实证 Nexus 一拍账上剩 ~65,
+            # 探机/水晶继续抽水,塔链工人干等 ~100s(234 派工→342 落成,
+            # 305-309 致死波零塔)。首波窗内有塔在 tracker 等钱即停探机
+            # (单建筑 150 矿短窗预算保护,非全局面冻结;O146-① 的
+            # 16 农 floor 在上方,双闸不打架)。O359-⑤ 第二塔共用。
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and zt_cannon_pending_probe_yield(
+                self.ai.time,
+                self.ai.not_started_but_in_building_tracker(UnitID.PHOTONCANNON),
+                self.ai.supply_workers,
+            )
         ) or _zealot_sprint  # O124-③:首叉冲刺期农民也停(矿全留给首叉)
         # O146-①(元诊断:赢局退出时 15-20 农,现局被刹车家族压在 12):
         # t≤350 且非急性窗且农民 <16 → 必产,一切 yield/brake 不得压
@@ -3480,11 +3579,19 @@ class ProductionManager(Manager):
         # GATEWAY 资金(GATEWAY 68.3→104.5-132.6s,首叉晚 40-80s
         # 撞 ZT 首波);门改「GATEWAY 已下单 or (t≥75 且矿≥200)」,
         # 验收口径:GATEWAY ≤75s 基线恢复 + forge 仍 ≤150s。
+        # O359-①(o358 六局尸检,事件簿实锤):「已下单」仍假放行 ——
+        # o358b g2:70.7s 事件「农民干等3s(等钱造GATEWAY)」时
+        # GATEWAY 已 pending(门开),但 63.4s forge 钉点先吃 150、
+        # 88/104/112s 三根水晶再吃 300,GATEWAY 放置拖到 124.6s。
+        # pending(派工)≠ placed(放置):判据改吃实体(含在建),
+        # 放置前 forge 不抢 opener 资金;兜底 t≥75 且矿 ≥200 不变。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and zt_forge_pin_gate(
-                gateway_ordered=self._structure_present_or_pending(UnitID.GATEWAY),
+                gateway_placed=bool(
+                    self.manager_mediator.get_own_structures_dict[UnitID.GATEWAY]
+                ),
                 now=self.ai.time,
                 minerals=self.ai.minerals,
             )
@@ -5770,24 +5877,66 @@ class ProductionManager(Manager):
         # 空开 60s 买不起 300 矿母舰实证);解除滞回气 <500 —— 比
         # O157 的「矿 >500 即回气」按得更久,锯齿期烂气持续换矿。
         # 复用本方法 _GAS_STOP_ROLE 停气通道,不新发明框架。
+        # O359-②(o358 六局尸检):① 阈值 800/300 → 500/200、滞回
+        # 500 → 350(o358b g2 实测倒挂带 = 气 712-1118/矿 5-250);
+        # ② 接线核查:本方法经 update → _rush_economy_response 每帧
+        # 必达(非 rush 门),旗标每帧求值 —— o358b g2 零停气事件是
+        # 「无簿记」而非「未接线」;补事件簿记(30s 节流,O340 同规约),
+        # 下轮尸检直接读触发/解除。③ 拉动网放宽:o358b g1 实证机制
+        # 有效(停气池 31、气冻结 723 持续 90s),但 g2 晚期气满采
+        # 116s 零拉动 —— 旧判据要求 role==GATHERING,角色漂移(撤离/
+        # 建造台账轮换)的农民持 gas 簿记续采却抓不到;改为「在 gas
+        # 簿记且非建造/侦查/撤离/司令接管」即拉,簿记才是 ares Mining
+        # 派气的权威口径。
         if gas_to_minerals_needed(self.ai.vespene, self.ai.minerals):
+            if not self._o358_gas_pull and event_throttle_ok(
+                self.ai.time, self._o359_gas_log_ts
+            ):
+                self._o359_gas_log_ts = self.ai.time
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O359:停气转矿触发(气{self.ai.vespene:.0f},"
+                        f"矿{self.ai.minerals:.0f})"
+                    ),
+                })
             self._o358_gas_pull = True
-        elif self._o358_gas_pull and self.ai.vespene < 500.0:
+        elif self._o358_gas_pull and self.ai.vespene < 350.0:
             self._o358_gas_pull = False
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O359:停气转矿解除(气{self.ai.vespene:.0f},"
+                    f"矿{self.ai.minerals:.0f})"
+                ),
+            })
         if rush_gas_stop_window(
             self._rush_active,
             _stop_age,
             window=45.0 if self._flow.transition is not None else float("inf"),
         ) or self._mineral_crisis_gas_stop or self._early_gas_pull or self._o358_gas_pull:
             gas_workers = self.manager_mediator.get_worker_to_vespene_dict
-            gathering = self.manager_mediator.get_unit_role_dict.get(
-                UnitRole.GATHERING, set()
+            # O359-②:拉动豁免集 —— 建造台账(BuildingManager 的责任,
+            # O1/O2 教训)/侦查/E6 撤离/司令接管各有属主,不抢;其余
+            # 角色(GATHERING 或任何漂移角色)只要在 gas 簿记就拉。
+            _pull_exempt = set(
+                self.manager_mediator.get_building_tracker_dict
             )
+            _role_dict = self.manager_mediator.get_unit_role_dict
+            for _r in (
+                UnitRole.SCOUTING,
+                UnitRole.PERSISTENT_BUILDER,
+                UnitRole.CONTROL_GROUP_ONE,  # main.py E6 撤离专属
+            ):
+                _pull_exempt |= _role_dict.get(_r, set())
             player_ctrl = getattr(self.ai, "_player_ctrl", {})
             for w in self.ai.workers:
-                if w.tag in player_ctrl:
+                if w.tag in player_ctrl or w.tag in _pull_exempt:
                     continue
-                if w.tag in gas_workers and w.tag in gathering:
+                if w.tag in self._gas_stopped_tags:
+                    if w.is_idle and self.ai.mineral_field:
+                        w.gather(self.ai.mineral_field.closest_to(w))
+                elif w.tag in gas_workers:
                     self.manager_mediator.assign_role(
                         tag=w.tag, role=self._GAS_STOP_ROLE
                     )
@@ -5795,9 +5944,6 @@ class ProductionManager(Manager):
                     if w.is_carrying_vespene:
                         w.return_resource()
                     elif self.ai.mineral_field:
-                        w.gather(self.ai.mineral_field.closest_to(w))
-                elif w.tag in self._gas_stopped_tags and w.is_idle:
-                    if self.ai.mineral_field:
                         w.gather(self.ai.mineral_field.closest_to(w))
         elif self._gas_stopped_tags:
             alive = {w.tag for w in self.ai.workers}
@@ -7051,7 +7197,10 @@ class ProductionManager(Manager):
         # O354-②(o353 五局尸检):母舰资金窗 —— 窗内新塔/电池钉点让位
         # 母舰 400 矿(母舰 0/5 的死因就是矿被塔/农/O260 每帧吃光);
         # 窗随矿 ≥400 或条件失效自动关。窄域优先级修正,不是资金冻结。
-        if self._ms_window and sid in (
+        # O359-④:防御链抑制走 _ms_window_defense(保 O358-③ 的 300
+        # 矿底,防 o357a g3 空窗期塔链让位掉四矿);奢侈品抑制(O260/
+        # O239/舰队新单/探机)走无矿底的 _ms_window(死锁修复见上)。
+        if self._ms_window_defense and sid in (
             UnitID.PHOTONCANNON,
             UnitID.SHIELDBATTERY,
         ):

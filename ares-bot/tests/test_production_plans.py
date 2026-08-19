@@ -72,6 +72,8 @@ from bot.production_plans import (  # noqa: E402
     reanchor_bases,
     reanchor_cooldown_until,
     zt_forge_pin_gate,
+    zt_cannon_pending_probe_yield,
+    zt_second_cannon_pin_ok,
     event_throttle_ok,
     tempest_dump_suppressed,
     cannon_capped,
@@ -2492,20 +2494,22 @@ class TestO157MineralCrisisGasStop(unittest.TestCase):
 
 
 class TestO358GasToMinerals(unittest.TestCase):
-    """O358-②(o357 尸检):矿气倒挂停气转矿触发判据(气>800 且矿<300)。"""
+    """O358-②(o357 尸检):矿气倒挂停气转矿触发判据;
+    O359-②(o358 尸检):阈值 800/300 → 500/200(实测倒挂带 712-1118/5-250)。"""
 
     def test_gas_to_minerals_needed(self):
-        # 触发象限:气 >800 且矿 <300(o357 三局气峰 779/1184/2524、
-        # 矿常年 5-300 的倒挂态)
+        # 触发象限:气 >500 且矿 <200(o358b g2 实测倒挂带:
+        # 气 712-1118 而矿 5-250,1076-1201s 持续 124s)
         self.assertTrue(gas_to_minerals_needed(1184.0, 100.0))
-        self.assertTrue(gas_to_minerals_needed(801.0, 299.9))
+        self.assertTrue(gas_to_minerals_needed(712.0, 195.0))
+        self.assertTrue(gas_to_minerals_needed(501.0, 199.9))
         # 气够但矿也够 → 不倒挂,不动气农
-        self.assertFalse(gas_to_minerals_needed(1200.0, 300.0))
+        self.assertFalse(gas_to_minerals_needed(1200.0, 200.0))
         self.assertFalse(gas_to_minerals_needed(1200.0, 450.0))
-        # 矿紧但气未烂银行(≤800)→ 不触发(留给 O157/O327 的
-        # 既有判据;本判据只抓明显烂银行)
-        self.assertFalse(gas_to_minerals_needed(800.0, 100.0))
-        self.assertFalse(gas_to_minerals_needed(500.0, 50.0))
+        # 矿紧但气未烂(≤500)→ 不触发(留给 O157 的 600 判据;
+        # 与滞回解除线 350 拉开 150 缓冲防抖动)
+        self.assertFalse(gas_to_minerals_needed(500.0, 100.0))
+        self.assertFalse(gas_to_minerals_needed(350.0, 50.0))
 
 
 class TestO118FirstCannonRace(unittest.TestCase):
@@ -3584,6 +3588,39 @@ class TestO327Economy(unittest.TestCase):
         self.assertFalse(sg2_pin_economy_ok(1, 100.0))
 
 
+class TestO359WaveDefense(unittest.TestCase):
+    """O359-③/⑤(o358 六局尸检):波前 ≥2 塔 + 塔等钱期 150 矿预算保护。
+
+    o358 实证:305-309s 致死波单塔守不住(o358b g1 塔 257s 落成照样穿);
+    O358-⑤ 的 550 门只在钉点帧生效,o358a g1 塔链 234s 派工→342s 落成
+    (探机/水晶抽干等钱窗)。"""
+
+    def test_zt_second_cannon_pin_ok(self):
+        # 首波窗(t<330)+ 首塔落成(就绪 ≥1)+ 总数 <2 → 钉第二塔
+        self.assertTrue(zt_second_cannon_pin_ok(250.0, 1, 1))
+        self.assertTrue(zt_second_cannon_pin_ok(299.9, 1, 1))
+        # 首塔未落成 → 不钉(塔链时序:首塔先行)
+        self.assertFalse(zt_second_cannon_pin_ok(250.0, 0, 1))
+        self.assertFalse(zt_second_cannon_pin_ok(250.0, 0, 0))
+        # 总数(实体+在途)≥2 → 自停(o358a g3 二塔 189s 局不重复钉)
+        self.assertFalse(zt_second_cannon_pin_ok(250.0, 1, 2))
+        self.assertFalse(zt_second_cannon_pin_ok(250.0, 2, 2))
+        # 出窗(t≥330,首波已到)→ 不钉(塔链命运已定,资金回正链)
+        self.assertFalse(zt_second_cannon_pin_ok(330.0, 1, 1))
+        self.assertFalse(zt_second_cannon_pin_ok(400.0, 1, 1))
+
+    def test_zt_cannon_pending_probe_yield(self):
+        # 首波窗内有塔在 tracker 等钱 + 农民 ≥16 → 探机让位
+        self.assertTrue(zt_cannon_pending_probe_yield(250.0, 1, 27))
+        self.assertTrue(zt_cannon_pending_probe_yield(329.9, 2, 16))
+        # 无塔等钱 → 不让位(自校正:塔放置 pending 归零即恢复)
+        self.assertFalse(zt_cannon_pending_probe_yield(250.0, 0, 27))
+        # 出窗 → 不让位(探机恢复,经济回血)
+        self.assertFalse(zt_cannon_pending_probe_yield(330.0, 1, 27))
+        # 农民 <16 → 不让位(O146-① floor 同口径,不掐经济火种)
+        self.assertFalse(zt_cannon_pending_probe_yield(250.0, 1, 15))
+
+
 class TestO329FastExpand(unittest.TestCase):
     """O329(司令 2026-08-18 拍板):速二矿钉点 + 防御重心迁 2 矿。
 
@@ -3901,6 +3938,25 @@ class TestO354CarrierMothershipWindow(unittest.TestCase):
                 **{**base, "bases": 2, "workers": 36}, minerals=350.0
             )
         )
+        # O359-④(o358 尸检):奢侈品档传 min_minerals=0(无矿底)——
+        # 矿 <300 也开窗(O260/O239/探机抑制本身就是攒钱手段;
+        # o358b g2 矿峰值 250 恒 <300,300 矿底 = 窗永不开死锁);
+        # 防御档保持默认 300 矿底不变(上面 299.9/300 边界即防御档)
+        self.assertTrue(
+            mothership_window_open(**base, minerals=100.0, min_minerals=0.0)
+        )
+        self.assertTrue(
+            mothership_window_open(**base, minerals=0.0, min_minerals=0.0)
+        )
+        # 无矿底档仍守其余门槛 + 矿 ≥400 关窗
+        self.assertFalse(
+            mothership_window_open(**base, minerals=400.0, min_minerals=0.0)
+        )
+        self.assertFalse(
+            mothership_window_open(
+                **{**base, "vespene": 399.0}, minerals=100.0, min_minerals=0.0
+            )
+        )
 
     def test_cannon_capped(self):
         # O354-④ 四象限:t≥600 且舰队 ≥4 且塔 ≥8 才封顶;威胁豁免
@@ -4064,19 +4120,21 @@ class TestO357ReanchorForgeFirstObservability(unittest.TestCase):
         self.assertEqual(src.count("_ms_order_ready = ("), 1)
 
     def test_zt_forge_pin_gate(self):
-        # O358-①(o357 尸检):四象限 —— 判据「GATEWAY 已下单 or
-        # (t≥75 且矿≥200)」。
-        # ① GATEWAY 已下单 → 任意时刻放行(forge-first 不抢 opener)
+        # O358-①(o357 尸检)+ O359-①(o358 尸检):四象限 —— 判据
+        #「GATEWAY 已放置(实体含在建)or (t≥75 且矿≥200)」;
+        # pending(派工未放置)不算(o358b g2:70.7s 干等派工已出,
+        # 放置拖到 124.6s,forge 63.4s 抢 150 实锤)。
+        # ① GATEWAY 已放置 → 任意时刻放行(forge-first 不抢 opener)
         self.assertTrue(zt_forge_pin_gate(True, 30.0, 0.0))
         self.assertTrue(zt_forge_pin_gate(True, 60.0, 150.0))
-        # ② GATEWAY 未下单且 t<75 → 不钉(GATEWAY ≤75s 基线恢复;
-        # o357 实证 60s 放行把 GATEWAY 右移到 104.5-132.6s)
+        # ② GATEWAY 未放置且 t<75 → 不钉(GATEWAY ≤75s 基线恢复;
+        # o357/o358 实证早放行把 GATEWAY 右移到 104.5-132.6s)
         self.assertFalse(zt_forge_pin_gate(False, 60.0, 500.0))
         self.assertFalse(zt_forge_pin_gate(False, 74.9, 500.0))
-        # ③ GATEWAY 未下单、t≥75 且矿 ≥200 → 兜底放行(forge ≤150s)
+        # ③ GATEWAY 未放置、t≥75 且矿 ≥200 → 兜底放行(forge ≤150s)
         self.assertTrue(zt_forge_pin_gate(False, 75.0, 200.0))
         self.assertTrue(zt_forge_pin_gate(False, 104.5, 300.0))
-        # ④ GATEWAY 未下单、t≥75 但矿 <200 → 不钉(opener 流水
+        # ④ GATEWAY 未放置、t≥75 但矿 <200 → 不钉(opener 流水
         # 高峰矿恒 <200,150 矿 forge 不插队)
         self.assertFalse(zt_forge_pin_gate(False, 75.0, 199.9))
         self.assertFalse(zt_forge_pin_gate(False, 120.0, 100.0))

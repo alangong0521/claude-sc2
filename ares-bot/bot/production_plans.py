@@ -780,8 +780,8 @@ def mineral_crisis_gas_stop(
 def gas_to_minerals_needed(
     vespene: float,
     minerals: float,
-    vespene_threshold: float = 800.0,
-    mineral_threshold: float = 300.0,
+    vespene_threshold: float = 500.0,
+    mineral_threshold: float = 200.0,
 ) -> bool:
     """O358-②(o357 尸检):矿气倒挂停气转矿触发判据。纯逻辑,可单测。
 
@@ -790,10 +790,14 @@ def gas_to_minerals_needed(
     o357a g3 母舰窗空开 60s(气 ≥400 成立但矿 <300 买不起),期间
     分矿塔被压、940s 掉四矿。O157 的停气(气 ≥600/矿 ≤300 触发)
     在矿 >500 即回气,锯齿震荡下气持续烂银行;本判据触发更高
-    (气 >800 = 明显烂银行)但解除更低(气 <500 才回气,调用方
-    滞回),把气农更久地按在矿簇上,把烂气换成母舰/航母缺的矿。
-    复用 O346/O347 的停气通道(_GAS_STOP_ROLE role 切换),不新
-    发明框架。解除由调用方滞回(气 <500)实现,本函数只管触发。
+    但解除更低(调用方滞回),把气农更久地按在矿簇上,把烂气换成
+    母舰/航母缺的矿。复用 O346/O347 的停气通道(_GAS_STOP_ROLE
+    role 切换),不新发明框架。解除由调用方滞回实现,本函数只管触发。
+    O359-②(o358 六局尸检):阈值 800/300 → 500/200 —— o358b g2 实测
+    倒挂区间是气 712-1118/矿 5-250(1076-1201s 持续 124s),气 800
+    线在窗口前段(气 712-767 而矿 55-195)恒假,触发被推迟 ~20s 且
+    边界抖动;500/200 直接覆盖实测倒挂带。滞回解除同步降到气 <350
+    (调用方),与触发档拉开 150 缓冲防抖动。
     """
     return vespene > vespene_threshold and minerals < mineral_threshold
 
@@ -919,6 +923,53 @@ def zt_fast_expand_pin(
         and now >= at
         and minerals >= _gate
     )
+
+
+def zt_cannon_pending_probe_yield(
+    now: float,
+    cannon_pending: int,
+    workers: int,
+    window_end: float = 330.0,
+    min_workers: int = 16,
+) -> bool:
+    """O359-③(o358 六局尸检):塔等钱期探机让位(150 矿短窗预算保护)。纯逻辑,可单测。
+
+    o358 实证:O358-⑤ 的 Nexus 矿门 550 在钉点帧是生效的(5 局统一
+    在矿 ~545-560 摸到 550 才放行,233-235s),但 O341-① latch 让
+    派工在后续帧按 EC 可负担价(400)执行 —— Nexus 一拍账上只剩
+    ~65-165,之后探机 50/个+水晶 100/根持续抽水,塔链工人干等:
+    o358a g1 塔链 234s 派工已出、342s 首塔才落成(干等 ~100s,
+    305-309s 致死波零塔)。门的语义是「Nexus 吃掉 400 后账上必剩
+    ≥150 给首塔」,但这 150 没有任何人守护。本判据 = 单建筑 150
+    矿的短窗口预算保护(章程明确不算全局面资金冻结):首波窗
+    (t<window_end)内有塔在 building_tracker 等钱(已派工未放置)
+    且农民 ≥min_workers(O146-① 的 16 农 floor 在上游调用方,
+    双闸不打架)时,探机停训让位;塔放置(pending 归零)或出窗
+    自动解除(自校正,无 latch)。O359-⑤ 的第二塔共用本判据,
+    与 O358-⑤ 的 550 门是同一笔 150 预算的两端,不互相抢。
+    """
+    return now < window_end and cannon_pending > 0 and workers >= min_workers
+
+
+def zt_second_cannon_pin_ok(
+    now: float,
+    ready_cannons: int,
+    cannons_total: int,
+    window_end: float = 330.0,
+) -> bool:
+    """O359-⑤(o358 六局尸检):波前第二塔钉点判据。纯逻辑,可单测。
+
+    o358 实证:305-309s 致死波(12-16 狗+5-9 蟑螂)三局一致,单塔
+    守不住(o358b g1 塔 257s 落成照样穿、342s 塔被拆归零);六局里
+    仅 o358a g3(首塔 149s)在 300s 前有 ≥2 塔,其余第二塔 325-378s
+    或整局没有。首塔 245-257s 已能达成 → forge 就绪后首塔落成
+    (ready ≥1)即钉第二塔(critical 同构 O333),t<window_end 窗口;
+    总数(实体+在途)≥2 或出窗自动停(自校正,无 latch ——
+    o358a g3 首塔 149s/二塔 189s 的局不会被重复钉)。资金由
+    zt_cannon_pending_probe_yield 的 150 矿短窗预算保护配套。
+    验收口径:300s 前 ≥2 塔。
+    """
+    return now < window_end and ready_cannons >= 1 and cannons_total < 2
 
 
 def sg_pin_expand_ok(townhalls: int, nexus_in_flight: int, now: float, hard_at: float = 360.0) -> bool:
@@ -1526,7 +1577,7 @@ def forge_pin_affordable(
 
 
 def zt_forge_pin_gate(
-    gateway_ordered: bool,
+    gateway_placed: bool,
     now: float,
     minerals: float,
     min_t: float = 75.0,
@@ -1553,8 +1604,17 @@ def zt_forge_pin_gate(
     下单前 forge 不抢 opener 资金;t≥75 且矿 ≥200(150 forge +
     50 余量,GATEWAY 已在产)兜底放行,防 GATEWAY 卡死局 forge
     永锁。验收口径:GATEWAY ≤75s 基线恢复 + forge 仍 ≤150s。
+    O359-①(o358 六局尸检,事件簿+structures 时间线实锤):「下单」
+    口径仍是假放行 —— o358b g2 事件簿 70.7s「idle_builder:农民
+    干等3s(等钱造GATEWAY)」(GATEWAY 此时已 pending,门已开),
+    但放置拖到 124.6s:63.4s forge 钉点先吃 150(64.3s 矿 155→
+    72.3s 35),随后 88/104/112s 三根水晶(300 矿)+探机连拍把
+    等钱中的 GATEWAY 工人晾了 ~54s。pending(已派工)≠ placed
+    (已放置):opener 一派工门就开,forge 的 150 照抢。判据改
+    「GATEWAY 已放置(实体含在建)or (t≥75 且矿 ≥200)」——
+    放置前 forge 不抢;兜底不变。验收口径不变:GATEWAY ≤75s。
     """
-    return gateway_ordered or (now >= min_t and minerals >= min_minerals)
+    return gateway_placed or (now >= min_t and minerals >= min_minerals)
 
 
 def event_throttle_ok(now: float, last_ts: float, interval: float = 30.0) -> bool:
@@ -1642,6 +1702,16 @@ def mothership_window_open(
     防御链换来的钱也到不了 400,是净亏;矿 300-400 才是最后一脚
     的冲刺窗,让位有价值。O355-① 窗内探机让位与 O356-② 窗内
     抑制逻辑不变(窗开时仍生效)。
+    O359-④(o358 六局尸检,母舰 0/6 实锤):O358-③ 的矿底对
+    「奢侈品抑制」构成数学死锁 —— o358b g2 舰队 25、FB 462s、
+    打到 1319s 母舰 0:矿 1040-1319s 峰值 250 恒 <300 → 窗永不
+    开 → O260 暴风兜底(300 矿/艘,150s 内 10+ 次)与 O239 航母
+    (350 矿)不被抑制 → 矿永远摸不到 300。「买不起」与「不抑制」
+    互为前提。修复:调用方拆两档 —— 奢侈品/探机抑制(O260/O239/
+    舰队新单/探机让位)传 min_minerals=0(抑制它们本身就是攒钱
+    手段,无矿底);防御链(塔/电池钉点)保持 300 矿底(O358-③
+    保四矿的初衷不动)。O264 下单路径从不读本窗(can_afford 自含
+    矿判),本改动不涉及下单条件。
     """
     if motherships > 0 or minerals >= price:
         return False
