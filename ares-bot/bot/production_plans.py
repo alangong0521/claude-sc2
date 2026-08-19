@@ -1589,7 +1589,7 @@ def rescue_pylon_anchor(
     free_slots: list,
     base_xy: tuple[float, float],
     fails: int,
-    min_fails: int = 2,
+    min_fails: int = 1,
 ) -> tuple[float, float] | None:
     """O355-②(o354b 三局 6 次 forge no_placement 尸检):自救水晶锚点
     升级。纯逻辑,可单测。
@@ -1601,6 +1601,11 @@ def rescue_pylon_anchor(
     「离基地最近的空闲 3x3 槽」——水晶贴着空闲槽落,落成即把该槽
     纳入电网,下轮重试 forge 自然有位。fails <min_fails 或无空闲
     槽 → None(调用方保持原锚点)。
+    O356-①a(o355 尸检:败局 2/3 死于出生点确定性 no_placement):
+    min_fails 2→1 首发即自救 —— AbyssalReef 右下出生点主基 forge
+    钉点 ~135s 起确定性 no_placement(2/2 局逐帧一致),等第二次
+    失败再救 = 首次失败→自救派工间隔 92-112s,forge 落成 257-301s,
+    致死波 274-322s 到脸时首塔 333s+;首次失败立刻派自救水晶。
     """
     if fails < min_fails or not free_slots:
         return None
@@ -1608,6 +1613,80 @@ def rescue_pylon_anchor(
     return min(
         free_slots, key=lambda s: (s[0] - bx) ** 2 + (s[1] - by) ** 2
     )
+
+
+def second_rescue_pylon_needed(
+    cannon_xy: tuple[float, float] | None,
+    cannon_pin_powered: bool,
+    rescue_anchor: tuple[float, float] | None,
+    power_radius: float = 6.0,
+) -> bool:
+    """O356-①b(o355b g3 实证):forge 自救水晶之外,首塔钉点是否还要
+    补第二根水晶。纯逻辑,可单测。
+
+    o355b g3 实证:自救水晶锚的 3x3 槽没覆盖首塔 2x2 钉点 —— 水晶
+    落成后首塔钉点仍无电(O116 报 (0,0,29):带电 0/空闲 0/总 29),
+    0 塔接 271s 狗蟑波。判据:有首塔钉点 且 钉点当前不带电 且
+    (无自救锚点 或 自救锚点距钉点 >power_radius,水晶落地也照不到)
+    → 在首塔钉点旁补第二根。power_radius 默认 6.0(水晶电力场半径
+    6.5,留 0.5 格落位偏差余量;偏小偏保守=宁多补不裸奔)。
+    """
+    if cannon_xy is None or cannon_pin_powered:
+        return False
+    if rescue_anchor is None:
+        return True
+    dx = rescue_anchor[0] - cannon_xy[0]
+    dy = rescue_anchor[1] - cannon_xy[1]
+    return dx * dx + dy * dy > power_radius * power_radius
+
+
+def cannon_stall_rescue(
+    fail_streak: float,
+    forge_ready: bool,
+    threshold: float = 30.0,
+) -> bool:
+    """O356-①c(o355b g3 实证):首塔派工死等自救判据。纯逻辑,可单测。
+
+    o355b g3 实证:O296-③ 的自救被 _in_flight_near 门挡死 —— forge
+    自救水晶在途/在建 15 格内恒 >0,首塔到死 not_viable;落成后那根
+    水晶又没覆盖首塔 2x2 钉点,带电槽恒 0。forge 就绪后首塔派工
+    连续失败(no_placement/not_viable/tech_not_ready)超 threshold
+    秒 → 无视在途门直接在首塔锚点旁补钉(调用方 30s 节流防刷)。
+    """
+    return forge_ready and fail_streak >= threshold
+
+
+def ms_window_fleet_suppressed(
+    ms_window: bool,
+    fleet_count: int,
+    min_fleet: int = 6,
+) -> bool:
+    """O356-②b(o355b g1/o355a g2 实证):母舰资金窗内星门舰队新单
+    让位判据。纯逻辑,可单测。
+
+    o355b g1 实证:904-952s 窗 48s 内舰队 8→13(5 艘×300 矿≈1500
+    矿)把母舰 400 矿资金窗吃光;o355a g2:794.2s O239 在气 614 时
+    花 350 矿点航母,母舰只差 ≤50 矿被截胡。窗内且舰队(TEMPEST+
+    CARRIER+在产)≥min_fleet 时星门新单让位(舰队已够压制面,矿
+    留给母舰);舰队 <min_fleet 不动 —— 窗内舰队太弱还得造。
+    自校正无 latch:窗随矿 ≥400 自动关,产线即时恢复。
+    """
+    return ms_window and fleet_count >= min_fleet
+
+
+def mothership_supply_ok(
+    supply_left: float,
+    min_left: float = 10.0,
+) -> bool:
+    """O356-②d(o355b g1 实证):母舰下单的 supply 余量门。纯逻辑,可单测。
+
+    o355b g1 终局实证:矿 590/气 437 全满足但 supply 199/200,母舰
+    8 人口卡死永远下不了单;O109-① 的舰队人口 buffer 闸要求
+    _transition_active/_fleet_transitioned,ZT 两旗常年假(O297-①
+    实证),buffer 在 ZT 局从不触发。母舰 8 人口 + 2 余量 = min_left
+    10;不足时调用方钉一根水晶(O264 块 elif 分支)。
+    """
+    return supply_left >= min_left
 
 
 def cannon_capped(
@@ -3596,12 +3675,19 @@ def zt_golden_window_push(
     就是胜因模板。放宽:腐化上限 2→4;t≥decay_t(750)后追猎阈
     6→4 时间衰减(越晚越等不起齐编,窗口在关闭)。尖塔否决/时间/
     舰队门不动。
+    O356-③(o355a g2 实证):零腐化真窗追猎闸软化 —— 140s 零腐化
+    真窗(679-819s)因追猎 5<6/2<4 被否 9 次 near-miss;暴风零腐化
+    时射程白嫖纯地面,不需要追猎护航。corruptors==0 时追猎门降 0;
+    corruptors 1-4 保持现有阈(6,t≥decay_t 降 4)。
     """
     if spire_seen:
         return False
+    # O356-③:零腐化真窗不需要追猎护航(暴风白嫖纯地面),门降 0。
+    if corruptors == 0:
+        min_stalkers = 0
     # O354-③:时间衰减 —— t≥decay_t 后追猎门降到 decay_min_stalkers
     # (只降不升,自定义更低阈不被 decay 抬升)。
-    if now >= decay_t:
+    elif now >= decay_t:
         min_stalkers = min(min_stalkers, decay_min_stalkers)
     return (
         now >= min_t

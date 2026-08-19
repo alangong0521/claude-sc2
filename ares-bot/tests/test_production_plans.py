@@ -63,6 +63,10 @@ from bot.production_plans import (  # noqa: E402
     mothership_window_open,
     ms_window_probe_yield,
     rescue_pylon_anchor,
+    second_rescue_pylon_needed,
+    cannon_stall_rescue,
+    ms_window_fleet_suppressed,
+    mothership_supply_ok,
     tempest_dump_suppressed,
     cannon_capped,
     sg2_pin_economy_ok,
@@ -1922,11 +1926,13 @@ class TestO94FirstWaveDefense(unittest.TestCase):
         self.assertTrue(zt_golden_window_push(750.0, 3, 12))   # o302b-g01 场景
         # 窗口前不推
         self.assertFalse(zt_golden_window_push(649.9, 6, 20))
-        # 舰队/追猎不足不推(t<750 追猎阈仍为 6)
+        # 舰队/追猎不足不推(腐化在时 t<750 追猎阈仍为 6;O356-③ 起
+        # 腐化 0 真窗追猎门降 0,追猎闸用例须显式带腐化)
         self.assertFalse(zt_golden_window_push(749.9, 2, 20))
-        self.assertFalse(zt_golden_window_push(700.0, 3, 5))
-        # 自定义阈值
-        self.assertTrue(zt_golden_window_push(600.0, 3, 8, min_t=600.0, min_fleet=3, min_stalkers=8))
+        self.assertFalse(zt_golden_window_push(700.0, 3, 5, corruptors=2))
+        # 自定义阈值(带腐化,追猎阈不被 O356-③ 零腐化软化归零)
+        self.assertTrue(zt_golden_window_push(600.0, 3, 8, min_t=600.0, min_fleet=3, min_stalkers=8, corruptors=1))
+        self.assertFalse(zt_golden_window_push(600.0, 3, 7, min_t=600.0, min_fleet=3, min_stalkers=8, corruptors=1))
         # O354-③(o353 五局尸检):腐化上限 2→4 —— 腐化 3-4 放行(舰队
         # 6-7 艘+敌腐化 0-4 正是被永久 near-miss 饿死的最佳窗口)
         self.assertTrue(zt_golden_window_push(700.0, 6, 12, corruptors=3))
@@ -1935,11 +1941,22 @@ class TestO94FirstWaveDefense(unittest.TestCase):
         self.assertTrue(zt_golden_window_push(700.0, 6, 12, corruptors=2))
         self.assertTrue(zt_golden_window_push(700.0, 6, 12, corruptors=0))
         # O354-③:时间衰减 —— t≥750 追猎阈 6→4;t=800 追猎 4 放行,
-        # t=700 追猎 4 仍卡
-        self.assertTrue(zt_golden_window_push(800.0, 3, 4))
-        self.assertTrue(zt_golden_window_push(750.0, 3, 4))
-        self.assertFalse(zt_golden_window_push(749.9, 3, 4))
-        self.assertFalse(zt_golden_window_push(700.0, 3, 4))
+        # t=700 追猎 4 仍卡(腐化在时;O356-③ 起腐化 0 门降 0)
+        self.assertTrue(zt_golden_window_push(800.0, 3, 4, corruptors=1))
+        self.assertTrue(zt_golden_window_push(750.0, 3, 4, corruptors=1))
+        self.assertFalse(zt_golden_window_push(749.9, 3, 4, corruptors=1))
+        self.assertFalse(zt_golden_window_push(700.0, 3, 4, corruptors=1))
+        # O356-③(o355a g2 实证):零腐化真窗追猎闸软化 —— 140s 零腐化
+        # 真窗因追猎 5<6/2<4 被否 9 次 near-miss;暴风零腐化时射程
+        # 白嫖纯地面,不需要追猎护航(腐化 0+舰队 3+追猎 0 → 推)
+        self.assertTrue(zt_golden_window_push(679.0, 3, 0, corruptors=0))
+        self.assertTrue(zt_golden_window_push(700.0, 3, 5, corruptors=0))
+        self.assertTrue(zt_golden_window_push(700.0, 3, 2, corruptors=0))
+        # 腐化 3+追猎 5(t<750)→ 仍不推(现有阈不动)
+        self.assertFalse(zt_golden_window_push(700.0, 3, 5, corruptors=3))
+        # 零腐化但舰队/时间不足 → 不推(舰队门/时间门不动)
+        self.assertFalse(zt_golden_window_push(700.0, 2, 20, corruptors=0))
+        self.assertFalse(zt_golden_window_push(649.9, 3, 0, corruptors=0))
         # O326-③:尖塔可见 = 腐化 30-60s 内必到,整局否决(o325a game_04:
         # 推时腐化 ≤2 过闸,28s 后 4-6,暴风喂转型)
         self.assertFalse(zt_golden_window_push(750.0, 6, 12, corruptors=0, spire_seen=True))
@@ -3864,19 +3881,76 @@ class TestO355MothershipWindowForgeRescue(unittest.TestCase):
         self.assertFalse(ms_window_probe_yield(False, 40))
 
     def test_rescue_pylon_anchor(self):
-        # O355-②:连续 no_placement <2 次 → None(保持主基中心锚点)
+        # O356-①a(o355 尸检):min_fails 2→1 首发即自救 —— 首次
+        # no_placement 立刻对准空闲槽(等第二次失败 = 92-112s 救援
+        # 延迟 vs 274s 致死波,死刑);fails=0 仍 None(未失败不触发)
         slots = [(10.0, 10.0), (20.0, 20.0), (30.0, 10.0)]
         self.assertIsNone(rescue_pylon_anchor(slots, (0.0, 0.0), 0))
-        self.assertIsNone(rescue_pylon_anchor(slots, (0.0, 0.0), 1))
-        # 第 2 次起 → 离基地最近的空闲 3x3 槽
+        # 第 1 次起 → 离基地最近的空闲 3x3 槽
+        self.assertEqual(
+            rescue_pylon_anchor(slots, (0.0, 0.0), 1), (10.0, 10.0)
+        )
         self.assertEqual(
             rescue_pylon_anchor(slots, (0.0, 0.0), 2), (10.0, 10.0)
         )
         self.assertEqual(
             rescue_pylon_anchor(slots, (25.0, 25.0), 3), (20.0, 20.0)
         )
+        # 显式 min_fails=2 保留旧边界语义
+        self.assertIsNone(rescue_pylon_anchor(slots, (0.0, 0.0), 1, min_fails=2))
         # 无空闲槽 → None(调用方保持原锚点)
         self.assertIsNone(rescue_pylon_anchor([], (0.0, 0.0), 5))
+
+
+class TestO356MothershipWindowCannonRescue(unittest.TestCase):
+    """O356(o355 尸检):首塔钉点第二根自救水晶 / 死等自救 / 母舰资金窗收口。"""
+
+    def test_second_rescue_pylon_needed(self):
+        # O356-①b:无首塔钉点 / 钉点已带电 → 不补
+        self.assertFalse(second_rescue_pylon_needed(None, False, (10.0, 10.0)))
+        self.assertFalse(second_rescue_pylon_needed((30.0, 10.0), True, (10.0, 10.0)))
+        # 钉点不带电 + 无自救锚点 → 补
+        self.assertTrue(second_rescue_pylon_needed((30.0, 10.0), False, None))
+        # 钉点不带电 + 自救锚点在电力半径内(落地即覆盖)→ 不补
+        self.assertFalse(second_rescue_pylon_needed((30.0, 10.0), False, (32.0, 12.0)))
+        # 钉点不带电 + 自救锚点在电力半径外(o355b g3:锚的 3x3 槽
+        # 没覆盖首塔 2x2 钉点)→ 补第二根
+        self.assertTrue(second_rescue_pylon_needed((30.0, 10.0), False, (10.0, 10.0)))
+        # 边界:距离恰 = power_radius → 不补(<= 视为可覆盖)
+        self.assertFalse(
+            second_rescue_pylon_needed((16.0, 10.0), False, (10.0, 10.0))
+        )
+        self.assertTrue(
+            second_rescue_pylon_needed((16.1, 10.0), False, (10.0, 10.0))
+        )
+
+    def test_cannon_stall_rescue(self):
+        # O356-①c:forge 就绪 + 连续失败 ≥30s → 无视在途门补钉
+        self.assertTrue(cannon_stall_rescue(30.0, True))
+        self.assertTrue(cannon_stall_rescue(61.5, True))
+        # 失败时长不足 → 不补(等 O296-③ 常规自救)
+        self.assertFalse(cannon_stall_rescue(29.9, True))
+        # forge 未就绪 → 不补(首塔 tech_not_ready 是正常等待)
+        self.assertFalse(cannon_stall_rescue(90.0, False))
+
+    def test_ms_window_fleet_suppressed(self):
+        # O356-②b:窗开 + 舰队(含在产)≥6 → 星门新单让位
+        self.assertTrue(ms_window_fleet_suppressed(True, 6))
+        self.assertTrue(ms_window_fleet_suppressed(True, 13))
+        # 舰队 <6 → 不动(窗内舰队太弱还得造)
+        self.assertFalse(ms_window_fleet_suppressed(True, 5))
+        self.assertFalse(ms_window_fleet_suppressed(True, 0))
+        # 窗关 → 产线照跑(自校正无 latch)
+        self.assertFalse(ms_window_fleet_suppressed(False, 13))
+
+    def test_mothership_supply_ok(self):
+        # O356-②d:母舰 8 人口 + 2 余量 = 10;o355b g1 终局 199/200
+        # (supply_left=1)卡死场景
+        self.assertTrue(mothership_supply_ok(10.0))
+        self.assertTrue(mothership_supply_ok(14.0))
+        self.assertFalse(mothership_supply_ok(9.9))
+        self.assertFalse(mothership_supply_ok(1.0))
+        self.assertFalse(mothership_supply_ok(0.0))
 
 
 if __name__ == "__main__":

@@ -100,6 +100,10 @@ from bot.production_plans import (
     mothership_window_open,
     ms_window_probe_yield,
     rescue_pylon_anchor,
+    second_rescue_pylon_needed,
+    cannon_stall_rescue,
+    ms_window_fleet_suppressed,
+    mothership_supply_ok,
     tempest_dump_suppressed,
     cannon_capped,
     sg2_pin_economy_ok,
@@ -369,6 +373,14 @@ class ProductionManager(Manager):
         self._o333_forge_logged: bool = False
         self._o349_forge_logged: bool = False
         self._o350_forge_fails: int = 0
+        # O356-①c(o355b g3 实证):首塔派工死等自救簿记 —— forge 就绪后
+        # 连续失败(no_placement/not_viable/tech_not_ready)的起点与上次
+        # 补钉时刻(30s 节流);__init__ 初始化,不用 getattr 兜底。
+        self._o356_cannon_fail_since: float | None = None
+        self._o356_cannon_rescue_ts: float = 0.0
+        # O356-②d(o355b g1 实证):母舰 supply 卡死自救水晶的钉点节流
+        # (终局 199/200 全资金满足却下不了单;30s 节流防刷)。
+        self._o356_supply_pin_ts: float = 0.0
         # O133-②:过渡期 timing 防御冲刺旗标(update 头部每帧重算;
         # F2 注册闸/塔目标/_rush_gateway_boost/_build_extra_production 读)
         # O144-②:判据缺省关断(无差别冲刺在非 rush 局白吃矿)→ 恒 False
@@ -2644,29 +2656,13 @@ class ProductionManager(Manager):
             )
             and self.ai.not_started_but_in_building_tracker(UnitID.PHOTONCANNON) == 0
         ):
-            _ramp = getattr(self.ai, "main_base_ramp", None)
-            _anchor = None
+            # O356-①:锚点计算抽成 _first_cannon_anchor() —— 本派工与
+            # forge 自救第二根水晶(O356-①b)共用同一钉点源。
             # O101-X:协防塔锚点 = 矿线质心(狗绕坡口直进矿线,塔要在矿线);
             # O118-③(o117 局1/2/4 实证):再朝远离坡口退 2.5 格 —— 首塔
             # 建造期 25-29s 被狗两口咬掉三局实证;矿线深处建造期不吃狗,
             # 成型后射程 7 照样覆盖矿线。坡口迎敌位留给 F2 主链的后续塔
-            _mh = self.ai.mineral_field.closer_than(10, self.ai.start_location)
-            if _mh and _ramp is not None and getattr(_ramp, "top_center", None):
-                _cx = sum(m.position.x for m in _mh) / len(_mh)
-                _cy = sum(m.position.y for m in _mh) / len(_mh)
-                _anchor = Point2(cannon_safe_anchor(
-                    (_cx, _cy), (_ramp.top_center.x, _ramp.top_center.y)
-                ))
-            elif _mh:
-                _anchor = Point2((
-                    sum(m.position.x for m in _mh) / len(_mh),
-                    sum(m.position.y for m in _mh) / len(_mh),
-                ))
-            elif _ramp is not None and getattr(_ramp, "top_center", None) and getattr(_ramp, "bottom_center", None):
-                _anchor = Point2(defensive_rally_point(
-                    (_ramp.top_center.x, _ramp.top_center.y),
-                    (_ramp.bottom_center.x, _ramp.bottom_center.y),
-                ))
+            _anchor = self._first_cannon_anchor()
             # O116-①:首塔走手动取证派工 —— 失败环节写进事件
             # (no_placement/no_worker/tech_not_ready/taken 四分类);
             # O119-②a:入侵期选工锚点=基地中心(家里方向挑人,
@@ -2742,6 +2738,38 @@ class ProductionManager(Manager):
                     })
             else:
                 self._cannon_stall_since = None
+            # O356-①c(o355b g3 实证):首塔派工死等自救 —— O296-③ 的自救
+            # 被 _in_flight_near 门挡死(forge 自救水晶在途/在建 15 格内
+            # 恒 >0),落成后那根又没覆盖首塔 2x2 钉点(该局 O116 报
+            # (0,0,29),0 塔接 271s 波)。forge 就绪后派工连续失败
+            # (no_placement/not_viable/tech_not_ready)超 30s → 无视
+            # 在途门直接在首塔锚点旁补钉(30s 节流防刷;O296-③ 同构
+            # 但解除在途阻塞,钉点源同 _first_cannon_anchor)。
+            if _dispatch in ("no_placement", "not_viable", "tech_not_ready"):
+                if self._o356_cannon_fail_since is None:
+                    self._o356_cannon_fail_since = self.ai.time
+            else:
+                self._o356_cannon_fail_since = None
+            if (
+                cannon_stall_rescue(
+                    0.0
+                    if self._o356_cannon_fail_since is None
+                    else self.ai.time - self._o356_cannon_fail_since,
+                    _forge_ready,
+                )
+                and _anchor is not None
+                and self.ai.time - self._o356_cannon_rescue_ts > 30.0
+            ):
+                self._o356_cannon_rescue_ts = self.ai.time
+                _prc356 = self._dispatch_structure(
+                    UnitID.PYLON, self.ai.start_location,
+                    closest_to=_anchor, needs_power=False, critical=True,
+                    max_on_route=99,
+                )
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O356:首塔死等自救补电(派工={_dispatch},自救电={_prc356})",
+                })
 
         # custom behavior for all other production, using ares-sc2 to help
         building_counter: dict[UnitID, int] = self.manager_mediator.get_building_counter
@@ -3158,12 +3186,16 @@ class ProductionManager(Manager):
         # O352-①(o351 18 局尸检):气门 700→400 —— 700 在 ZT 局不可达
         # (气峰值常 300-600),O260 兜底 300 又把气提前点成暴风,航母
         # 18 局产出全 0;400 与 O260 新门 500 错档,气先跨航母门。
+        # O356-②a(o355a g2 实证):母舰资金窗内抑制 —— 794.2s 在气 614
+        # 时花 350 矿点航母,母舰只差 ≤50 矿被截胡;与 O260 的
+        # not self._ms_window 同口径,窗随矿 ≥400 自动关(自校正)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and self.ai.vespene >= 400.0
             and self._fb_entities_now > 0
             and self.ai.can_afford(UnitID.CARRIER)
+            and not self._ms_window
         ):
             for _sg in self.manager_mediator.get_own_structures_dict[
                 UnitID.STARGATE
@@ -3228,14 +3260,17 @@ class ProductionManager(Manager):
         # O264-②(司令观察③):舰队 ≥3 艘后补母舰 —— 隐身场(Cloaking Field)
         # 覆盖航母/暴风/地面混编,Zerg Timing AI 反隐靠眼虫、推进通常不带,
         # 隐身期舰队存活显著拉长;母舰本体还有光束输出。只吃烂气窗口
-        # (气 ≥600 且买得起才点,400/400 不抢舰队产能资金窗);全局 1 艘。
+        # (气够且买得起才点,400/400 不抢舰队产能资金窗);全局 1 艘。
         # O266b(o266 双 lane 实证):Nexus 全程在产农 → idle 永不成立,
         # 母舰整轮零出场;改为允许排队(跟在 1 个农民后 +12s,可接受)。
-        if (
+        # O356-②c(o355b g1 实证):下单门气 600→400,与 O355-① 的窗判据
+        # (min_gas=400)一致 —— 旧门 600 与窗 400 错位,窗内气上 739 但
+        # 「同帧 400 矿+600 气」概率为零,母舰永远差最后一步。
+        _ms_order_ready = (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and self._fb_entities_now > 0
-            and self.ai.vespene >= 600.0
+            and self.ai.vespene >= 400.0
             and (
                 self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
                 + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
@@ -3253,7 +3288,14 @@ class ProductionManager(Manager):
             and mothership_economy_ok(
                 self.ai.townhalls.amount, self.ai.supply_workers
             )
-        ):
+        )
+        # O356-②d(o355b g1 实证):supply 余量门 —— 终局矿 590/气 437
+        # 全满足但 199/200,母舰 8 人口卡死;O109-① 的舰队人口 buffer
+        # 闸要 _transition_active/_fleet_transitioned,ZT 两旗常年假
+        # (O297-①),buffer 在 ZT 局从不触发。下单条件除 supply 外全
+        # 满足而 supply_left <10 → 钉一根水晶(30s 节流),人口补上后
+        # 下帧自动下单(自校正,无 latch)。
+        if _ms_order_ready and mothership_supply_ok(self.ai.supply_left):
             for _th in self.ai.townhalls.ready:
                 if _th.orders and len(_th.orders) >= 2:
                     continue  # 队列里已有 2 条(农民+母舰在途)就别再压
@@ -3263,6 +3305,22 @@ class ProductionManager(Manager):
                     "msg": "O264:母舰开造(隐身场保舰队)",
                 })
                 break
+        elif (
+            _ms_order_ready
+            and self.ai.time - self._o356_supply_pin_ts > 30.0
+        ):
+            self._o356_supply_pin_ts = self.ai.time
+            _prc_ms = self._dispatch_structure(
+                UnitID.PYLON, self.ai.start_location,
+                needs_power=False, critical=True, max_on_route=99,
+            )
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O356:母舰supply卡死补水晶"
+                    f"(左{self.ai.supply_left:.0f},自救电={_prc_ms})"
+                ),
+            })
         # O261-①(o224 胜局编配实证 + o254-o260 累计 0-58 死窗尸检):ZT 直爬
         # SG 就绪(261-281s)→FB 就绪(~385s)之间星门空转 100s+,而死窗波
         # (9蟑螂+11狗)零对空 —— 虚空(仅需 SG)是死窗唯一的真实战力:
@@ -3421,7 +3479,9 @@ class ProductionManager(Manager):
                     # 都再钉一根(max_on_route=99 绕 taken),在途水晶
                     # 未落地时重复钉点=水晶 spam;主基 15 格内有在途
                     # 水晶就让它们先落成(O345-① 局部口径同构)。
-                    # ② 连续 ≥2 次起锚点升级 —— 旧锚点=主基中心,
+                    # ② 锚点升级(O356-①a 起首次失败即生效,min_fails
+                    # 2→1:首次失败→自救派工间隔 92-112s vs 274s 致死波,
+                    # 等第二次失败就是死刑)—— 旧锚点=主基中心,
                     # 水晶落在建筑密集区旁,电力覆盖的全是已被 GW/
                     # core/nexus/电池挤占的槽,空闲槽仍在电外;改对准
                     # 离基地最近的空闲 3x3 槽(rescue_pylon_anchor),
@@ -3448,6 +3508,42 @@ class ProductionManager(Manager):
                             needs_power=False,
                             critical=True, max_on_route=99,
                         )
+                        # O356-①b(o355b g3 实证):自救水晶锚的 3x3 槽
+                        # 未必覆盖首塔 2x2 钉点 —— g3 水晶落成后首塔
+                        # 钉点仍无电(O116 报 (0,0,29)),0 塔接 271s
+                        # 狗蟑波。钉点当前不带电 且 自救锚点电力半径
+                        # 照不到钉点(second_rescue_pylon_needed)→
+                        # 同帧在首塔锚点旁补第二根(needs_power=False+
+                        # critical,与 O296-③ 同构;钉点源同
+                        # _first_cannon_anchor,两处锚点不漂移)。
+                        _cannon_anchor = self._first_cannon_anchor()
+                        _ready_pylons = [
+                            s
+                            for s in self.manager_mediator
+                            .get_own_structures_dict[UnitID.PYLON]
+                            if s.is_ready
+                        ]
+                        _cannon_pin_powered = (
+                            _cannon_anchor is None
+                            or cy_pylon_matrix_covers(
+                                _cannon_anchor, _ready_pylons,
+                                self.ai.game_info.terrain_height.data_numpy,
+                            )
+                        )
+                        if second_rescue_pylon_needed(
+                            (_cannon_anchor.x, _cannon_anchor.y)
+                            if _cannon_anchor is not None
+                            else None,
+                            _cannon_pin_powered,
+                            _pyl_anchor,
+                        ):
+                            _prc2 = self._dispatch_structure(
+                                UnitID.PYLON, _forge_base,
+                                closest_to=_cannon_anchor,
+                                needs_power=False,
+                                critical=True, max_on_route=99,
+                            )
+                            _prc = f"{_prc}+首塔二根:{_prc2}"
                     else:
                         _prc = "pylon_in_flight"
                 else:
@@ -3761,6 +3857,10 @@ class ProductionManager(Manager):
             and mothership_economy_ok(
                 self.ai.townhalls.amount, self.ai.supply_workers
             )
+            # O356-②d(o355b g1 实证):supply 余量门 —— 母舰 8 人口,
+            # 199/200 卡死局 supply_left<10 时下单无意义;不足由
+            # O264 块 elif 分支钉水晶补(O356-②d)。
+            and mothership_supply_ok(self.ai.supply_left)
         ):
             _nex = self.ai.townhalls.ready.first
             if _nex is not None:
@@ -5845,6 +5945,25 @@ class ProductionManager(Manager):
         ):
             spawn = carrier_quota_spawn(spawn, UnitID.CARRIER, UnitID.TEMPEST)
             force_gap = max(force_gap, 250)
+        # O356-②b(o355b g1 实证):母舰资金窗内星门舰队新单让位 ——
+        # 窗 48s 内舰队 8→13(5 艘×300 矿≈1500 矿)把母舰 400 矿资金
+        # 窗吃光。窗内且舰队(TEMPEST+CARRIER+在产)≥6 → 从配方摘除
+        # 舰队兵种(星门不再新单,矿留给母舰);地面 floor 生产不动
+        # (O355-① 同口径:窄域优先级修正,不是全局面冻结)。舰队 <6
+        # 不动 —— 窗内舰队太弱还得造。自校正无 latch:窗随矿 ≥400
+        # 自动关,配方下帧复原。
+        if ms_window_fleet_suppressed(
+            self._ms_window,
+            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+            + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
+            + cy_unit_pending(self.ai, UnitID.TEMPEST)
+            + cy_unit_pending(self.ai, UnitID.CARRIER),
+        ):
+            spawn = {
+                uid: conf
+                for uid, conf in spawn.items()
+                if uid not in (UnitID.TEMPEST, UnitID.CARRIER)
+            }
         return self._apply_save_up(self._apply_floor(spawn), force_gap=force_gap)
 
     def _first_tempest_seen(self) -> bool:
@@ -6980,6 +7099,36 @@ class ProductionManager(Manager):
             worker=worker, structure_type=sid, pos=placement
         )
         return "dispatched"
+
+    def _first_cannon_anchor(self):
+        """O356-①(o355 尸检):首塔钉点锚点 —— rush_cannon_bypass 派工与
+        forge 自救第二根水晶(O356-①b)共用同一钉点源,避免两处各自算
+        出不同锚点。None=矿线/坡口都拿不到(调用方退回基地方位)。
+
+        O101-X:锚点=矿线质心(狗绕坡口直进矿线,塔要在矿线);
+        O118-③(o117 局1/2/4 实证):再朝远离坡口退 2.5 格 —— 首塔
+        建造期 25-29s 被狗两口咬掉三局实证;矿线深处建造期不吃狗,
+        成型后射程 7 照样覆盖矿线。无矿线退坡口集结点。
+        """
+        _ramp = getattr(self.ai, "main_base_ramp", None)
+        _mh = self.ai.mineral_field.closer_than(10, self.ai.start_location)
+        if _mh and _ramp is not None and getattr(_ramp, "top_center", None):
+            _cx = sum(m.position.x for m in _mh) / len(_mh)
+            _cy = sum(m.position.y for m in _mh) / len(_mh)
+            return Point2(cannon_safe_anchor(
+                (_cx, _cy), (_ramp.top_center.x, _ramp.top_center.y)
+            ))
+        elif _mh:
+            return Point2((
+                sum(m.position.x for m in _mh) / len(_mh),
+                sum(m.position.y for m in _mh) / len(_mh),
+            ))
+        elif _ramp is not None and getattr(_ramp, "top_center", None) and getattr(_ramp, "bottom_center", None):
+            return Point2(defensive_rally_point(
+                (_ramp.top_center.x, _ramp.top_center.y),
+                (_ramp.bottom_center.x, _ramp.bottom_center.y),
+            ))
+        return None
 
     def _in_flight_near(self, sid, pos, radius: float = 15.0) -> int:
         """O345-①(o344 全 6 局实证):目标点附近在途+在建同型建筑数。
