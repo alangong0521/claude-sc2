@@ -61,6 +61,8 @@ from bot.production_plans import (  # noqa: E402
     forge_pin_affordable,
     mothership_economy_ok,
     mothership_window_open,
+    ms_window_probe_yield,
+    rescue_pylon_anchor,
     tempest_dump_suppressed,
     cannon_capped,
     sg2_pin_economy_ok,
@@ -3815,8 +3817,12 @@ class TestO354CarrierMothershipWindow(unittest.TestCase):
         self.assertFalse(
             mothership_window_open(**{**base, "fleet_count": 2}, minerals=100.0)
         )
+        # O355-①:气门 600→400(与 O260 的 500 泄气闸死锁,o354 母舰 0/9)
         self.assertFalse(
-            mothership_window_open(**{**base, "vespene": 599.0}, minerals=100.0)
+            mothership_window_open(**{**base, "vespene": 399.0}, minerals=100.0)
+        )
+        self.assertTrue(
+            mothership_window_open(**{**base, "vespene": 400.0}, minerals=100.0)
         )
         # 经济门(3 基地或 ≥36 农):2 基地 30 农不开,2 基地 36 农开
         self.assertFalse(
@@ -3842,6 +3848,35 @@ class TestO354CarrierMothershipWindow(unittest.TestCase):
         self.assertFalse(cannon_capped(599.9, 4, 8, False))
         # rush/threat 激活 → 豁免(被骑脸该补还得补)
         self.assertFalse(cannon_capped(700.0, 4, 8, True))
+
+
+class TestO355MothershipWindowForgeRescue(unittest.TestCase):
+    """O355(o354 六局尸检):母舰气阈对齐+窗内探机让位 / forge 自救水晶锚点升级。"""
+
+    def test_ms_window_probe_yield(self):
+        # O355-①:窗开且农民 ≥28 → 探机让位(与 O225 同口径)
+        self.assertTrue(ms_window_probe_yield(True, 28))
+        self.assertTrue(ms_window_probe_yield(True, 44))
+        # 农民 <28 → 照产(经济不能掐尖)
+        self.assertFalse(ms_window_probe_yield(True, 27))
+        self.assertFalse(ms_window_probe_yield(True, 18))
+        # 窗关(矿 ≥400/条件失效)→ 照产
+        self.assertFalse(ms_window_probe_yield(False, 40))
+
+    def test_rescue_pylon_anchor(self):
+        # O355-②:连续 no_placement <2 次 → None(保持主基中心锚点)
+        slots = [(10.0, 10.0), (20.0, 20.0), (30.0, 10.0)]
+        self.assertIsNone(rescue_pylon_anchor(slots, (0.0, 0.0), 0))
+        self.assertIsNone(rescue_pylon_anchor(slots, (0.0, 0.0), 1))
+        # 第 2 次起 → 离基地最近的空闲 3x3 槽
+        self.assertEqual(
+            rescue_pylon_anchor(slots, (0.0, 0.0), 2), (10.0, 10.0)
+        )
+        self.assertEqual(
+            rescue_pylon_anchor(slots, (25.0, 25.0), 3), (20.0, 20.0)
+        )
+        # 无空闲槽 → None(调用方保持原锚点)
+        self.assertIsNone(rescue_pylon_anchor([], (0.0, 0.0), 5))
 
 
 if __name__ == "__main__":

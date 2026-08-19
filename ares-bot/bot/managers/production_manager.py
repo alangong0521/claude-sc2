@@ -98,6 +98,8 @@ from bot.production_plans import (
     holding_abort_keep_first_expand,
     mothership_economy_ok,
     mothership_window_open,
+    ms_window_probe_yield,
+    rescue_pylon_anchor,
     tempest_dump_suppressed,
     cannon_capped,
     sg2_pin_economy_ok,
@@ -1636,9 +1638,12 @@ class ProductionManager(Manager):
             and not self.ai.can_afford(UnitID.FLEETBEACON)
         )
         # O354-②(o353 五局尸检):母舰资金窗 —— 母舰出门槛除 can_afford
-        # 外全满足(FB 就绪/t≥700/舰队≥3/气≥600/经济门/无母舰)且矿 <400
+        # 外全满足(FB 就绪/t≥700/舰队≥3/气≥400/经济门/无母舰)且矿 <400
         # 时开窗,O260 暴风兜底与塔/电池钉点让位母舰资金(矿被 O260/塔/农
         # 每帧吃光,母舰 0/5);矿 ≥400 或条件失效自动关窗。窄域优先级修正。
+        # O355-①(o354 六局尸检):气门 600→400(与 O260 的 500 泄气闸
+        # 死锁,气永被压在 600 下,母舰 0/9);窗内追加探机让位(O355-①,
+        # 见 _build_probes)。
         self._ms_window = (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -2684,6 +2689,13 @@ class ProductionManager(Manager):
                 and self._slot_counts_at(
                     self.ai.start_location, BuildingSize.TWO_BY_TWO
                 )[0] == 0
+                # O355-②(o354b game_03 实证):自救水晶的 taken 判据从全局
+                # 改局部 —— 旧版默认 max_on_route=1,AutoSupply buffer
+                # 水晶/前线走位水晶在途即把自救恒挡 taken(首塔到死
+                # not_viable,带电 2x2 槽=0 无人补,0 塔接 271s 狗蟑波);
+                # 主基 15 格内无在途水晶才钉,max_on_route=99 绕全局计数
+                # (O345-① 分矿补电同构)。
+                and self._in_flight_near(UnitID.PYLON, self.ai.start_location) == 0
             ):
                 # O337-②(o336b game_01 实证):补电对准塔锚点 —— 旧版拍在
                 # 主基中心(默认落位),坡口/矿线锚点区带电槽仍 0
@@ -2693,6 +2705,7 @@ class ProductionManager(Manager):
                 self._dispatch_structure(
                     UnitID.PYLON, self.ai.start_location,
                     closest_to=_anchor, needs_power=False, critical=True,
+                    max_on_route=99,
                 )
             # O118-①:防御紧急窗内派工即时簿记(结果变化或 5s 节流)——
             # forge 就绪 → 首塔落地的静默段逐帧可见,不等 15s 停滞
@@ -3403,11 +3416,40 @@ class ProductionManager(Manager):
                 # 自救的分矿版。
                 if _rc == "no_placement":
                     self._o350_forge_fails += 1
-                    _prc = self._dispatch_structure(
-                        UnitID.PYLON, _forge_base,
-                        closest_to=_forge_base, needs_power=False,
-                        critical=True, max_on_route=99,
-                    )
+                    # O355-②(o354b 三局合计 6 次 no_placement 尸检):
+                    # ① 自救水晶先落地再重试 —— 旧版每次 30s 节流重试
+                    # 都再钉一根(max_on_route=99 绕 taken),在途水晶
+                    # 未落地时重复钉点=水晶 spam;主基 15 格内有在途
+                    # 水晶就让它们先落成(O345-① 局部口径同构)。
+                    # ② 连续 ≥2 次起锚点升级 —— 旧锚点=主基中心,
+                    # 水晶落在建筑密集区旁,电力覆盖的全是已被 GW/
+                    # core/nexus/电池挤占的槽,空闲槽仍在电外;改对准
+                    # 离基地最近的空闲 3x3 槽(rescue_pylon_anchor),
+                    # 水晶落成即把该槽纳入电网。
+                    if self._in_flight_near(UnitID.PYLON, _forge_base) == 0:
+                        _pyl_anchor = rescue_pylon_anchor(
+                            [
+                                (x, y)
+                                for x, y, free in self._free_3x3_slots_at(
+                                    _forge_base
+                                )
+                                if free
+                            ],
+                            (_forge_base.x, _forge_base.y),
+                            self._o350_forge_fails,
+                        )
+                        _prc = self._dispatch_structure(
+                            UnitID.PYLON, _forge_base,
+                            closest_to=(
+                                Point2(_pyl_anchor)
+                                if _pyl_anchor is not None
+                                else _forge_base
+                            ),
+                            needs_power=False,
+                            critical=True, max_on_route=99,
+                        )
+                    else:
+                        _prc = "pylon_in_flight"
                 else:
                     _prc = "-"
                 # O350-①:失败事件带槽位三值+自救水晶 rc(下轮尸检直接
@@ -7143,6 +7185,12 @@ class ProductionManager(Manager):
             and self.ai.minerals
             < self.ai.calculate_cost(UnitID.STARGATE).minerals
         ):
+            return
+        # O355-①(o354 六局尸检):母舰资金窗内探机(50 矿/个)同样让位 ——
+        # o354a g1 窗口开过一次(728.6s),窗口期矿 175→45→5 一路下滑
+        # 从未到 400,母舰始终未下单;与 O240/O225 探机让位同口径
+        # (农民 ≥28 已超双矿饱和线 87%),窗随矿 ≥400 自动关(自校正)。
+        if ms_window_probe_yield(self._ms_window, self.ai.workers.amount):
             return
         # 农民上限随基地数放大：每矿 ~22（16 矿 + 6 气），封顶 70 给军队留供给。
         # 单矿时 22*1=22 与旧行为一致；开二矿后目标自动抬到 44，接着补农民采矿采气。

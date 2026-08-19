@@ -1538,7 +1538,7 @@ def mothership_window_open(
     minerals: float,
     min_t: float = 700.0,
     min_fleet: int = 3,
-    min_gas: float = 600.0,
+    min_gas: float = 400.0,
     price: float = 400.0,
 ) -> bool:
     """O354-②(o353 五局尸检):母舰资金窗判据。纯逻辑,可单测。
@@ -1547,10 +1547,15 @@ def mothership_window_open(
     或 ≥36 农)多局满足,但 can_afford(400 矿)恒假,矿被 O260/塔/农
     每帧吃光;母舰隐身场正对腐化波(敌反隐仅眼虫),胜局配方里有母舰
     位置。母舰出门槛除 can_afford 外全部满足(FB 就绪、t≥700、
-    fleet≥3、气 ≥600 同 O264 门、经济门过、无母舰含在产)且矿 <400
+    fleet≥3、气 ≥min_gas、经济门过、无母舰含在产)且矿 <400
     时开窗:调用方抑制 O260 暴风兜底与新塔/电池钉点,把资金窗让给
     母舰;矿 ≥400 或条件不再满足时窗自动关(自校正,无 latch)。
     窄域优先级修正,不是全局面资金冻结。
+    O355-①(o354 六局尸检):min_gas 600→400 —— 600 与 O260 泄气闸
+    (气 ≥500 点暴风)构成数学死锁:气被 O260 永远压在 600 以下,
+    窗永不二次开(o354a g3 实证 O260 在气 389/364 合法泄气;母舰
+    0/9)。400 < 500 让窗先开,窗内 O260 被抑制,气自然续涨到
+    O264 下单门(600)。
     """
     if motherships > 0 or minerals >= price:
         return False
@@ -1560,6 +1565,48 @@ def mothership_window_open(
         and fleet_count >= min_fleet
         and vespene >= min_gas
         and mothership_economy_ok(bases, workers)
+    )
+
+
+def ms_window_probe_yield(
+    ms_window: bool,
+    workers: int,
+    min_workers: int = 28,
+) -> bool:
+    """O355-①(o354 六局尸检):母舰资金窗内探机让位。纯逻辑,可单测。
+
+    o354a g1 实证:窗口开过一次(728.6s),但窗口期矿 175→45→5 一路
+    下滑(抄家+追猎重建吃矿之外,探机 50 矿/个也在帧级抽窗),从未
+    到 400,母舰始终未下单。窗内(矿 <400 攒钱阶段)且农民 ≥28
+    (与 O225 探机让位同口径,已超双矿饱和线 87%)→ 暂停探机训练,
+    把资金窗让给母舰;窗随矿 ≥400/条件失效自动关(自校正,无 latch)。
+    窄域优先级修正:追猎/叉 floor 生产不动(不做全局面冻结)。
+    """
+    return ms_window and workers >= min_workers
+
+
+def rescue_pylon_anchor(
+    free_slots: list,
+    base_xy: tuple[float, float],
+    fails: int,
+    min_fails: int = 2,
+) -> tuple[float, float] | None:
+    """O355-②(o354b 三局 6 次 forge no_placement 尸检):自救水晶锚点
+    升级。纯逻辑,可单测。
+
+    o354b 实证:O348-① 自救水晶锚在主基中心(closest_to=基地)——
+    主基中心带电 3x3 槽早被 GW/core/nexus/电池挤占,水晶落在建筑
+    密集区旁,电力覆盖的全是已占槽,空闲槽仍在电外,forge 落成
+    拖到 257-361s。连续 no_placement ≥min_fails 次起,锚点改对准
+    「离基地最近的空闲 3x3 槽」——水晶贴着空闲槽落,落成即把该槽
+    纳入电网,下轮重试 forge 自然有位。fails <min_fails 或无空闲
+    槽 → None(调用方保持原锚点)。
+    """
+    if fails < min_fails or not free_slots:
+        return None
+    bx, by = base_xy
+    return min(
+        free_slots, key=lambda s: (s[0] - bx) ** 2 + (s[1] - by) ** 2
     )
 
 
