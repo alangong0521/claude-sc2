@@ -120,7 +120,13 @@ from bot.production_plans import (  # noqa: E402
     tempest_gas_dump_ok,
     gas_stop_repull_action,
     f2_clamp_supply_cap,
+    f2_wave_cannon_floor,
     zt_expand_reserve_exempt,
+    expand_exempt_zealot_only,
+    oracle_gas_yield,
+    new_base_survival_cannon_ok,
+    extra_stargate_minerals_ok,
+    fb_fund_window_stalled,
     fleet_formed_release_rush,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -4607,21 +4613,29 @@ class TestO365Fixes(unittest.TestCase):
         self.assertTrue(anchor_retry_ok(960.0, 900.0, 930.0))     # 持续重试
 
     def test_fb_fund_window_sg_started(self):
-        # O366-①a:SG 在途/动工即开窗(不等就绪)—— o365b g2 FB 自救
-        # 10+ 次 no_money:SG 落成才开窗,资金早在建造期被吃光
-        self.assertTrue(
+        # O367-①:①a 回退 —— sg_started 不再开窗(o366b g1 钱序倒错
+        # 实证:SG(329)→FB(406)→Nexus(430,被挤晚 133s),恢复
+        # SG 就绪才开窗;sg_started 参数保留签名但不入判据
+        self.assertFalse(
             fb_fund_window(False, 0, True, False, False, sg_started=True)
         )
-        # SG 无实体无在途 → 仍不开窗
-        self.assertFalse(
-            fb_fund_window(False, 0, True, False, False, sg_started=False)
+        # SG 就绪 → 照常开窗
+        self.assertTrue(
+            fb_fund_window(True, 0, True, False, False, sg_started=True)
         )
         # 默认参数(不传 sg_started)维持旧口径:SG 就绪才开
         self.assertFalse(fb_fund_window(False, 0, True, False, False))
-        # sg_started 不豁免其它判据(threat 仍关窗)
-        self.assertFalse(
-            fb_fund_window(False, 0, True, True, False, sg_started=True)
-        )
+        self.assertTrue(fb_fund_window(True, 0, True, False, False))
+
+    def test_fb_fund_window_stalled(self):
+        # O367-①:窗开 10s+ 矿净积累 ≤0 → 关窗放行(o366a g2 三窗
+        # 零成交纯压经济实证)
+        self.assertTrue(fb_fund_window_stalled(0.0, 10.0))    # 零增长
+        self.assertTrue(fb_fund_window_stalled(-30.0, 12.0))  # 负增长
+        # 矿在涨 → 健康,不关
+        self.assertFalse(fb_fund_window_stalled(50.0, 10.0))
+        # 滑窗未满 10s 不判
+        self.assertFalse(fb_fund_window_stalled(-30.0, 9.9))
 
     def test_fb_safe_anchor(self):
         # O366-①b:离斜坡口最远的带电空闲槽
@@ -4651,11 +4665,18 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(fb_arrival_guard_active(700.0, False, None, 20))
 
     def test_tempest_gas_dump_ok(self):
-        # O366-②b:气 ≥400 且舰队 <8 → 折现(不要求买不起航母)
-        self.assertTrue(tempest_gas_dump_ok(400.0, 0))
-        self.assertTrue(tempest_gas_dump_ok(600.0, 7))
-        self.assertFalse(tempest_gas_dump_ok(399.9, 0))   # 气不够
-        self.assertFalse(tempest_gas_dump_ok(1000.0, 8))  # 舰队达标停折现
+        # O366-②b + O367-③ 门槛三象限(舰队≥8 / SG≥2 / 航母≥1):
+        # SG≥2 → 允许折现
+        self.assertTrue(tempest_gas_dump_ok(400.0, 0, stargates=2, carriers=0))
+        # 已有 ≥1 航母(单星门)→ 允许
+        self.assertTrue(tempest_gas_dump_ok(600.0, 7, stargates=1, carriers=1))
+        # 穷局(舰队<8、单星门、零航母)→ 不折现,保航母气和产能
+        self.assertFalse(tempest_gas_dump_ok(1000.0, 0, stargates=1, carriers=0))
+        self.assertFalse(tempest_gas_dump_ok(800.0, 3, stargates=1, carriers=0))
+        # 气不够 → 不折现
+        self.assertFalse(tempest_gas_dump_ok(399.9, 0, stargates=3, carriers=2))
+        # 舰队达标(≥8)停止折现(数量够了,气留给航母接力)
+        self.assertFalse(tempest_gas_dump_ok(1000.0, 8, stargates=3, carriers=2))
 
     def test_gas_stop_repull_action(self):
         # O366-②c:复拽动作映射 —— 载气卸货/未载气 smart/不在簿记不动
@@ -4726,6 +4747,64 @@ class TestO365Fixes(unittest.TestCase):
         # 压矿簇(<2.5 格)→ 拒;拉开距离 → 放行
         self.assertFalse(anchor_buildable(grid, 5.0, 5.0, [(6.0, 5.0)]))
         self.assertTrue(anchor_buildable(grid, 5.0, 5.0, [(8.0, 5.0)]))
+
+    def test_anchor_buildable_orientation(self):
+        # O367-②:朝向锁定 —— sc2/ares 惯例 data_numpy[y, x](sc2
+        # PixelMap reshape(size.y, size.x)、__getitem__[pos[1],pos[0]],
+        # ares cy_can_place_structure placement_grid[y, x])。用非
+        # 对称 mock grid:只在 [y=2, x=7] 置 0,锚 (7,2) 必拒、
+        # 转置误读会看的 (2,7) 必须放行 —— 两个断言同真才证明
+        # 索引方向与 sc2/ares 一致。
+        import numpy as np
+
+        grid = np.ones((10, 10), dtype=int)
+        grid[2, 7] = 0  # [y, x]:点 (7,2) 的 2x2 足迹含 (7,2) 格
+        self.assertFalse(anchor_buildable(grid, 7.5, 2.5))
+        self.assertTrue(anchor_buildable(grid, 2.5, 7.5))
+
+    def test_expand_exempt_zealot_only(self):
+        # O367-④a:豁免激活 且 expand_holding 且 Nexus 钉点未开工
+        # → 限叉(禁追猎等气耗单位,o366b g1 追猎抢航母气实证)
+        self.assertTrue(expand_exempt_zealot_only(True, True, 1))
+        # 未豁免 / 非持有期 / Nexus 已开工 → 常态产线不变
+        self.assertFalse(expand_exempt_zealot_only(False, True, 1))
+        self.assertFalse(expand_exempt_zealot_only(True, False, 1))
+        self.assertFalse(expand_exempt_zealot_only(True, True, 0))
+
+    def test_oracle_gas_yield(self):
+        # O367-④b:航母<2 或气<300 → 先知让位(o366 三局各白吃
+        # 150/150+37-43s 星门产能实证)
+        self.assertTrue(oracle_gas_yield(0, 1000.0))   # 零航母
+        self.assertTrue(oracle_gas_yield(1, 400.0))    # 航母<2
+        self.assertTrue(oracle_gas_yield(3, 250.0))    # 气<300
+        # 航母≥2 且气≥300 → 放行
+        self.assertFalse(oracle_gas_yield(2, 300.0))
+
+    def test_new_base_survival_cannon_ok(self):
+        # O367-⑤a:落成新矿零塔(实体+在途)→ 首座保命塔豁免
+        self.assertTrue(new_base_survival_cannon_ok(True, 0, 0))
+        # 已有塔(含在途)→ 回归常规纪律
+        self.assertFalse(new_base_survival_cannon_ok(True, 1, 0))
+        self.assertFalse(new_base_survival_cannon_ok(True, 0, 1))
+        # 在建 Nexus 走 O364-② 的 fb_fund 豁免,不走本闸
+        self.assertFalse(new_base_survival_cannon_ok(False, 0, 0))
+
+    def test_extra_stargate_minerals_ok(self):
+        # O367-⑤b:矿 ≥150(SG 造价)才派工(o366b 矿<150 钉点
+        # no_money 事件空转三次实证)
+        self.assertTrue(extra_stargate_minerals_ok(150.0))
+        self.assertFalse(extra_stargate_minerals_ok(149.9))
+
+    def test_f2_wave_cannon_floor(self):
+        # O367-⑤c:敌可见 supply >35 → F2 塔目标强制 ≥3(动态档
+        # 作用窗错位六局零触发,改接到威胁窗)
+        self.assertEqual(f2_wave_cannon_floor(42.0, 0), 3)
+        self.assertEqual(f2_wave_cannon_floor(35.1, 1), 3)
+        # 目标已高于地板 → 不压低
+        self.assertEqual(f2_wave_cannon_floor(60.0, 5), 5)
+        # ≤35 → 零变化
+        self.assertEqual(f2_wave_cannon_floor(35.0, 0), 0)
+        self.assertEqual(f2_wave_cannon_floor(0.0, 2), 2)
 
 
 if __name__ == "__main__":

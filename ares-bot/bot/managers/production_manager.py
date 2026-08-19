@@ -153,7 +153,13 @@ from bot.production_plans import (
     tempest_gas_dump_ok,
     gas_stop_repull_action,
     f2_clamp_supply_cap,
+    f2_wave_cannon_floor,
     zt_expand_reserve_exempt,
+    expand_exempt_zealot_only,
+    oracle_gas_yield,
+    new_base_survival_cannon_ok,
+    extra_stargate_minerals_ok,
+    fb_fund_window_stalled,
     fleet_formed_release_rush,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -499,6 +505,14 @@ class ProductionManager(Manager):
         # O366-④a(o365a g3 实证):O126 expand_reserve 威胁豁免 latch
         # (zt_expand_reserve_exempt 的滞回态;敌 supply <20 才恢复)。
         self._o366_expand_exempt: bool = False
+        # O367-①(o366 双 lane 尸检):FB 基金窗健康监控簿记 —— 10s
+        # 滑窗矿采样(时刻/矿量)与 stall 关窗冷却截止(窗攒不动矿
+        # 就关窗放行一轮,o366a g2 三窗零成交实证);__init__ 初始化。
+        self._fb_fund_m_sample_t: float = 0.0
+        self._fb_fund_m_sample_v: float = 0.0
+        self._fb_fund_stall_until: float = 0.0
+        # O367-⑤c(o366 六局尸检):F2 35+ 波塔地板事件 30s 节流时刻。
+        self._o367_wave_log_ts: float = 0.0
         # O117-②:防御紧急旗标(rush确认/过渡/presumed 合成,每帧更新)——
         # main.py 的 O11 钉点撤回豁免读它(presumed 期塔工不再被撤回循环)
         self._defense_urgent: bool = False
@@ -1009,11 +1023,18 @@ class ProductionManager(Manager):
                     # 目标点局部在途+就绪 <2 才钉(max_on_route=99 绕全局)。
                     # O364-②:在建 Nexus 首座塔豁免 FB 基金窗(开工即发,
                     # 资金紧张也至少 1 塔走 critical)。
+                    # O367-⑤a:落成新矿零塔时首座保命塔豁免一切基金/钳制
+                    # 闸(new_base_survival_cannon_ok)—— o366 三局 F2
+                    # target=0(fb_missing)丢矿共同死因;O364-② 管在建,
+                    # 本豁免管落成后,均限首塔。
                     _rc = self._dispatch_structure(
                         UnitID.PHOTONCANNON, _exp_th.position,
                         closest_to=_exp_th.position, critical=True,
                         max_on_route=99,
                         fb_fund_exempt=new_base_cannon_fb_fund_exempt(
+                            _exp_th.is_ready, _cn_near, _cn_if
+                        ),
+                        survival_exempt=new_base_survival_cannon_ok(
                             _exp_th.is_ready, _cn_near, _cn_if
                         ),
                     )
@@ -2134,11 +2155,13 @@ class ProductionManager(Manager):
         # 已开))—— o361b 窗开 5 次零成交:矿 <200 时 FB 永远买不起,
         # 不看资源的窗白压经济;窗内追加抑制 trickle 兵营单位(_effective_
         # spawn)/第 2+ 星门(O326)/45s 凑不够矿强制停探机(_probe_yield)。
-        # O366-①a(o365 双 lane 尸检):开窗触发 SG 就绪 → SG 在途/动工
-        # (sg_started)—— o365b g2 FB 自救 10+ 次 no_money:SG 落成才
-        # 开窗,300/200 早在 SG 建造期被塔/探机/升级吃光;动工即开
-        # 抑制,FB 钉点挂出时资金窗已攒好。窗内停气转矿让位(见
-        # _rush_gas_stop 的 O366-①a 闸,FB 的 200 气不被抽干)。
+        # O367-①(o366 双 lane 0/6 尸检):①a 回退 —— sg_started 开窗
+        # 触发实证钱序倒错(o366b g1:SG(329)→FB(406)→Nexus(430,
+        # 被挤晚 133s),农峰 44 vs 胜局 72),恢复 SG 就绪才开窗;
+        # 窗内停气让位一并回退(_rush_gas_stop 段,o366b g1 气 532
+        # 淤积、星门空转 170s 实证:窗开→停气禁→气≥400→窗续开,
+        # 窗自持)。新增健康监控:窗开期间矿净积累 ≤0(10s 滑窗)
+        # 立即关窗放行 30s(o366a g2 三窗零成交纯压经济实证)。
         _fb_fund_raw = fb_fund_window(
             sg_ready=any(s.is_ready for s in _sg_all),
             fb_entities=_fb_entities_now,
@@ -2148,7 +2171,6 @@ class ProductionManager(Manager):
             vespene=self.ai.vespene,
             minerals=self.ai.minerals,
             window_open=self._fb_fund_window,
-            sg_started=self._structure_present_or_pending(UnitID.STARGATE),
         )
         if _fb_fund_raw:
             if self._fb_fund_since is None:
@@ -2156,11 +2178,41 @@ class ProductionManager(Manager):
         else:
             self._fb_fund_since = None
             self._fb_fund_forced = False
+            # O367-①:窗关采样台账同步销,下轮开窗重建档
+            self._fb_fund_m_sample_t = 0.0
         _fb_fund_timed_out = (
             self._fb_fund_since is not None
             and self.ai.time - self._fb_fund_since >= 90.0
         )
-        self._fb_fund_window = _fb_fund_raw and not _fb_fund_timed_out
+        # O367-①:健康监控 —— 窗开期间每 10s 采样矿量,净积累 ≤0
+        # 关窗放行 30s(旧关窗条件只有落成/90s 超时/气<400,买不起
+        # 时窗纯压经济);采样台账随窗关清零(上方 else 分支)。
+        if _fb_fund_raw and not _fb_fund_timed_out:
+            if self._fb_fund_m_sample_t == 0.0:
+                self._fb_fund_m_sample_t = self.ai.time
+                self._fb_fund_m_sample_v = self.ai.minerals
+            elif fb_fund_window_stalled(
+                self.ai.minerals - self._fb_fund_m_sample_v,
+                self.ai.time - self._fb_fund_m_sample_t,
+            ):
+                self._fb_fund_stall_until = self.ai.time + 30.0
+                self._fb_fund_m_sample_t = 0.0
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O367:FB基金窗10s矿净积累≤0,关窗放行30s"
+                        f"(矿{self.ai.minerals:.0f})"
+                    ),
+                })
+            elif self.ai.time - self._fb_fund_m_sample_t >= 10.0:
+                # 健康窗(矿在涨)→ 滑窗重采样
+                self._fb_fund_m_sample_t = self.ai.time
+                self._fb_fund_m_sample_v = self.ai.minerals
+        self._fb_fund_window = (
+            _fb_fund_raw
+            and not _fb_fund_timed_out
+            and self.ai.time >= self._fb_fund_stall_until
+        )
         if self._fb_fund_window and event_throttle_ok(
             self.ai.time, self._fb_fund_log_ts
         ):
@@ -2826,6 +2878,32 @@ class ProductionManager(Manager):
                 and not self.ai.can_afford(UnitID.PHOTONCANNON)
             ):
                 cannons = 0
+            # O367-⑤c(o366 六局尸检):35+ 波塔地板 —— O366-③a 动态档
+            # 六局零触发的根因是作用窗错位(只活在 Nexus 钉点钳制窗
+            # ~40-60s 内,35+ 波全部 614s+ 才可见,日志实证零重叠);
+            # 改接到威胁窗:敌可见 supply >35 → F2 塔目标强制 ≥3
+            # (在 fb_waiting/holding/O216d/O210 min 链之后抬回,波
+            # 到脸是生死窗,基金让位不适用;分矿保底 _cannons_expansion
+            # 在下方继承本值)。O365-④ 钉点钳制窗内仍走动态档(Nexus
+            # 资金优先,窗短)。
+            if (
+                self._opp_race == "zerg"
+                and self._ai_build in ("timing", "rush")
+            ):
+                _wave_floored = f2_wave_cannon_floor(
+                    self._visible_enemy_army_supply(), cannons
+                )
+                if _wave_floored != cannons:
+                    cannons = _wave_floored
+                    if event_throttle_ok(self.ai.time, self._o367_wave_log_ts):
+                        self._o367_wave_log_ts = self.ai.time
+                        self.ai._events.append({
+                            "t": round(self.ai.time, 1),
+                            "msg": (
+                                f"O367:敌35+波,F2塔目标地板抬3"
+                                f"(敌supply={self._visible_enemy_army_supply():.0f})"
+                            ),
+                        })
             # O216j(o216h-lane2 game_04 实证):O210 的「买不起即归零」让新分矿
             # 落成后 88s 塔目标恒 0,敌 4 地面抄家时无塔丢矿(12 农民+基地)。
             # 分矿保底塔不走归零 —— 外层 dispatch_viable 守卫已管钉点,
@@ -3828,6 +3906,12 @@ class ProductionManager(Manager):
             and self._first_fleet_seen()
             and _sg_total_o218 < min(8, 1 + self.ai.townhalls.ready.amount)
             and self.ai.vespene >= 400.0
+            # O367-⑤b(o366b 尸检):矿判据 —— 矿 <150 时钉点 no_money
+            # 事件空转(o366b 三次,气随后被泄掉永不重试);矿 ≥150
+            # (SG 造价)才派工,否则等矿帧重试。与 O301-③ 移除
+            # can_afford 帧判不矛盾(那防矿振荡闸死钉点);本门只看
+            # 单一矿价,「买得起才挂点」。
+            and extra_stargate_minerals_ok(self.ai.minerals)
             # O301-③(o300b game_03 实证):can_afford 门挡在钉点之外 —— 矿
             # 振荡 0-175 时闸不开,钉点永远不成立,SG1 整局、气 1060 烂。
             # ZT 走 critical 钉点(驻点等钱=钱到即开工,O229),不需要帧判
@@ -4142,6 +4226,21 @@ class ProductionManager(Manager):
                     )
                     + cy_unit_pending(self.ai, UnitID.TEMPEST)
                     + cy_unit_pending(self.ai, UnitID.CARRIER),
+                    # O367-③(o366a Timing 0/3 尸检):穷局门槛 —— 舰队
+                    # ≥8 或 SG≥2 或已有 ≥1 航母才折现;单星门零航母
+                    # 穷局保航母气和产能(o366a 三局风暴×3 排航母前,
+                    # 首航母 719→948s 实证)。
+                    stargates=len(
+                        self.manager_mediator.get_own_structures_dict[
+                            UnitID.STARGATE
+                        ]
+                    ),
+                    carriers=(
+                        self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.CARRIER
+                        )
+                        + cy_unit_pending(self.ai, UnitID.CARRIER)
+                    ),
                 )
             )
             and not self._ms_window
@@ -4725,6 +4824,17 @@ class ProductionManager(Manager):
                     self._pivot_tempest_mode(),
                     self._first_fleet_seen(),
                     self._fleet_transitioned,
+                )
+                # O367-④b(o366 双 lane 尸检):先知让位闸 —— o366 三局
+                # 754-784s 各出 1 先知(150/150+37-43s 星门产能),基准
+                # 胜局全程无先知;航母<2 或气<300 时不造(穷局先知的
+                # 气和星门产能是航母的)。
+                and not oracle_gas_yield(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER
+                    )
+                    + cy_unit_pending(self.ai, UnitID.CARRIER),
+                    self.ai.vespene,
                 )
                 and len(structures_dict[UnitID.FLEETBEACON]) > 0
                 and self.ai.structures.filter(
@@ -6666,19 +6776,16 @@ class ProductionManager(Manager):
             self._opp_race == "zerg" and self._ai_build == "timing",
             self.ai.time,
         )
-        # O366-①a(o365 双 lane 尸检):FB 基金窗内停气转矿让位 ——
-        # o365b g2/g3 死结实证:塔链、停气转矿、FB 基金窗三方抢同
-        # 一笔矿;停气把气压到 400 以下基金窗即关(窗判据气≥400),
-        # FB 的 200 气耗被抽干 → FB no_money/no_placement 自救连败。
-        # 窗开期间不触发新停气;已激活的停气随开窗即解除(保 FB
-        # 气耗;基金窗的矿攒积靠探机/塔/升级让位,不靠停气)。
+        # O367-①(o366 双 lane 尸检):O366-①a 的「窗内停气让位」随
+        # 开窗前置一并回退 —— 窗自持帮凶实证(o366b g1):窗开→停气
+        # 被禁→气≥400→窗判据(气≥400)续真→窗续开,气 532 淤积、
+        # 星门空转 170s;停气转矿按自身判据走,不再看基金窗。
         if (
             gas_to_minerals_needed(
                 self.ai.vespene, self.ai.minerals,
                 vespene_threshold=_gp_vth, mineral_threshold=_gp_mth,
             )
             and not _gas_pull_cooling
-            and not self._fb_fund_window
         ):
             if not self._o358_gas_pull and event_throttle_ok(
                 self.ai.time, self._o359_gas_log_ts
@@ -6695,8 +6802,7 @@ class ProductionManager(Manager):
                 self._o358_gas_pull_since = self.ai.time
             self._o358_gas_pull = True
         elif self._o358_gas_pull and (
-            self._fb_fund_window  # O366-①a:FB 基金窗开 → 停气让位
-            or gas_to_minerals_released(
+            gas_to_minerals_released(
                 self.ai.vespene, self.ai.minerals,
             )
             or (
@@ -7015,6 +7121,21 @@ class ProductionManager(Manager):
                 UnitID.STALKER: {"proportion": 0.4, "priority": 0},
                 UnitID.ZEALOT: {"proportion": 0.6, "priority": 1},
             }
+        # O367-④a(o366b g1 实证):expand_reserve 豁免期产兵限叉 ——
+        # o366b g1 矿 5-120 穷局豁免期维持 8-13 地面兵,追猎(50 气/
+        # 只)抢航母气;豁免的本意是产线不停,不是放开气耗单位。与
+        # expand_reserve 分支同上下文(豁免激活 且 Nexus 钉点未开工
+        # 持有期)才换纯叉配方;豁免外常态产线零变化。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and expand_exempt_zealot_only(
+                self._o366_expand_exempt,
+                self._expand_holding,
+                self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
+            )
+        ):
+            return {UnitID.ZEALOT: {"proportion": 1.0, "priority": 0}}
         spawn = self._flow.spawn_dict()
         # E10 策略 pivot(只挂 carrier × 侦查 verdict=greedy):舰队成型前
         # 风暴主 C 压制(9c2f89d 认证赢法),成型/中后期转回航母主 C 终结。
@@ -8142,6 +8263,7 @@ class ProductionManager(Manager):
         wall: bool = False,
         critical: bool = False,
         fb_fund_exempt: bool = False,
+        survival_exempt: bool = False,
     ) -> str:
         """O116-①(o115 局3/局5 实证):BuildStructure 的手动取证版 ——
         落位→选工→下单三段拆开,返回失败环节字符串;成功返回 "dispatched"。
@@ -8160,7 +8282,13 @@ class ProductionManager(Manager):
         # (TEMPEST+CARRIER)≥4 且全局塔 ≥8 → 不再新钉塔(返回 "capped");
         # rush/threat 激活豁免(被骑脸时该补还得补)。集中在本入口,
         # 覆盖 O337 分矿守卫/预置塔链/F2 手动钉点全部塔派工路径。
-        if sid == UnitID.PHOTONCANNON:
+        if sid == UnitID.PHOTONCANNON and not survival_exempt:
+            # O367-⑤a:survival_exempt(新落成基地首座保命塔)豁免下方
+            # cannon_capped/cannon_global_capped/fb_fund 三道闸 ——
+            # o366 三局丢矿共同死因:F2 target=0(fb_missing 穷局),
+            # 落成新矿首塔被基金/钳制闸拦死裸奔(o366b g2 二矿 412s
+            # 被 5 蟑螂拔裸矿实证);仅零塔基地首塔走本豁免(判据
+            # new_base_survival_cannon_ok),第 2 座起回归常规纪律。
             _cannons_now = (
                 len(
                     self.manager_mediator.get_own_structures_dict[

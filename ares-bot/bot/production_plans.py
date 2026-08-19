@@ -2306,6 +2306,22 @@ def oracle_before_fleet_allowed(
     return True
 
 
+def oracle_gas_yield(
+    carriers: int,
+    vespene: float,
+    min_carriers: int = 2,
+    min_vespene: float = 300.0,
+) -> bool:
+    """O367-④b(o366 双 lane 尸检):先知 one_off 让位闸。纯逻辑,可单测。
+
+    o366a/o366b 三局实证:754-784s 各出 1 先知(150 矿/150 气 +
+    37-43s 星门产能),基准胜局全程无先知 —— 穷局先知白吃航母的
+    气和星门产能。航母(含在产)<min_carriers 或 气 <min_vespene
+    时不造先知(返回 True = 让位);舰队成型且气宽裕才放行。
+    """
+    return carriers < min_carriers or vespene < min_vespene
+
+
 def expansion_blocked(
     rush_active: bool,
     threat_active: bool,
@@ -4615,16 +4631,39 @@ def fb_fund_window(
     唯一落地 626.8s 仅 12s 即消失:SG 落成(~300s)才开窗,300/200
     在 SG 建造期(~60s)早被塔/探机/升级吃光,窗开了也只剩空银行;
     SG 一动工就开抑制,FB 钉点挂出时资金窗已攒好。
+    O367-①(o366 双 lane 0/6 尸检):①a 回退,恢复 sg_ready 才开窗
+    —— o366b g1 钱序倒错实证:胜局 Nexus(297)→SG(498)→FB(562)
+    变 SG(329)→FB(406)→Nexus(430,被挤晚 133s),农峰 44 vs 72
+    经济封顶;窗判据矿≥150 与 FB 造价 300 不匹配,o366a g2 连开
+    3 次纯抑制窗(457/491/714s,矿 165/260/359 全买不起)零成交。
+    sg_started 参数保留签名但不再入判据(向后兼容)。
     """
     return (
         fb_in_core
-        and (sg_ready or sg_started)
+        and sg_ready  # O367-①:回退 sg_started 前置(o366b g1 钱序倒错)
         and fb_entities == 0
         and not threat_active
         and not timed_out
         and vespene >= 400.0
         and (minerals >= 150.0 or window_open)
     )
+
+
+def fb_fund_window_stalled(
+    minerals_delta: float,
+    elapsed: float,
+    window: float = 10.0,
+) -> bool:
+    """O367-①(o366a g2 实证):FB 基金窗健康监控 —— 窗开期间矿净
+    积累 ≤0(10s 滑窗)立即关窗放行。纯逻辑,可单测。
+
+    o366a g2 实证:窗连开 3 次(457/491/714s,矿 165/260/359 全买
+    不起 300 的 FB)零成交 —— 旧关窗条件只有 FB 落成/90s 超时/
+    气 <400,买不起时窗纯压经济(探机/塔/升级/trickle 全让位,
+    矿却一点不涨)。调用方每 10s 采样一次矿量:净积累 ≤0 → 关窗
+    放行一轮(冷却后再评),窗的职责是攒矿,攒不动就别压。
+    """
+    return elapsed >= window and minerals_delta <= 0.0
 
 
 def fb_fund_probe_yield(fund_window: bool, workers: int, min_workers: int = 28) -> bool:
@@ -4751,6 +4790,8 @@ def tempest_gas_dump_ok(
     fleet_total: int,
     vespene_threshold: float = 400.0,
     fleet_cap: int = 8,
+    stargates: int = 2,
+    carriers: int = 1,
 ) -> bool:
     """O366-②b(o365 双 lane 尸检):气爆折现判据。纯逻辑,可单测。
 
@@ -4761,8 +4802,32 @@ def tempest_gas_dump_ok(
     星门直接点风暴(把烂气折成舰队)。与 tempest_dump_suppressed
     联动不打架:航母(含在产)<2 时仍航母优先(本判据只在抑制闸
     下游起效)。舰队 ≥8 停止折现(数量够了,气留给航母接力)。
+    O367-③(o366a Timing 0/3 尸检):折现加门槛 —— o366a 三局风暴
+    全排航母前(g1 风暴×3@711-799→航母 964;g3 ×3@715-828→932;
+    基准胜局航母前只有 1 艘),首航母 719→948s:穷局(舰队<8、
+    单星门)把仅有的气和星门产能给了风暴。舰队 ≥8 或 SG ≥2 或
+    已有 ≥1 航母(含在产)才允许折现;穷局单星门保航母气和产能。
     """
-    return vespene >= vespene_threshold and fleet_total < fleet_cap
+    return (
+        vespene >= vespene_threshold
+        and fleet_total < fleet_cap
+        and (fleet_total >= fleet_cap or stargates >= 2 or carriers >= 1)
+    )
+
+
+def extra_stargate_minerals_ok(
+    minerals: float, min_minerals: float = 150.0
+) -> bool:
+    """O367-⑤b(o366b 尸检):O218 追加星门矿判据。纯逻辑,可单测。
+
+    o366b 实证:O218 追加星门三次在矿 <150 时钉点 no_money 事件
+    空转,气随后被泄掉永不重试 —— 钉点挂出时根本买不起(星门
+    150 矿),驻点等钱变驻点空转。矿 ≥150(SG 造价)才派工,否则
+    等矿帧重试而非事件空转。与 O301-③ 移除 can_afford 帧判不
+    矛盾:那是防「矿振荡 0-175 闸不开钉点永不成立」;本门只看
+    单一矿价,钱到即钉,语义是「买得起才挂点」。
+    """
+    return minerals >= min_minerals
 
 
 def gas_stop_repull_action(in_gas_book: bool, carrying_vespene: bool) -> str:
@@ -4797,6 +4862,28 @@ def f2_clamp_supply_cap(
     return high_cap if enemy_supply > supply_tier else low_cap
 
 
+def f2_wave_cannon_floor(
+    enemy_supply: float,
+    cannons: int,
+    supply_tier: float = 35.0,
+    floor: int = 3,
+) -> int:
+    """O367-⑤c(o366 六局尸检):F2 塔目标的 35+ 波地板。纯逻辑,可单测。
+
+    O366-③a 动态档(钳位内 supply>35 → 上限 4)六局零触发 —— 根因
+    不是 supply 源错,是作用窗错位:动态档只活在 nexus_pin_yield_
+    gate 钳制窗内(矿≥400 且二矿未钉,~40-60s,250-530s),而 35+
+    supply 波全部 614s+ 才可见(o366 六局日志实证:钳 2/2 事件
+    与 supply>35 窗口零重叠),钳制随「Nexus 钉点成交」解除后波
+    才来。改接到威胁窗:敌可见 supply >35 时 F2 塔目标强制 ≥3
+    (在 fb_waiting/holding/O216d 等 min 链之后抬回,35+ 波是
+    生死窗,基金让位不适用于波到脸);≤35 零变化。
+    """
+    if enemy_supply > supply_tier:
+        return max(cannons, floor)
+    return cannons
+
+
 def zt_expand_reserve_exempt(
     enemy_supply: float,
     now: float,
@@ -4819,6 +4906,24 @@ def zt_expand_reserve_exempt(
     if prev_exempt:
         return enemy_supply >= low
     return enemy_supply > high
+
+
+def expand_exempt_zealot_only(
+    exempt: bool,
+    expand_holding: bool,
+    nexus_unstarted: int,
+) -> bool:
+    """O367-④a(o366b g1 实证):expand_reserve 豁免期产兵限叉判据。
+    纯逻辑,可单测。
+
+    o366b g1 实证:矿 5-120 穷局豁免期维持 8-13 地面兵,追猎(50
+    气/只)抢航母气 —— O366-④a 豁免的本意是「敌压境/t>500 时
+    expand_reserve 别锁死地面产线」,不是放开气耗单位。判据与
+    expand_reserve 分支同上下文(豁免激活 且 Nexus 钉点未开工的
+    持有期)才限 ZEALOT:返回 True = 调用方把 spawn 换成纯叉
+    (100 矿/个,零气耗);豁免外的常态产线(舰队/追猎核)零变化。
+    """
+    return exempt and expand_holding and nexus_unstarted > 0
 
 
 def fleet_formed_release_rush(
@@ -4944,6 +5049,26 @@ def new_base_cannon_fb_fund_exempt(
     return (not nexus_ready) and (cannons_near + cannons_in_flight) == 0
 
 
+def new_base_survival_cannon_ok(
+    nexus_ready: bool,
+    cannons_near: int,
+    cannons_in_flight: int,
+) -> bool:
+    """O367-⑤a(o366 双 lane 尸检):新基地保命塔豁免判据。纯逻辑,可单测。
+
+    o366 三局丢矿共同直接死因:F2 注册 target=0(fb_missing 穷局
+    O210 买不起归零)—— o366b g2 二矿 412s 被 5 蟑螂拔裸矿、
+    o366b g3 三矿 691s 被拔、o366a g1 二矿落成 12s 被拔。O364-②
+    的基金窗豁免只管「Nexus 在建」首塔;落成后(fb_missing 基金
+    窗常开)首座保命塔反被 fb_fund/capped 闸拦死。新 Nexus 已落成
+    且 12 格内零塔(实体+在途)→ 首座保命塔豁免一切基金/钳制闸
+    (fb_fund_window/cannon_capped/cannon_global_capped),走
+    critical 直接钉;已有 ≥1 塔(含在途)回归常规纪律。与
+    O363-①/O364-② 配塔体系兼容:它们是常规路径,这是保命路径。
+    """
+    return nexus_ready and (cannons_near + cannons_in_flight) == 0
+
+
 def gas_stop_leaking(
     vespene_gain: float,
     seconds: float,
@@ -5062,6 +5187,16 @@ def anchor_buildable(
     placement grid 可建格(1=可建),且离矿簇/气矿 ≥min_res_dist
     (资源格 placement grid 不标,需显式避让)。grid =
     game_info.placement_grid.data_numpy(越界 = 不可建)。
+    O367-②(o366 尸检复核):索引朝向验证结论 —— grid[cy, cx]
+    即 [y][x] 为**正确**朝向,非转置。证据:sc2 PixelMap
+    data_numpy = buffer.reshape(size.y, size.x)(pixel_map.py),
+    其 __getitem__(Point2(x,y)) 返回 data_numpy[y, x];sc2
+    game_info.py 的 playable_area 同以 (b, a) 即 (y, x) 枚举;
+    ares placement_manager 的 cy_can_place_structure 对同一
+    未转置数组索引 placement_grid[y, x]。o366a g1 的 64 次
+    not_viable 实出自 O118 首塔派工的 dispatch_viable 收入守卫
+    (穷局买不起 150 矿塔,采集池 0-5),手工锚点路径该局零触发,
+    与本函数无关;穷局根由 O367-① 修复。
     """
     ax, ay = int(x), int(y)
     height, width = grid.shape
