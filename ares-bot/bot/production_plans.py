@@ -802,6 +802,23 @@ def gas_to_minerals_needed(
     return vespene > vespene_threshold and minerals < mineral_threshold
 
 
+def gas_pull_thresholds(
+    zerg_timing: bool, now: float, early_until: float = 360.0
+) -> tuple[float, float]:
+    """O362-⑤(o361b 尸检):停气转矿阈值的 ZT 早窗档。纯逻辑,可单测。
+
+    o361b lane 气银行 1500-2100 vs 矿常年 <100 —— O359-② 的 500/200
+    触发太晚(气要烂到 500 才动,前期气需求低、矿是命)。ZT 且
+    t<early_until → 阈值降 (气>300, 矿<150),把气农更早按回矿线;
+    t≥360(舰队链开始吃气)保持 500/200。返回 (气阈值, 矿阈值),
+    触发(gas_to_minerals_needed)与解除(gas_to_minerals_released
+    的气档)共用,防「触发 300/解除 <500」单帧振荡。
+    """
+    if zerg_timing and now < early_until:
+        return (300.0, 150.0)
+    return (500.0, 200.0)
+
+
 def early_gas_overflow_pull(
     now: float,
     vespene: float,
@@ -996,6 +1013,19 @@ def sg_pin_expand_ok(townhalls: int, nexus_in_flight: int, now: float, hard_at: 
     return townhalls >= 2 or now >= hard_at
 
 
+def zt_sg_pin_time_ok(now: float, open_at: float = 240.0) -> bool:
+    """O362-③(o361b g1 实证):ZT SG 钉点时间门 300→240。纯逻辑,可单测。
+
+    o361b g1:build order runner 的 PROBE 步骤排到 10:00 才结束,星门
+    只能排其后拖到 643s;舰队首舰固定在 ~425-475s 上线的硬约束下,
+    ZT lane 必须 SG ≤300s 才有活路。bot 层钉点走独立通道(O323-②
+    critical 派工,在 core_allowed/_expand_holding 早退之前),本就不被
+    runner 的全局 holding 挡 —— 只需把时间门 300→240(diff 最小方案),
+    can_afford 与 sg_pin_expand_ok(让位 Nexus 资金窗)原样保留。
+    """
+    return now >= open_at
+
+
 def zt_zealot_yield(
     townhalls: int,
     rush_confirmed: bool,
@@ -1027,6 +1057,29 @@ def zt_zealot_yield(
     if rush_confirmed or threat_active or wave_incoming or now >= hard_at:
         return False
     return townhalls < 2
+
+
+def zt_vacuum_buffer_caps(
+    gateway_ready: bool,
+    core_ready: bool,
+    now: float,
+    open_at: float = 120.0,
+) -> tuple[int, int]:
+    """O362-①(o361b Harder Timing 0/3 尸检):真空窗地面缓冲 cap。纯逻辑,可单测。
+
+    o361b:ZT opener 零兵种闸(O332-② 叉 floor_cap=0)下 GATEWAY 68s 落成
+    后空转 ~200s,首叉 165-277s;Timing 首波 281-305s(20-25 supply 狗+
+    蟑螂)到脸时我方=2 塔+1 电池+2-4 叉,首波杀农 20+ → 全链条塌方
+    (对照 o361a VH Power:首波 410-446s 时配方已就位直接弹开)。零兵种
+    闸内开缓冲口:GATEWAY 就绪且 t≥open_at → 叉 floor 0→3(300 矿);
+    core 就绪后追猎 floor 1(吃烂气,不抢矿窗)。返回 (叉 cap, 追猎 cap)。
+    二矿开工(townhalls≥2)后 _o332_zyt 翻假,原闸自动恢复;rush/threat/
+    wave/t≥240 豁免在 zt_zealot_yield 上游,不动。资金与塔链冲突时塔
+    优先(塔链走 critical 钉点,叉走 SpawnController 普通 can_afford)。
+    """
+    if not gateway_ready or now < open_at:
+        return (0, 0)
+    return (3, 1 if core_ready else 0)
 
 
 def main_defense_bank_fuse(
@@ -1077,6 +1130,30 @@ def builder_release_exempt(rush_active: bool, defense_urgent: bool) -> bool:
     defense_urgent(rush确认/过渡/presumed,调用方合成)期同样豁免。
     """
     return rush_active or defense_urgent
+
+
+def pin_deadlock_fuse(
+    workers: int,
+    active_pins: int,
+    waiting_s: float,
+    min_workers: int = 10,
+    max_pins: int = 1,
+    timeout: float = 60.0,
+) -> bool:
+    """O362-②(o361b g2 僵尸局实证):钉点死锁保险丝。纯逻辑,可单测。
+
+    o361b g2:三农民 481-832s 轮流钉点等 FORGE 重建钱(单钉跨度
+    188-320s),矿钉死 47 —— 2-3 农全钉点=零收入死锁(O324 runner
+    也有卡死记录)。两道闸合一(返回 True=跳闸,调用方拦新钉点或
+    释放旧钉点):
+    ① 农 <min_workers 时全场钉点(active_pins 含本钉)上限 max_pins
+       —— 小农经济局农民就是收入本身,2+ 钉点=零收入等钱永远等不到;
+    ② 任一钉点等钱 >timeout 秒 → 强制释放(调用方清 tracker 让农民
+       回采,30s 冷却后才允许重钉,防「放→钉→等→放」空转循环)。
+    """
+    if workers < min_workers and active_pins > max_pins:
+        return True
+    return waiting_s > timeout
 
 
 def reserve_deadlock_break(
@@ -4443,6 +4520,9 @@ def fb_fund_window(
     fb_in_core: bool,
     threat_active: bool,
     timed_out: bool,
+    vespene: float = 400.0,
+    minerals: float = 150.0,
+    window_open: bool = False,
 ) -> bool:
     """O360-②(o359b 尸检):FB 专项基金窗判据。纯逻辑,可单测。
 
@@ -4455,6 +4535,11 @@ def fb_fund_window(
     O106 全局资金冻结死锁教训:单建筑专项基金 + 超时 + threat 豁免,
     不做全局暂停。与 O353-③ fb_saving_window(禁 O261 虚空,口径
     present_or_pending)并存不打架:那道只管派工前,本窗管到实体落成。
+    O362-④(o361b 尸检):开窗判据加资源路径 —— o361b 窗开 5 次
+    (407-748s)零成交:判据不看资源,矿 <200 时抑制面再宽 FB 也买不
+    起,白压经济。改「气 ≥400(FB 200 气耗就绪,成交只差矿)且
+    (矿 ≥150 或窗已开)」:矿 <150 时不开窗白抑制;窗开后矿波动不
+    关窗(滞回 —— 抑制攒矿正是窗的职责)。
     """
     return (
         fb_in_core
@@ -4462,6 +4547,8 @@ def fb_fund_window(
         and fb_entities == 0
         and not threat_active
         and not timed_out
+        and vespene >= 400.0
+        and (minerals >= 150.0 or window_open)
     )
 
 
@@ -4494,6 +4581,48 @@ def fb_fund_upgrade_kept(
     顶大半座 FB);<threshold 的便宜升级与窗外一切升级照常(返回 True)。
     """
     return (not fund_window) or upgrade_minerals < threshold
+
+
+def fb_fund_ground_yield(fund_window: bool) -> bool:
+    """O362-④(o361b 尸检):FB 基金窗内 gateway 单位(floor 之上的部分)
+    让位判据。纯逻辑,可单测。
+
+    o361b 窗零成交共犯:窗内探机/塔/升级让位了,兵营单位没让 ——
+    trickle 混编(O292,cap 3-6 叉/追猎 ≈300-700 矿)同帧抽干 FB 矿窗。
+    窗内停 trickle(floor 保底不动,threat 豁免在窗判据上游)。
+    """
+    return fund_window
+
+
+def fb_fund_sg2_blocked(fund_window: bool, stargates: int, allowed: int = 1) -> bool:
+    """O362-④(o361b 尸检):FB 基金窗内第 2+ 星门抑制判据。纯逻辑,可单测。
+
+    窗内且星门(实体+在途)≥allowed → 不再钉第 2 座(O326 SG2 钉点要
+    FB pending 即放行,其 150 矿+150 气正是 FB 300/200 的同台竞争者);
+    首座 SG 是 FB 前置,不在本判据管辖区。
+    """
+    return fund_window and stargates >= allowed
+
+
+def fb_fund_probe_brake(
+    window_open_s: float | None,
+    minerals: float,
+    workers: int,
+    timeout: float = 45.0,
+    fb_minerals: float = 300.0,
+    min_workers: int = 20,
+) -> bool:
+    """O362-④(o361b 尸检):FB 基金窗 45s 凑不够矿的强制停探机判据。
+    纯逻辑,可单测。
+
+    o361b 窗开 5 次零成交的兜底:窗开 >timeout 秒矿仍 <fb_minerals
+    (FB 造价)→ 既有抑制面失效,强制停探机一轮(农 ≥min_workers 才刹,
+    小农局探机是收入本身);窄口刹车(窗随成交/90s 超时自关),非全局
+    冻结(O106 证伪边界不动)。
+    """
+    if window_open_s is None or window_open_s < timeout:
+        return False
+    return minerals < fb_minerals and workers >= min_workers
 
 
 def cannon_global_capped(

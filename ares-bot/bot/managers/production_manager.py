@@ -125,6 +125,13 @@ from bot.production_plans import (
     sg2_pin_economy_ok,
     sg_pin_expand_ok,
     zt_zealot_yield,
+    zt_vacuum_buffer_caps,
+    zt_sg_pin_time_ok,
+    pin_deadlock_fuse,
+    gas_pull_thresholds,
+    fb_fund_ground_yield,
+    fb_fund_sg2_blocked,
+    fb_fund_probe_brake,
     main_defense_bank_fuse,
     zt_fast_expand_pin,
     zt_defense_at_natural,
@@ -244,6 +251,17 @@ _DEFENCE_WALK_TIME: float = 5.0
 # O19 二轮:O11 撤回塔工后的重派冷却(秒)——redispatch_cooled_down 用
 # O139-②:15→10,且手动派工链(_dispatch_structure)同读此冷却
 _DEFENCE_REDISPATCH_CD: float = 10.0
+# O362-②(o361b g2 僵尸局实证):钉点死锁保险丝的 critical 钉点族 ——
+# forge/塔/Nexus/FB 统一过 pin_deadlock_fuse(农<10 全场最多 1 钉点,
+# 等钱 >60s 强制释放回采,30s 冷却才允许重钉)
+_PIN_FUSE_FAMILY = (
+    UnitID.FORGE,
+    UnitID.PHOTONCANNON,
+    UnitID.NEXUS,
+    UnitID.FLEETBEACON,
+)
+# O362-②:释放后的重钉冷却(秒)
+_PIN_FUSE_REPIN_CD: float = 30.0
 # E9:threat 地面豁免用的神族空军类型表(sc2 Attribute 无 flying 判定,
 # 神族流派出兵表内可能出现的空军兵种全列;地面 = spawn 里不在此表的)
 _FLYING_UNITS = {
@@ -395,6 +413,10 @@ class ProductionManager(Manager):
         # O360-⑤(o359a 尸检):O359-③ 探机让位触发/解除簿记的边沿旗标
         # (o359a g1 农民 84-204s 冻在 16-18 零日志,静默触发实证)。
         self._o359_yield_active: bool = False
+        # O362-②(o361b g2 僵尸局实证):钉点死锁保险丝的重钉冷却台账
+        # (sid → 释放时刻,30s 内同型不重钉)与事件节流;__init__ 初始化。
+        self._o362_repin_cd: dict = {}
+        self._o362_fuse_log_ts: float = 0.0
         # O117-②:防御紧急旗标(rush确认/过渡/presumed 合成,每帧更新)——
         # main.py 的 O11 钉点撤回豁免读它(presumed 期塔工不再被撤回循环)
         self._defense_urgent: bool = False
@@ -1756,12 +1778,19 @@ class ProductionManager(Manager):
         # (o359b O110 自救 3 局 ×10 全 no_money:塔/探机/升级帧级插队)。
         # 90s 超时强制按现状派工一次后关窗(O106 死锁教训:超时+threat
         # 豁免,非全局暂停);FB 实体落成/被拆重建自动开新一轮。
+        # O362-④(o361b 尸检):开窗加资源路径(气≥400 且(矿≥150 或窗
+        # 已开))—— o361b 窗开 5 次零成交:矿 <200 时 FB 永远买不起,
+        # 不看资源的窗白压经济;窗内追加抑制 trickle 兵营单位(_effective_
+        # spawn)/第 2+ 星门(O326)/45s 凑不够矿强制停探机(_probe_yield)。
         _fb_fund_raw = fb_fund_window(
             sg_ready=any(s.is_ready for s in _sg_all),
             fb_entities=_fb_entities_now,
             fb_in_core=_fb_in_core,
             threat_active=(self._rush_active or self._threat_active),
             timed_out=False,
+            vespene=self.ai.vespene,
+            minerals=self.ai.minerals,
+            window_open=self._fb_fund_window,
         )
         if _fb_fund_raw:
             if self._fb_fund_since is None:
@@ -3036,6 +3065,17 @@ class ProductionManager(Manager):
             # 50 矿/个是 FB no_money 的帧级抽水机之一;窗随 FB 实体
             # 落成/90s 超时自动关(自校正,无 latch)。
             self._fb_fund_window, self.ai.supply_workers
+        ) or fb_fund_probe_brake(
+            # O362-④(o361b 尸检):窗开 45s 仍凑不够 300 矿 → 强制停
+            # 探机一轮(农≥20);窄口刹车,窗随成交/超时自关,非全局
+            # 冻结(O106 证伪边界不动)。
+            (
+                None
+                if not self._fb_fund_window or self._fb_fund_since is None
+                else self.ai.time - self._fb_fund_since
+            ),
+            self.ai.minerals,
+            self.ai.supply_workers,
         ) or _zealot_sprint  # O124-③:首叉冲刺期农民也停(矿全留给首叉)
         # O360-⑤(o359a 尸检):O359-③ 触发/解除边沿簿记 —— o359a g1
         # 农民 84-204s 冻在 16-18 零日志(静默触发实证);30s 节流只
@@ -3866,6 +3906,13 @@ class ProductionManager(Manager):
                     "t": round(self.ai.time, 1),
                     "msg": "O349:forge驻点>60s未落成,清tracker重派",
                 })
+        # O362-②(o361b g2 僵尸局实证):钉点死锁保险丝清扫 —— O349 的
+        # forge 单点看门狗推广到 critical 钉点族(forge/塔/Nexus/FB):
+        # 任一钉点等钱 >60s 强制释放(清 tracker 让农民回采,30s 冷却
+        # 才允许重钉);农 <10 时全场最多 1 个钉点(留等得最久的,它最
+        # 接近开工)。g2 三农民 481-832s 轮流钉 FORGE、矿钉死 47 的
+        # 零收入死锁不再可能。
+        self._pin_deadlock_sweep()
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -6014,8 +6061,19 @@ class ProductionManager(Manager):
             self._o358_gas_pull_cooldown_until is not None
             and self.ai.time < self._o358_gas_pull_cooldown_until
         )
+        # O362-⑤(o361b 尸检):ZT 且 t<360 停气转矿提前 —— b lane 气银行
+        # 1500-2100 vs 矿常年 <100,前期气需求低、矿是命,O359-② 的
+        # 500/200 触发太晚;早窗档 气>300/矿<150,解除气档同步降 300
+        # (防触发/解除单帧振荡),矿 >400 解除与 60s 棘轮保险丝不变。
+        _gp_vth, _gp_mth = gas_pull_thresholds(
+            self._opp_race == "zerg" and self._ai_build == "timing",
+            self.ai.time,
+        )
         if (
-            gas_to_minerals_needed(self.ai.vespene, self.ai.minerals)
+            gas_to_minerals_needed(
+                self.ai.vespene, self.ai.minerals,
+                vespene_threshold=_gp_vth, mineral_threshold=_gp_mth,
+            )
             and not _gas_pull_cooling
         ):
             if not self._o358_gas_pull and event_throttle_ok(
@@ -6033,12 +6091,18 @@ class ProductionManager(Manager):
                 self._o358_gas_pull_since = self.ai.time
             self._o358_gas_pull = True
         elif self._o358_gas_pull and (
-            gas_to_minerals_released(self.ai.vespene, self.ai.minerals)
+            gas_to_minerals_released(
+                self.ai.vespene, self.ai.minerals,
+                vespene_threshold=_gp_vth,
+            )
             or gas_pull_window_expired(self._o358_gas_pull_since, self.ai.time)
         ):
             _gas_forced = gas_pull_window_expired(
                 self._o358_gas_pull_since, self.ai.time
-            ) and not gas_to_minerals_released(self.ai.vespene, self.ai.minerals)
+            ) and not gas_to_minerals_released(
+                self.ai.vespene, self.ai.minerals,
+                vespene_threshold=_gp_vth,
+            )
             self._o358_gas_pull = False
             self._o358_gas_pull_since = None
             if _gas_forced:
@@ -6176,10 +6240,14 @@ class ProductionManager(Manager):
         # 153-273s 漏 5 叉+1 追猎 ≈700 矿,首波 rush 开销前就把 Nexus
         # 资金窗先啃掉一半)。二矿开工(townhalls≥2)/rush/威胁时
         # _o332_zyt 翻假,本分支照常(trickle 语义不变)。
+        # O362-④(o361b 尸检):FB 基金窗内 trickle 让位 —— 窗零成交
+        # 共犯(探机/塔/升级让位了,兵营单位没让,cap 3-6 ≈300-700 矿
+        # 同帧抽干 FB 矿窗);floor 保底不动,threat 豁免在窗判据上游。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and not getattr(self, "_o332_zyt", False)
+            and not fb_fund_ground_yield(self._fb_fund_window)
             and zt_prewave_trickle_needed(
                 fleet_infra_live=self._zt_fleet_infra_live(),
                 gateway_ready=any(
@@ -6377,7 +6445,35 @@ class ProductionManager(Manager):
         敌可见地面 ≥4 时激活(_floor_active);纯运营局不产地面,矿全进
         舰队科技链(无差别 floor 挤 SG/FB 的钱,非 rush 局全慢半拍)。"""
         pf = self._flow.pre_fleet
-        if pf is None or not self._floor_active:
+        if pf is None:
+            return spawn
+        # O362-①(o361b Harder Timing 0/3 尸检):真空窗地面缓冲 —— 零兵种
+        # 闸(_o332_zyt)内 GATEWAY 就绪(t≥120)后叉 floor 0→3、core 就绪
+        # 后追猎 floor 1,直到二矿开工闸自动恢复;闸外恒 (0,0),旧路径零
+        # 变化。缓冲期 _floor_active 未开(rush/敌可见/unknown 死窗都没
+        # 触发)也要放行 —— 缓冲的全部意义就是 120-240s 这段。
+        _vac_zcap, _vac_scap = 0, 0
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and getattr(self, "_o332_zyt", False)
+        ):
+            _vac_zcap, _vac_scap = zt_vacuum_buffer_caps(
+                gateway_ready=any(
+                    g.is_ready
+                    for g in self.manager_mediator.get_own_structures_dict[
+                        UnitID.GATEWAY
+                    ]
+                ),
+                core_ready=any(
+                    s.is_ready
+                    for s in self.manager_mediator.get_own_structures_dict[
+                        UnitID.CYBERNETICSCORE
+                    ]
+                ),
+                now=self.ai.time,
+            )
+        if not self._floor_active and _vac_zcap == 0 and _vac_scap == 0:
             return spawn
         # O298-③(o297a game_03 实证):重建二矿钉点期(707-791s)叉子 floor
         # 回填(100 矿/个,波后 3→7 只)把 400 矿 Nexus 资金窗磨穿,
@@ -6498,6 +6594,14 @@ class ProductionManager(Manager):
                     # 追猎核可战。
                     if self.ai.time >= 650.0 and _fleet_now_o246 < 8:
                         _cap2 = max(_cap2, 8)
+                # O362-①:真空窗缓冲 —— 零兵种闸内追猎 floor 以缓冲 cap
+                # 为准(core 未就绪 _vac_scap=0,与旧零兵种语义一致;core
+                # 就绪后放 1 只吃烂气)。口袋攒钱期(O323-①)不让 ——
+                # 攒钱优先级最高,缓冲只动闲置 GW 产能的余钱。
+                if getattr(self, "_o332_zyt", False):
+                    _cap2 = (
+                        0 if self._zt_pocket_expand_active() else _vac_scap
+                    )
                 spawn = pre_fleet_spawn(
                     spawn,
                     floor_id=uid2,
@@ -6519,7 +6623,10 @@ class ProductionManager(Manager):
             # O314-③(o313b game_02/03 实证):波窗(t≥240)敌可见 ≥4 →
             # cap 8 —— 早二矿落定后 cap 3 是绞索(我 11-13 vs 敌 20-27)。
             floor_cap=(
-                0
+                # O362-①:真空窗缓冲 —— 零兵种闸内叉 floor 0→_vac_zcap
+                # (GATEWAY 就绪+t≥120 → 3;塔链冲突时塔优先:叉走
+                # SpawnController 普通 can_afford,塔走 critical 钉点)。
+                _vac_zcap
                 if getattr(self, "_o332_zyt", False)
                 else (
                     min(
@@ -7366,6 +7473,24 @@ class ProductionManager(Manager):
             UnitID.SHIELDBATTERY,
         ):
             return "ms_window"
+        # O362-②(o361b g2 僵尸局实证):钉点死锁保险丝 —— critical 钉点族
+        # (forge/塔/Nexus/FB)统一过闸:① 释放后 30s 冷却内同型不重钉
+        # (防「放→钉→等→放」空转);② 农 <10 时全场最多 1 个钉点
+        # (2-3 农全钉点=零收入死锁,g2 三农民 481-832s 轮流钉 FORGE
+        # 实证)。非 critical/非族内结构不受影响。
+        if critical and sid in _PIN_FUSE_FAMILY:
+            if (
+                self.ai.time - self._o362_repin_cd.get(sid, -9999.0)
+                < _PIN_FUSE_REPIN_CD
+            ):
+                return "pin_fuse_cd"
+            _pins_now = sum(
+                1
+                for _info in self.manager_mediator.get_building_tracker_dict.values()
+                if _info[TRACKER_ID] in _PIN_FUSE_FAMILY
+            )
+            if pin_deadlock_fuse(self.ai.supply_workers, _pins_now + 1, 0.0):
+                return "pin_fuse"
         if self.ai.not_started_but_in_building_tracker(sid) >= max_on_route:
             # O118-②(o117 局1/2/4 实证):taken 快回收 —— 条目工人已死立即清
             # (45s 周期对 190s 死局是 eternity);活着但闲置超 10s(被拽走/
@@ -7583,6 +7708,55 @@ class ProductionManager(Manager):
                 ),
             })
         return rc
+
+    def _pin_deadlock_sweep(self) -> None:
+        """O362-②(o361b g2 僵尸局实证):钉点死锁保险丝清扫(每帧)。
+
+        对 critical 钉点族(_PIN_FUSE_FAMILY:forge/塔/Nexus/FB)统一过
+        pin_deadlock_fuse:
+        ① 任一钉点等钱 >60s(TIME_ORDER_COMMENCED 起算,含走位,与
+           O349 forge 看门狗同口径)→ 强制释放:清 tracker 条目 +
+           building_counter 回退(O118-② 快回收同款),农民回采;
+        ② 农 <10 时全场最多 1 个钉点 —— 按等待时长降序留最久的
+           (它最接近开工),其余释放。
+        释放后记 _o362_repin_cd,30s 内同型不重钉(_dispatch_structure
+        的 pin_fuse_cd 闸),防「放→钉→等→放」空转。O349 的 forge
+        单点看门狗保留(幂等,条目已被本清扫先清则不触发)。
+        """
+        tracker = self.manager_mediator.get_building_tracker_dict
+        pins = [
+            (_tag, _info)
+            for _tag, _info in tracker.items()
+            if _info[TRACKER_ID] in _PIN_FUSE_FAMILY
+        ]
+        if not pins:
+            return
+        # 等得最久的排前面(农 <10 收编时留它)
+        pins.sort(
+            key=lambda kv: self.ai.time - kv[1][TIME_ORDER_COMMENCED],
+            reverse=True,
+        )
+        _workers = self.ai.supply_workers
+        _kept = 0
+        for _tag, _info in pins:
+            _sid = _info[TRACKER_ID]
+            _waiting = self.ai.time - _info[TIME_ORDER_COMMENCED]
+            if pin_deadlock_fuse(_workers, _kept + 1, _waiting):
+                self.manager_mediator.get_building_counter[_sid] -= 1
+                tracker.pop(_tag)
+                self._o362_repin_cd[_sid] = self.ai.time
+                if event_throttle_ok(self.ai.time, self._o362_fuse_log_ts):
+                    self._o362_fuse_log_ts = self.ai.time
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            f"O362:钉点保险丝释放={_sid.name}"
+                            f"(等钱{_waiting:.0f}s,农{_workers},"
+                            f"30s后允许重钉)"
+                        ),
+                    })
+            else:
+                _kept += 1
 
     def _first_cannon_anchor(self):
         """O356-①(o355 尸检):首塔钉点锚点 —— rush_cannon_bypass 派工与
@@ -7979,10 +8153,15 @@ class ProductionManager(Manager):
         # 过大,每晚 30s 首舰晚一波(舰队真空=中局死因)。ZT 且 t≥300 且
         # cyber 就绪且无 SG → 钉点派工(驻点等钱,钱到即开工),不让 SG
         # 在塔/叉/追猎后面排队等余钱;口袋攒钱期(O323-①)让位 Nexus。
+        # O362-③(o361b g1 实证):时间门 300→240 —— g1 build order
+        # runner 的 PROBE 尾巴排到 10:00,SG 被拖到 643s;舰队首舰
+        # ~425-475s 硬约束下 ZT lane 必须 SG ≤300s。本钉点在
+        # core_allowed/_expand_holding 早退之前(独立通道),不被 runner
+        # 全局 holding 挡,只需降时间门(diff 最小方案)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and self.ai.time >= 300.0
+            and zt_sg_pin_time_ok(self.ai.time)
             and any(
                 s.is_ready for s in structures_dict[UnitID.CYBERNETICSCORE]
             )
@@ -8013,7 +8192,7 @@ class ProductionManager(Manager):
             if _rc == "dispatched":
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
-                    "msg": "O323:SG钉点(t≥300+cyber就绪)",
+                    "msg": "O323:SG钉点(t≥240+cyber就绪,O362-③)",
                 })
             else:
                 # O337-③:失败 rc 可见化(同 O334-①;30s 节流已在钉点门上)
@@ -8057,6 +8236,14 @@ class ProductionManager(Manager):
             # 派了即开工。失败 rc 簿记(30s 节流已在钉点门上)。
             and self.ai.can_afford(UnitID.STARGATE)
             and self.ai.time - getattr(self, "_o326_sg2_last", 0.0) > 30.0
+            # O362-④(o361b 尸检):FB 基金窗内第 2+ 星门让位 —— SG2 的
+            # 150 矿+150 气正是 FB 300/200 的同台竞争者(窗零成交共犯);
+            # 首座 SG 是 FB 前置,不在本闸管辖区。
+            and not fb_fund_sg2_blocked(
+                self._fb_fund_window,
+                len(structures_dict[UnitID.STARGATE])
+                + self.manager_mediator.get_building_counter[UnitID.STARGATE],
+            )
         ):
             self._o326_sg2_last = self.ai.time
             _rc = self._dispatch_structure(

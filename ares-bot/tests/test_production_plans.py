@@ -89,6 +89,13 @@ from bot.production_plans import (  # noqa: E402
     zt_fast_expand_pin,
     sg_pin_expand_ok,
     zt_zealot_yield,
+    zt_vacuum_buffer_caps,
+    zt_sg_pin_time_ok,
+    pin_deadlock_fuse,
+    gas_pull_thresholds,
+    fb_fund_ground_yield,
+    fb_fund_sg2_blocked,
+    fb_fund_probe_brake,
     main_defense_bank_fuse,
     zt_defense_at_natural,
     forge_before_first_gateway,
@@ -4247,6 +4254,124 @@ class TestO360MidGameEconomy(unittest.TestCase):
         # 连续停气 ≥60s → 棘轮保险丝(o359a 解除永不到达档)
         self.assertTrue(gas_pull_window_expired(100.0, 160.0))
         self.assertTrue(gas_pull_window_expired(100.0, 300.0))
+
+
+class TestO362TimingVacuumWindow(unittest.TestCase):
+    """O362(o361b Harder Timing 0/3 尸检):200-330s 真空窗专修族。"""
+
+    def test_zt_vacuum_buffer_caps(self):
+        # 闸关两态:GATEWAY 未就绪 / t<120 → (0,0)(零兵种闸原样)
+        self.assertEqual(zt_vacuum_buffer_caps(False, False, 200.0), (0, 0))
+        self.assertEqual(zt_vacuum_buffer_caps(True, True, 119.9), (0, 0))
+        # 闸开:GATEWAY 就绪 + t≥120 → 叉 floor 3;core 未就绪追猎 0
+        self.assertEqual(zt_vacuum_buffer_caps(True, False, 120.0), (3, 0))
+        self.assertEqual(zt_vacuum_buffer_caps(True, False, 200.0), (3, 0))
+        # core 就绪后 → 追猎 floor 1(吃烂气)
+        self.assertEqual(zt_vacuum_buffer_caps(True, True, 200.0), (3, 1))
+
+    def test_pin_deadlock_fuse(self):
+        # 农 <10 时全场最多 1 钉点:第 2 钉点(active_pins 含本钉=2)被拒
+        self.assertTrue(pin_deadlock_fuse(9, 2, 0.0))
+        self.assertTrue(pin_deadlock_fuse(3, 3, 10.0))
+        # 农 <10 且仅 1 钉点且未超时 → 不跳闸
+        self.assertFalse(pin_deadlock_fuse(9, 1, 30.0))
+        # 农 ≥10 不受上限闸
+        self.assertFalse(pin_deadlock_fuse(10, 2, 30.0))
+        self.assertFalse(pin_deadlock_fuse(20, 5, 59.9))
+        # 任一钉点等钱 >60s → 强制释放(61s 档,o361b g2 僵尸局实证)
+        self.assertTrue(pin_deadlock_fuse(9, 1, 61.0))
+        self.assertTrue(pin_deadlock_fuse(20, 1, 320.0))
+        # 边界:恰好 60s 不释放
+        self.assertFalse(pin_deadlock_fuse(9, 1, 60.0))
+
+    def test_zt_sg_pin_time_ok(self):
+        # t=250 放行(o361b g1 的 643s 星门档要覆盖)
+        self.assertTrue(zt_sg_pin_time_ok(250.0))
+        self.assertTrue(zt_sg_pin_time_ok(240.0))
+        # t=230 拦(240 以下不动 opener 资金排序)
+        self.assertFalse(zt_sg_pin_time_ok(230.0))
+        self.assertFalse(zt_sg_pin_time_ok(0.0))
+
+    def test_fb_fund_window_o362(self):
+        # 资源路径:气 <400 → 不开(FB 气耗未就绪,开窗白压经济)
+        self.assertFalse(
+            fb_fund_window(True, 0, True, False, False, vespene=399.9)
+        )
+        # 气 ≥400 + 矿 ≥150 → 开(成交只差攒矿)
+        self.assertTrue(
+            fb_fund_window(
+                True, 0, True, False, False, vespene=400.0, minerals=150.0
+            )
+        )
+        # 矿 <150 且窗未开 → 不开(o361b 零成交档:矿 <200 买不起)
+        self.assertFalse(
+            fb_fund_window(
+                True, 0, True, False, False, vespene=1500.0, minerals=149.9
+            )
+        )
+        # 矿 <150 但窗已开 → 滞回保持(抑制攒矿正是窗的职责)
+        self.assertTrue(
+            fb_fund_window(
+                True, 0, True, False, False,
+                vespene=1500.0, minerals=47.0, window_open=True,
+            )
+        )
+
+    def test_fb_fund_ground_yield(self):
+        # 窗内 → trickle(floor 之上的兵营单位)让位
+        self.assertTrue(fb_fund_ground_yield(True))
+        # 窗外 → 不让
+        self.assertFalse(fb_fund_ground_yield(False))
+
+    def test_fb_fund_sg2_blocked(self):
+        # 窗内 + 星门 ≥1 → 第 2+ 星门被拦(150矿+150气 同台竞争 FB)
+        self.assertTrue(fb_fund_sg2_blocked(True, 1))
+        self.assertTrue(fb_fund_sg2_blocked(True, 3))
+        # 窗内 + 首座 SG 未落 → 不拦(首座是 FB 前置)
+        self.assertFalse(fb_fund_sg2_blocked(True, 0))
+        # 窗外 → 不拦
+        self.assertFalse(fb_fund_sg2_blocked(False, 2))
+
+    def test_fb_fund_probe_brake(self):
+        # 窗开 >45s 且矿 <300 且农 ≥20 → 强制停探机一轮
+        self.assertTrue(fb_fund_probe_brake(45.0, 200.0, 20))
+        self.assertTrue(fb_fund_probe_brake(80.0, 47.0, 30))
+        # 窗开不足 45s → 不刹(给既有抑制面机会)
+        self.assertFalse(fb_fund_probe_brake(44.9, 200.0, 30))
+        # 未开窗(None)→ 不刹
+        self.assertFalse(fb_fund_probe_brake(None, 200.0, 30))
+        # 矿已够 300 → 不刹(马上成交)
+        self.assertFalse(fb_fund_probe_brake(60.0, 300.0, 30))
+        # 农 <20 → 不刹(小农局探机是收入本身)
+        self.assertFalse(fb_fund_probe_brake(60.0, 200.0, 19))
+
+    def test_gas_pull_thresholds(self):
+        # ZT 且 t<360 → 早窗档 (300, 150)
+        self.assertEqual(gas_pull_thresholds(True, 359.9), (300.0, 150.0))
+        self.assertEqual(gas_pull_thresholds(True, 100.0), (300.0, 150.0))
+        # ZT 且 t≥360 → 保持 500/200(舰队链开始吃气)
+        self.assertEqual(gas_pull_thresholds(True, 360.0), (500.0, 200.0))
+        # 非 ZT 全程 500/200
+        self.assertEqual(gas_pull_thresholds(False, 100.0), (500.0, 200.0))
+        # 边界:触发档与 gas_to_minerals_needed 显式阈值配套
+        self.assertTrue(
+            gas_to_minerals_needed(
+                301.0, 149.9,
+                vespene_threshold=300.0, mineral_threshold=150.0,
+            )
+        )
+        self.assertFalse(
+            gas_to_minerals_needed(
+                300.0, 149.9,
+                vespene_threshold=300.0, mineral_threshold=150.0,
+            )
+        )
+        self.assertFalse(
+            gas_to_minerals_needed(
+                301.0, 150.0,
+                vespene_threshold=300.0, mineral_threshold=150.0,
+            )
+        )
 
 
 if __name__ == "__main__":
