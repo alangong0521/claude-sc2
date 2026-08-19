@@ -685,17 +685,32 @@ class ProductionManager(Manager):
                 else self._zt_pocket_expand_target()
             )
             if _pre_target is not None:
+                # O342(o341 前 2 局实证):落点朝敌偏移 ~7 格 —— 水晶/塔
+                # 直拍口袋点会占住 Nexus 5x5 footprint,EC 工人到位
+                # 开不了工(在途1→0 静默蒸发,开工拖 542-759s);朝敌
+                # 方向偏移 = 口袋矿入口堵口位(司令 doctrine),塔阵
+                # 位置反而更优,同时把 Nexus 落点让出来。
+                _place_at = _pre_target
+                if self.ai.enemy_start_locations:
+                    _es = self.ai.enemy_start_locations[0]
+                    _dx = _es.x - _pre_target.x
+                    _dy = _es.y - _pre_target.y
+                    _dd = (_dx * _dx + _dy * _dy) ** 0.5 or 1.0
+                    _place_at = Point2((
+                        _pre_target.x + _dx / _dd * 7.0,
+                        _pre_target.y + _dy / _dd * 7.0,
+                    ))
                 # O332-④:只有塔派工成功才置 fired;taken/失败记时间戳,
                 # 30s 后重试(守卫在上面的 if 条件里)。
                 self._o329_predef_last = self.ai.time
                 self._dispatch_structure(
                     UnitID.PYLON, _pre_target,
-                    closest_to=_pre_target, needs_power=False,
+                    closest_to=_place_at, needs_power=False,
                     critical=True,
                 )
                 _rc = self._dispatch_structure(
                     UnitID.PHOTONCANNON, _pre_target,
-                    closest_to=_pre_target, critical=True,
+                    closest_to=_place_at, critical=True,
                 )
                 if _rc == "dispatched":
                     self._o329_predef_fired = True
