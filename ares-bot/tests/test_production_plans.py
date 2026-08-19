@@ -3524,16 +3524,18 @@ class TestO329FastExpand(unittest.TestCase):
     防御塔+电池聚在一起才有效,主基分散铺塔 = 2 矿裸奔被一波推。"""
 
     def test_zt_fast_expand_pin(self):
-        # t≥100 + 矿≥350 + 单基地 + 无在途 + 非 rush → 钉(O330-① 新门槛)
-        self.assertTrue(zt_fast_expand_pin(120.0, 350.0, 1, 0, False))
-        # 时间/矿门槛
-        self.assertFalse(zt_fast_expand_pin(99.0, 350.0, 1, 0, False))
-        self.assertFalse(zt_fast_expand_pin(120.0, 349.0, 1, 0, False))
+        # t≥100 + 矿≥475(造价400+走位窗buffer75,O343-①)+ 单基地
+        # + 无在途 + 非 rush → 钉
+        self.assertTrue(zt_fast_expand_pin(120.0, 475.0, 1, 0, False))
+        # 时间/矿门槛(350 门已证伪:走位窗 opener 流水 ~800,到位必穷)
+        self.assertFalse(zt_fast_expand_pin(99.0, 475.0, 1, 0, False))
+        self.assertFalse(zt_fast_expand_pin(120.0, 474.0, 1, 0, False))
+        self.assertFalse(zt_fast_expand_pin(120.0, 350.0, 1, 0, False))
         # rush 确认 = fuse 弃权(走旧防御先行路径)
-        self.assertFalse(zt_fast_expand_pin(120.0, 400.0, 1, 0, True))
+        self.assertFalse(zt_fast_expand_pin(120.0, 500.0, 1, 0, True))
         # 已有在途/已多基地不重拍
-        self.assertFalse(zt_fast_expand_pin(120.0, 400.0, 1, 1, False))
-        self.assertFalse(zt_fast_expand_pin(120.0, 400.0, 2, 0, False))
+        self.assertFalse(zt_fast_expand_pin(120.0, 500.0, 1, 1, False))
+        self.assertFalse(zt_fast_expand_pin(120.0, 500.0, 2, 0, False))
 
     def test_sg_pin_expand_ok(self):
         # 2 基地(含在建)→ 放行(舰队科技不拖)

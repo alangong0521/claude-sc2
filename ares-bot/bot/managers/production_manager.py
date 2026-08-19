@@ -3200,17 +3200,15 @@ class ProductionManager(Manager):
         # 摘除 forge/core/GW2 后(O329 钉点的 400 矿零竞争,开工 ~130s),
         # 分矿塔链的前置 forge 由 bot 层在 Nexus 开工(townhalls≥2 含
         # 在建)即 critical 拍回;core/GW2 走原科技链/追加产能。
-        # O338-①(o337a game_03/04/05 实证):再提前到「Nexus 在途」——
-        # 敌小股 270-300s 抄分矿时塔就绪差 10-30s(三局 379-507s 速败),
-        # forge 落成从 ~240s 提前到 ~185s,首塔就绪 ~245s 赶在小股前。
-        # 驻点等钱排在 Nexus 400 付款后,不吃速开资金窗。
+        # O343-②(o341/o342 累计 8 局实证):从「Nexus 在途」回退到
+        # 「Nexus 开工」—— O338-① 的在途钉让 forge 的 150 也挤进
+        # 走位窗(opener 流水 +forge ≈800 矿 vs 窗内收入 ~1000),
+        # 是工人到位银行 <400 被 ares 取消的共犯;开工后钉(落成
+        # ~230s → 首塔 ~270s)仍赶上 270-300s 小股窗,塔链节奏不变。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and (
-                self.ai.townhalls.amount >= 2
-                or self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
-            )
+            and self.ai.townhalls.amount >= 2
             and not self._structure_present_or_pending(UnitID.FORGE)
             # O340-①(o339b game_05 实证):forge 钉点失败静默 —— 预置塔链
             # 连报 tech_not_ready(108/138s)而 forge 钉点零事件,失败

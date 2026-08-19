@@ -856,7 +856,7 @@ def zt_fast_expand_pin(
     nexus_in_flight: int,
     rush_confirmed: bool,
     at: float = 100.0,
-    cost: float = 350.0,
+    cost: float = 475.0,
 ) -> bool:
     """O329-②(司令 2026-08-18 拍板):速二矿钉点判据。纯逻辑,可单测。
 
@@ -870,6 +870,12 @@ def zt_fast_expand_pin(
     矿门取造价全值时,opener 后续步(16叉/18forge/19core)在攒钱
     窗内持续抽水,矿永远摸不到 400,钉点整局哑火(O251 361s 兜底
     才开);350 近可负担门 + 驻点等钱,走位 ~15s 到账即开工。
+    O343-①(o341/o342 累计 8 局实证):350→475 —— 350 门在 ~104s
+    早钉,走位窗(104-190s)恰是 opener 流水高峰(3 水晶+10 农民
+    +forge ≈800 矿),工人到位银行 <400,ares 等 ~30s 取消,在途
+    1→0 反复蒸发,开工拖到 466-759s;475 = 造价 400 + 走位窗
+    buffer 75(与 _preposition 同判据,o335 胜局 212-233s 开工
+    实证有效),钉点 ~140-160s、到位即开工 ~170-190s。
     """
     return (
         townhalls == 1
