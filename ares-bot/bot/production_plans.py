@@ -930,7 +930,8 @@ def zt_cannon_pending_probe_yield(
     cannon_pending: int,
     workers: int,
     window_end: float = 330.0,
-    min_workers: int = 16,
+    min_workers: int = 20,
+    nexus_in_flight: int = 0,
 ) -> bool:
     """O359-③(o358 六局尸检):塔等钱期探机让位(150 矿短窗预算保护)。纯逻辑,可单测。
 
@@ -947,7 +948,13 @@ def zt_cannon_pending_probe_yield(
     双闸不打架)时,探机停训让位;塔放置(pending 归零)或出窗
     自动解除(自校正,无 latch)。O359-⑤ 的第二塔共用本判据,
     与 O358-⑤ 的 550 门是同一笔 150 预算的两端,不互相抢。
+    O360-⑤(o359a 尸检):① min_workers 16→20 —— o359a g1 实证
+    16 农线把扩张期农民冻在 16-18(84-204s),二矿拖到 526s,
+    掐死的是经济本身;② Nexus 豁免 —— Nexus 在途/开工中
+    (nexus_in_flight>0)不触发,扩张期经济优先于塔的 150 短窗。
     """
+    if nexus_in_flight > 0:
+        return False
     return now < window_end and cannon_pending > 0 and workers >= min_workers
 
 
@@ -4414,3 +4421,120 @@ def idle_builder_fuse_exempt(sid_name: str, critical_ids: set[str] | None = None
     if critical_ids is None:
         critical_ids = {"FORGE", "PHOTONCANNON", "GATEWAY", "NEXUS", "FLEETBEACON"}
     return sid_name in critical_ids
+
+
+def townhall_skips_placement(structure_name: str) -> bool:
+    """O360-①(o359b 尸检):城镇厅(5x5)不走 ares 落位簿记。纯逻辑,可单测。
+
+    o359b game_01 实证:O251 硬饱和钉点(_dispatch_structure(NEXUS))每帧
+    刷「No BuildingSize.FIVE_BY_FIVE present in placement bookkeeping」
+    (256 条/局,g2/g3 同命中)—— ares 神族落位簿记只生成 2x2/3x3 槽
+    (placement_manager._solve_protoss_building_formation),5x5 请求恒
+    warning+None → 钉点恒 no_placement 哑故障(O93/O334-④ 已两次记录
+    同根因)。城镇厅落在矿点坐标本身(ExpansionController 同款,实战建成
+    了全部 Nexus),调用方对名单内结构直接用 base_location 当落点。
+    """
+    return structure_name in ("NEXUS", "COMMANDCENTER", "HATCHERY")
+
+
+def fb_fund_window(
+    sg_ready: bool,
+    fb_entities: int,
+    fb_in_core: bool,
+    threat_active: bool,
+    timed_out: bool,
+) -> bool:
+    """O360-②(o359b 尸检):FB 专项基金窗判据。纯逻辑,可单测。
+
+    o359b 实证:FB(300矿/200气)被塔/探机/Nexus/升级帧级插队,O110 自救
+    3 局 ×10 全是 no_money(g1:490.8 派工 no_money、511s 工人干等、
+    569.7 才 dispatched)。SG 就绪且 FB 无实体(在建即关窗)且无威胁
+    (threat/rush 豁免,被骑脸时塔链优先)且未超时 → 开窗:调用方抑制
+    探机(农≥28)/第 3+ 座塔/≥200 矿升级,把资金窗让给 FB 钉点。
+    带 90s 超时(调用方计时,超时强制按现状派工一次后关窗)—— 吸取
+    O106 全局资金冻结死锁教训:单建筑专项基金 + 超时 + threat 豁免,
+    不做全局暂停。与 O353-③ fb_saving_window(禁 O261 虚空,口径
+    present_or_pending)并存不打架:那道只管派工前,本窗管到实体落成。
+    """
+    return (
+        fb_in_core
+        and sg_ready
+        and fb_entities == 0
+        and not threat_active
+        and not timed_out
+    )
+
+
+def fb_fund_probe_yield(fund_window: bool, workers: int, min_workers: int = 28) -> bool:
+    """O360-②:FB 基金窗内探机让位判据。纯逻辑,可单测。
+
+    窗内且农民 ≥min_workers(双矿近饱和口径,与 O355-① 母舰窗探机
+    让位同阈值)→ 停训探机,50 矿/个让给 FB;窗随 FB 实体落成/超时
+    自动关(自校正,无 latch)。
+    """
+    return fund_window and workers >= min_workers
+
+
+def fb_fund_cannon_blocked(fund_window: bool, cannons: int, allowed: int = 2) -> bool:
+    """O360-②:FB 基金窗内第 3+ 座塔抑制判据。纯逻辑,可单测。
+
+    窗内且全局塔(实体+在途)≥allowed → 不再新钉塔(返回 True 让调用方
+    拦派工);前 2 座保命塔照钉,threat 豁免在窗判据上游(fb_fund_window
+    的 threat_active 参数),被压境时本判据恒 False。
+    """
+    return fund_window and cannons >= allowed
+
+
+def fb_fund_upgrade_kept(
+    fund_window: bool, upgrade_minerals: float, threshold: float = 200.0
+) -> bool:
+    """O360-②:FB 基金窗内升级注册过滤判据。纯逻辑,可单测。
+
+    窗内 ≥threshold 矿的升级不注册(空军 2 攻/2 防 175-250 矿级,一笔
+    顶大半座 FB);<threshold 的便宜升级与窗外一切升级照常(返回 True)。
+    """
+    return (not fund_window) or upgrade_minerals < threshold
+
+
+def cannon_global_capped(
+    cannons: int, threat_active: bool, cap: int = 12
+) -> bool:
+    """O360-③(o359b 尸检):静态防御全局总投资软顶。纯逻辑,可单测。
+
+    o359b g2 实证:19 座塔 ≈2850 矿 ≈ 7 艘航母 —— 中盘塔链把舰队资金
+    吃光。现有 cannon_capped(O354-④)只管 t≥600+舰队≥4 的舰队期;
+    本软顶管全期:全局塔(实体+在途)≥cap 且非 threat/rush → 停钉新塔
+    (任何时段);threat/rush 豁免保留(被骑脸该补还得补)。两道并存:
+    cannon_capped 管舰队期,本判据管全期总投资。
+    """
+    return cannons >= cap and not threat_active
+
+
+def gas_to_minerals_released(
+    vespene: float,
+    minerals: float,
+    vespene_threshold: float = 500.0,
+    mineral_threshold: float = 400.0,
+) -> bool:
+    """O360-④(o359a/o359b 尸检):停气转矿解除判据。纯逻辑,可单测。
+
+    O359-② 的滞回解除「气 <350」实证走不到 —— o359a 三局触发有事件、
+    解除 0 事件(气超冲 616-694 期间气农被按住,气却永远花不到 350
+    以下);o359b g1 触发后 194s 才解除(257.9→451.3)。解除改双向
+    缓解即解:「气 <500(烂气被花掉)或 矿 >400(矿荒已缓)」——
+    两个病因任治其一就放手,不再等气单独深跌。
+    """
+    return vespene < vespene_threshold or minerals > mineral_threshold
+
+
+def gas_pull_window_expired(
+    pull_since: float | None, now: float, window: float = 60.0
+) -> bool:
+    """O360-④:停气最长窗口判据(棘轮保险丝)。纯逻辑,可单测。
+
+    O117-① 同教义:停气通道在 ares Mining 持续补气的对抗下会单向
+    棘轮(停气池越攒越大,经济角色被抽干);o359a 解除永不到达即
+    钉死实证。连续停气 ≥window 秒 → 调用方强制解除一轮(30s 冷却
+    后才允许再触发),防任何解除条件失效把停气钉成终局状态。
+    """
+    return pull_since is not None and now - pull_since >= window

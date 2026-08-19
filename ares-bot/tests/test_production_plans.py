@@ -60,6 +60,14 @@ from bot.production_plans import (  # noqa: E402
     fb_saving_window,
     forge_pin_affordable,
     gas_to_minerals_needed,
+    gas_to_minerals_released,
+    gas_pull_window_expired,
+    townhall_skips_placement,
+    fb_fund_window,
+    fb_fund_probe_yield,
+    fb_fund_cannon_blocked,
+    fb_fund_upgrade_kept,
+    cannon_global_capped,
     mothership_economy_ok,
     mothership_window_open,
     ms_window_probe_yield,
@@ -3610,15 +3618,19 @@ class TestO359WaveDefense(unittest.TestCase):
         self.assertFalse(zt_second_cannon_pin_ok(400.0, 1, 1))
 
     def test_zt_cannon_pending_probe_yield(self):
-        # 首波窗内有塔在 tracker 等钱 + 农民 ≥16 → 探机让位
+        # 首波窗内有塔在 tracker 等钱 + 农民 ≥20 → 探机让位
         self.assertTrue(zt_cannon_pending_probe_yield(250.0, 1, 27))
-        self.assertTrue(zt_cannon_pending_probe_yield(329.9, 2, 16))
+        self.assertTrue(zt_cannon_pending_probe_yield(329.9, 2, 20))
         # 无塔等钱 → 不让位(自校正:塔放置 pending 归零即恢复)
         self.assertFalse(zt_cannon_pending_probe_yield(250.0, 0, 27))
         # 出窗 → 不让位(探机恢复,经济回血)
         self.assertFalse(zt_cannon_pending_probe_yield(330.0, 1, 27))
-        # 农民 <16 → 不让位(O146-① floor 同口径,不掐经济火种)
-        self.assertFalse(zt_cannon_pending_probe_yield(250.0, 1, 15))
+        # 农民 <20 → 不让位(O360-⑤:16 线冻死扩张期经济,o359a g1 实证)
+        self.assertFalse(zt_cannon_pending_probe_yield(250.0, 1, 19))
+        self.assertFalse(zt_cannon_pending_probe_yield(250.0, 1, 16))
+        # O360-⑤:Nexus 在途/开工中 → 豁免(扩张期经济优先于塔的 150 短窗)
+        self.assertFalse(zt_cannon_pending_probe_yield(250.0, 1, 27, nexus_in_flight=1))
+        self.assertTrue(zt_cannon_pending_probe_yield(250.0, 1, 27, nexus_in_flight=0))
 
 
 class TestO329FastExpand(unittest.TestCase):
@@ -4147,6 +4159,94 @@ class TestO357ReanchorForgeFirstObservability(unittest.TestCase):
         # 显式 interval
         self.assertTrue(event_throttle_ok(100.0, 50.0, interval=10.0))
         self.assertFalse(event_throttle_ok(55.0, 50.0, interval=10.0))
+
+
+class TestO360MidGameEconomy(unittest.TestCase):
+    """O360(o359a/o359b 尸检):中盘经济/放置层五修复 ——
+    ① 城镇厅绕过 5x5 落位簿记;② FB 专项基金窗;③ 静态防御全局
+    软顶;④ 停气转矿解除双向化+60s 保险丝;⑤ 探机让位 min_workers
+    20+Nexus 豁免(⑤ 用例在 test_zt_cannon_pending_probe_yield)。"""
+
+    def test_townhall_skips_placement(self):
+        # 5x5 城镇厅 → 绕过簿记(o359b g1 256 条 FIVE_BY_FIVE 警告根因)
+        self.assertTrue(townhall_skips_placement("NEXUS"))
+        self.assertTrue(townhall_skips_placement("COMMANDCENTER"))
+        self.assertTrue(townhall_skips_placement("HATCHERY"))
+        # 2x2/3x3 结构 → 簿记照常
+        self.assertFalse(townhall_skips_placement("FLEETBEACON"))
+        self.assertFalse(townhall_skips_placement("PHOTONCANNON"))
+        self.assertFalse(townhall_skips_placement("STARGATE"))
+        self.assertFalse(townhall_skips_placement("PYLON"))
+
+    def test_fb_fund_window(self):
+        # SG 就绪 + FB 无实体 + 在 core 链 + 无威胁 + 未超时 → 开窗
+        self.assertTrue(fb_fund_window(True, 0, True, False, False))
+        # SG 未就绪 → 不开(FB 链还未到)
+        self.assertFalse(fb_fund_window(False, 0, True, False, False))
+        # FB 实体已落(含在建)→ 关窗(攒钱目的达成)
+        self.assertFalse(fb_fund_window(True, 1, True, False, False))
+        # FB 不在 core 链 → 不开(非舰队流派)
+        self.assertFalse(fb_fund_window(True, 0, False, False, False))
+        # threat/rush 豁免 → 被骑脸时塔链优先,关窗
+        self.assertFalse(fb_fund_window(True, 0, True, True, False))
+        # 90s 超时 → 关窗(O106 死锁教训:不钉死)
+        self.assertFalse(fb_fund_window(True, 0, True, False, True))
+
+    def test_fb_fund_probe_yield(self):
+        # 窗内 + 农 ≥28 → 探机让位
+        self.assertTrue(fb_fund_probe_yield(True, 28))
+        self.assertTrue(fb_fund_probe_yield(True, 40))
+        # 窗内 + 农 <28 → 不让位(不掐经济火种)
+        self.assertFalse(fb_fund_probe_yield(True, 27))
+        # 窗外 → 不让位
+        self.assertFalse(fb_fund_probe_yield(False, 40))
+
+    def test_fb_fund_cannon_blocked(self):
+        # 窗内 + 塔 ≥2 → 第 3+ 座塔被拦
+        self.assertTrue(fb_fund_cannon_blocked(True, 2))
+        self.assertTrue(fb_fund_cannon_blocked(True, 8))
+        # 窗内 + 塔 <2 → 保命塔照钉
+        self.assertFalse(fb_fund_cannon_blocked(True, 0))
+        self.assertFalse(fb_fund_cannon_blocked(True, 1))
+        # 窗外(threat 豁免在上游)→ 不拦
+        self.assertFalse(fb_fund_cannon_blocked(False, 8))
+
+    def test_fb_fund_upgrade_kept(self):
+        # 窗内 ≥200 矿升级 → 让位(2 攻/2 防级一笔顶大半座 FB)
+        self.assertFalse(fb_fund_upgrade_kept(True, 200.0))
+        self.assertFalse(fb_fund_upgrade_kept(True, 250.0))
+        # 窗内 <200 矿升级 → 照常
+        self.assertTrue(fb_fund_upgrade_kept(True, 100.0))
+        self.assertTrue(fb_fund_upgrade_kept(True, 175.0))
+        # 窗外一切升级照常
+        self.assertTrue(fb_fund_upgrade_kept(False, 250.0))
+
+    def test_cannon_global_capped(self):
+        # 四象限:塔 ≥12 且非 threat → 封顶;threat 豁免;<12 不封
+        self.assertTrue(cannon_global_capped(12, False))
+        self.assertTrue(cannon_global_capped(19, False))  # o359b g2 实证档
+        self.assertFalse(cannon_global_capped(12, True))
+        self.assertFalse(cannon_global_capped(19, True))
+        self.assertFalse(cannon_global_capped(11, False))
+        self.assertFalse(cannon_global_capped(0, False))
+
+    def test_gas_to_minerals_released(self):
+        # 双向缓解即解除:气 <500(烂气被花掉)
+        self.assertTrue(gas_to_minerals_released(499.9, 100.0))
+        # 矿 >400(矿荒已缓)—— o359b g1 的 194s 迟解除档(气 500+ 恒成立)
+        self.assertTrue(gas_to_minerals_released(694.0, 400.1))
+        # 两因俱在 → 仍按住(气 616-694 超冲 + 矿荒,o359a 实证档)
+        self.assertFalse(gas_to_minerals_released(616.0, 250.0))
+        self.assertFalse(gas_to_minerals_released(500.0, 400.0))
+
+    def test_gas_pull_window_expired(self):
+        # 未在停气(None)→ 不炸
+        self.assertFalse(gas_pull_window_expired(None, 100.0))
+        # 窗内 → 不炸
+        self.assertFalse(gas_pull_window_expired(100.0, 159.9))
+        # 连续停气 ≥60s → 棘轮保险丝(o359a 解除永不到达档)
+        self.assertTrue(gas_pull_window_expired(100.0, 160.0))
+        self.assertTrue(gas_pull_window_expired(100.0, 300.0))
 
 
 if __name__ == "__main__":

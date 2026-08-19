@@ -96,6 +96,14 @@ from bot.production_plans import (
     fb_saving_window,
     forge_pin_affordable,
     gas_to_minerals_needed,
+    gas_to_minerals_released,
+    gas_pull_window_expired,
+    townhall_skips_placement,
+    fb_fund_window,
+    fb_fund_probe_yield,
+    fb_fund_cannon_blocked,
+    fb_fund_upgrade_kept,
+    cannon_global_capped,
     holding_abort_keep_first_expand,
     mothership_economy_ok,
     mothership_window_open,
@@ -372,6 +380,21 @@ class ProductionManager(Manager):
         # O359-④(o358 六局尸检):母舰窗防御档(保 O358-③ 的 300 矿底,
         # 只拦塔/电池钉点);奢侈品档 _ms_window 无矿底(死锁修复)。
         self._ms_window_defense: bool = False
+        # O360-②(o359b 尸检):FB 专项基金窗旗标族(每帧在 update 重算)——
+        # SG 就绪且 FB 无实体期间抑制探机(农≥28)/第 3+ 座塔/≥200 矿
+        # 升级,把资金窗让给 FB 钉点;90s 超时强制派工一次后关窗
+        # (O106 死锁教训:超时+threat 豁免,非全局暂停)。__init__ 初始化。
+        self._fb_fund_window: bool = False
+        self._fb_fund_since: float | None = None
+        self._fb_fund_forced: bool = False
+        self._fb_fund_log_ts: float = 0.0
+        # O360-④(o359a/o359b 尸检):停气转矿连续计时与强制解除冷却
+        # (解除条件曾 194s/整局走不到,加 60s 棘轮保险丝)。
+        self._o358_gas_pull_since: float | None = None
+        self._o358_gas_pull_cooldown_until: float | None = None
+        # O360-⑤(o359a 尸检):O359-③ 探机让位触发/解除簿记的边沿旗标
+        # (o359a g1 农民 84-204s 冻在 16-18 零日志,静默触发实证)。
+        self._o359_yield_active: bool = False
         # O117-②:防御紧急旗标(rush确认/过渡/presumed 合成,每帧更新)——
         # main.py 的 O11 钉点撤回豁免读它(presumed 期塔工不再被撤回循环)
         self._defense_urgent: bool = False
@@ -1511,6 +1534,17 @@ class ProductionManager(Manager):
             )
         )
         _upgrades = self._flow.upgrade_ids()
+        # O360-②(o359b 尸检):FB 基金窗内 ≥200 矿升级让位 —— 空军 2 攻/
+        # 2 防级升级一笔顶大半座 FB,是 FB no_money 的帧级抽水机之一;
+        # <200 的便宜升级与窗外一切升级照常。calculate_cost 支持 UpgradeId。
+        if self._fb_fund_window and _upgrades:
+            _upgrades = [
+                u
+                for u in _upgrades
+                if fb_fund_upgrade_kept(
+                    True, self.ai.calculate_cost(u).minerals
+                )
+            ]
         if (
             _upgrades
             # O103-①:过渡期全程停研究(接触式 rush_active 60s 解除后 UC 恢复
@@ -1717,6 +1751,50 @@ class ProductionManager(Manager):
             and _fb_entities_now == 0
             and not self.ai.can_afford(UnitID.FLEETBEACON)
         )
+        # O360-②(o359b 尸检):FB 专项基金窗 —— SG 就绪且 FB 无实体期间
+        # 抑制探机(农≥28)/第 3+ 座塔/≥200 矿升级,把资金窗让给 FB 钉点
+        # (o359b O110 自救 3 局 ×10 全 no_money:塔/探机/升级帧级插队)。
+        # 90s 超时强制按现状派工一次后关窗(O106 死锁教训:超时+threat
+        # 豁免,非全局暂停);FB 实体落成/被拆重建自动开新一轮。
+        _fb_fund_raw = fb_fund_window(
+            sg_ready=any(s.is_ready for s in _sg_all),
+            fb_entities=_fb_entities_now,
+            fb_in_core=_fb_in_core,
+            threat_active=(self._rush_active or self._threat_active),
+            timed_out=False,
+        )
+        if _fb_fund_raw:
+            if self._fb_fund_since is None:
+                self._fb_fund_since = self.ai.time
+        else:
+            self._fb_fund_since = None
+            self._fb_fund_forced = False
+        _fb_fund_timed_out = (
+            self._fb_fund_since is not None
+            and self.ai.time - self._fb_fund_since >= 90.0
+        )
+        self._fb_fund_window = _fb_fund_raw and not _fb_fund_timed_out
+        if self._fb_fund_window and event_throttle_ok(
+            self.ai.time, self._fb_fund_log_ts
+        ):
+            self._fb_fund_log_ts = self.ai.time
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O360:FB基金窗开(矿{self.ai.minerals:.0f},"
+                    f"气{self.ai.vespene:.0f})"
+                ),
+            })
+        if _fb_fund_timed_out and not self._fb_fund_forced:
+            # 超时强制按现状派工一次(防抑制本身把 FB 钉死),随后关窗。
+            self._fb_fund_forced = True
+            _fb_rc = self._dispatch_structure(
+                UnitID.FLEETBEACON, self.ai.start_location, critical=True
+            )
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": f"O360:FB基金窗90s超时,强制派工一次(派工={_fb_rc})",
+            })
         # O354-②(o353 五局尸检):母舰资金窗 —— 母舰出门槛除 can_afford
         # 外全满足(FB 就绪/t≥700/舰队≥3/气≥400/经济门/无母舰)且矿 <400
         # 时开窗,O260 暴风兜底与塔/电池钉点让位母舰资金(矿被 O260/塔/农
@@ -2939,14 +3017,51 @@ class ProductionManager(Manager):
             # 305-309 致死波零塔)。首波窗内有塔在 tracker 等钱即停探机
             # (单建筑 150 矿短窗预算保护,非全局面冻结;O146-① 的
             # 16 农 floor 在上方,双闸不打架)。O359-⑤ 第二塔共用。
+            # O360-⑤(o359a 尸检):min_workers 16→20(16 线把扩张期
+            # 农民冻在 16-18、二矿 526s)+ Nexus 在途/开工豁免(扩张期
+            # 经济优先);触发/解除边沿簿记在下方(原静默触发零日志)。
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and zt_cannon_pending_probe_yield(
                 self.ai.time,
                 self.ai.not_started_but_in_building_tracker(UnitID.PHOTONCANNON),
                 self.ai.supply_workers,
+                nexus_in_flight=(
+                    self.ai.not_started_but_in_building_tracker(UnitID.NEXUS)
+                    + sum(1 for th in self.ai.townhalls if not th.is_ready)
+                ),
             )
+        ) or fb_fund_probe_yield(
+            # O360-②(o359b 尸检):FB 基金窗内探机让位(农≥28)——
+            # 50 矿/个是 FB no_money 的帧级抽水机之一;窗随 FB 实体
+            # 落成/90s 超时自动关(自校正,无 latch)。
+            self._fb_fund_window, self.ai.supply_workers
         ) or _zealot_sprint  # O124-③:首叉冲刺期农民也停(矿全留给首叉)
+        # O360-⑤(o359a 尸检):O359-③ 触发/解除边沿簿记 —— o359a g1
+        # 农民 84-204s 冻在 16-18 零日志(静默触发实证);30s 节流只
+        # 节流言,边沿各记一条。
+        _o359_yield_now = (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and zt_cannon_pending_probe_yield(
+                self.ai.time,
+                self.ai.not_started_but_in_building_tracker(UnitID.PHOTONCANNON),
+                self.ai.supply_workers,
+                nexus_in_flight=(
+                    self.ai.not_started_but_in_building_tracker(UnitID.NEXUS)
+                    + sum(1 for th in self.ai.townhalls if not th.is_ready)
+                ),
+            )
+        )
+        if _o359_yield_now != self._o359_yield_active:
+            self._o359_yield_active = _o359_yield_now
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O359-③:探机让位{'触发' if _o359_yield_now else '解除'}"
+                    f"(农{self.ai.supply_workers},矿{self.ai.minerals:.0f})"
+                ),
+            })
         # O146-①(元诊断:赢局退出时 15-20 农,现局被刹车家族压在 12):
         # t≤350 且非急性窗且农民 <16 → 必产,一切 yield/brake 不得压
         # O353-②(o352 六局尸检):ZT 两矿 floor 16→28 —— g1 农民被 16
@@ -5888,7 +6003,21 @@ class ProductionManager(Manager):
         # 建造台账轮换)的农民持 gas 簿记续采却抓不到;改为「在 gas
         # 簿记且非建造/侦查/撤离/司令接管」即拉,簿记才是 ares Mining
         # 派气的权威口径。
-        if gas_to_minerals_needed(self.ai.vespene, self.ai.minerals):
+        # O360-④(o359a/o359b 尸检):解除改双向缓解即解 —— 旧滞回
+        # 「气 <350」实证走不到(o359a 三局触发有事件、解除 0 事件,
+        # 气超冲 616-694;o359b g1 触发后 194s 才解除);「气 <500
+        # (烂气被花掉)或 矿 >400(矿荒已缓)」任一成立即解除,解除
+        # 事件必有。加 60s 棘轮保险丝:连续停气 ≥60s 强制解除一轮
+        # (30s 冷却后才允许再触发)—— O117-① 同教义,防任何解除
+        # 条件失效把停气钉成终局状态。
+        _gas_pull_cooling = (
+            self._o358_gas_pull_cooldown_until is not None
+            and self.ai.time < self._o358_gas_pull_cooldown_until
+        )
+        if (
+            gas_to_minerals_needed(self.ai.vespene, self.ai.minerals)
+            and not _gas_pull_cooling
+        ):
             if not self._o358_gas_pull and event_throttle_ok(
                 self.ai.time, self._o359_gas_log_ts
             ):
@@ -5900,13 +6029,25 @@ class ProductionManager(Manager):
                         f"矿{self.ai.minerals:.0f})"
                     ),
                 })
+            if not self._o358_gas_pull:
+                self._o358_gas_pull_since = self.ai.time
             self._o358_gas_pull = True
-        elif self._o358_gas_pull and self.ai.vespene < 350.0:
+        elif self._o358_gas_pull and (
+            gas_to_minerals_released(self.ai.vespene, self.ai.minerals)
+            or gas_pull_window_expired(self._o358_gas_pull_since, self.ai.time)
+        ):
+            _gas_forced = gas_pull_window_expired(
+                self._o358_gas_pull_since, self.ai.time
+            ) and not gas_to_minerals_released(self.ai.vespene, self.ai.minerals)
             self._o358_gas_pull = False
+            self._o358_gas_pull_since = None
+            if _gas_forced:
+                self._o358_gas_pull_cooldown_until = self.ai.time + 30.0
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
                 "msg": (
-                    f"O359:停气转矿解除(气{self.ai.vespene:.0f},"
+                    f"O359:停气转矿解除{'(60s保险丝)' if _gas_forced else ''}"
+                    f"(气{self.ai.vespene:.0f},"
                     f"矿{self.ai.minerals:.0f})"
                 ),
             })
@@ -7171,17 +7312,8 @@ class ProductionManager(Manager):
         # (TEMPEST+CARRIER)≥4 且全局塔 ≥8 → 不再新钉塔(返回 "capped");
         # rush/threat 激活豁免(被骑脸时该补还得补)。集中在本入口,
         # 覆盖 O337 分矿守卫/预置塔链/F2 手动钉点全部塔派工路径。
-        if sid == UnitID.PHOTONCANNON and cannon_capped(
-            now=self.ai.time,
-            fleet_count=(
-                self.manager_mediator.get_own_unit_count(
-                    unit_type_id=UnitID.TEMPEST
-                )
-                + self.manager_mediator.get_own_unit_count(
-                    unit_type_id=UnitID.CARRIER
-                )
-            ),
-            cannons=(
+        if sid == UnitID.PHOTONCANNON:
+            _cannons_now = (
                 len(
                     self.manager_mediator.get_own_structures_dict[
                         UnitID.PHOTONCANNON
@@ -7190,10 +7322,39 @@ class ProductionManager(Manager):
                 + self.manager_mediator.get_building_counter[
                     UnitID.PHOTONCANNON
                 ]
-            ),
-            threat_active=(self._rush_active or self._threat_active),
-        ):
-            return "capped"
+            )
+            if cannon_capped(
+                now=self.ai.time,
+                fleet_count=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER
+                    )
+                ),
+                cannons=_cannons_now,
+                threat_active=(self._rush_active or self._threat_active),
+            ):
+                return "capped"
+            # O360-③(o359b 尸检):静态防御全局总投资软顶 —— o359b g2
+            # 实证 19 座塔 ≈2850 矿 ≈ 7 艘航母;cannon_capped 只管
+            # t≥600+舰队≥4 的舰队期,本软顶管全期:ZT 下全局塔 ≥12 且
+            # 非 threat/rush → 停钉新塔(任何时段),threat 豁免保留。
+            if (
+                self._opp_race == "zerg"
+                and self._ai_build == "timing"
+                and cannon_global_capped(
+                    _cannons_now,
+                    threat_active=(self._rush_active or self._threat_active),
+                )
+            ):
+                return "capped"
+            # O360-②(o359b 尸检):FB 基金窗内第 3+ 座塔让位 —— 塔 150
+            # 矿/座正是 FB no_money 的帧级抽水机之一;前 2 座保命塔
+            # 照钉,threat 豁免在窗判据上游(fb_fund_window)。
+            if fb_fund_cannon_blocked(self._fb_fund_window, _cannons_now):
+                return "fb_fund"
         # O354-②(o353 五局尸检):母舰资金窗 —— 窗内新塔/电池钉点让位
         # 母舰 400 矿(母舰 0/5 的死因就是矿被塔/农/O260 每帧吃光);
         # 窗随矿 ≥400 或条件失效自动关。窄域优先级修正,不是资金冻结。
@@ -7246,15 +7407,23 @@ class ProductionManager(Manager):
             self.ai.calculate_cost(sid).minerals,
         ):
             return "not_viable"
-        placement = self.manager_mediator.request_building_placement(
-            base_location=base_location,
-            structure_type=sid,
-            within_psionic_matrix=needs_power,
-            production=False,
-            closest_to=closest_to,
-            find_alternative=True,
-            wall=wall,  # O136-①:坡口墙槽(主坡 3x3/墙位水晶)
-        )
+        # O360-①(o359b 尸检):城镇厅(5x5)绕过 ares 落位簿记 —— 神族
+        # 簿记只有 2x2/3x3 槽,request_building_placement(NEXUS) 恒
+        # warning+None(o359b g1 刷 256 条,O251 钉点恒 no_placement
+        # 哑故障;O93/O334-④ 同根因)。城镇厅落在矿点坐标本身
+        # (ExpansionController 同款,实战建成了全部 Nexus)。
+        if townhall_skips_placement(sid.name):
+            placement = base_location
+        else:
+            placement = self.manager_mediator.request_building_placement(
+                base_location=base_location,
+                structure_type=sid,
+                within_psionic_matrix=needs_power,
+                production=False,
+                closest_to=closest_to,
+                find_alternative=True,
+                wall=wall,  # O136-①:坡口墙槽(主坡 3x3/墙位水晶)
+            )
         if placement is None:
             return "no_placement"
         worker = self.ai.mediator.select_worker(
