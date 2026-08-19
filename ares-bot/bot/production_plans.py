@@ -1045,6 +1045,32 @@ def sprint_blocks_probes(workers: int, floor: int = 8) -> bool:
     return workers >= floor
 
 
+def sprint_timer_update(
+    sprint: bool,
+    since: float | None,
+    false_since: float | None,
+    now: float,
+    exit_grace: float = 10.0,
+) -> tuple:
+    """O353-②(o352 六局尸检):defense_sprint 计时累计制(滞回退出)。纯逻辑,可单测。
+
+    旧逻辑「单帧 _sprint=False 即 _sprint_since=None 重计」被叉子数量/
+    敌近家的单帧抖动反复重置,o352 g1 从 200s 到 440s 连续 sprint=True
+    而 sprint_age 从未触顶,60s max_age 逃逸阀形同虚设,农民被钉死 240s。
+    改累计制:进入 sprint 记录起始时刻;中断不清零,须连续 exit_grace 秒
+    不满足才清零(真退出);抖动期间 age 照累计,逃逸阀真正生效。
+    返回 (new_since, new_false_since)。
+    """
+    if sprint:
+        return (since if since is not None else now), None
+    if since is None:
+        return None, None
+    fs = false_since if false_since is not None else now
+    if now - fs >= exit_grace:
+        return None, None
+    return since, fs
+
+
 def tracker_entry_stale(
     worker_alive: bool, worker_idle: bool, age: float, timeout: float = 10.0
 ) -> bool:
@@ -1383,6 +1409,95 @@ def threat_ground_exemption(spawn: dict, flying: set) -> set:
     return {uid for uid in spawn if uid not in flying}
 
 
+def multi_expand_threat_ok(
+    rush_active: bool,
+    threat_active: bool,
+    townhalls: int,
+    now: float,
+    visible_enemy_army_supply: float,
+    own_army_supply: float,
+) -> bool:
+    """O352-②(o351 18 局尸检):多矿(3 矿+)扩张钉点的 threat 闸。纯逻辑,可单测。
+
+    O344-② 的 rush∧threat 锁在持续挨打局把三矿钉点永久锁死——
+    threat_response_active 是滞回 latch,波 60-90s 一波下近常真
+    (18 局三矿 17 局从不开,唯一开出局=唯一胜局)。保留 rush∧threat
+    锁,加两道旁路:
+    - t≥480 时间兜底(O353-④ 从 600 下调 —— o352 六局尸检:t≥600
+      触发时局已崩;与 fb_missing_expand_hold 的豁免同口径);
+    - 闸内放宽解除口径一档:敌可见 supply < max(8, 我方×1.25) 即视为
+      威胁已退(只影响本闸;全局 latch 不动,其他消费方行为不变)。
+    选址级判定(_zt_enemy_near_expand_target)只覆盖首扩口袋矿,多矿
+    钉点取最近矿点、口径不一致,故选本方案(实现最简单)。
+    首扩(townhalls<=1)不在本闸管辖(O274-① 已去 rush 闸),恒放行。
+    """
+    if townhalls <= 1:
+        return True
+    if not rush_active or not threat_active:
+        return True
+    if now >= 480.0:
+        return True
+    return visible_enemy_army_supply < max(8.0, own_army_supply * 1.25)
+
+
+def fb_missing_expand_hold(
+    townhalls: int,
+    fb_truly_missing: bool,
+    supply_workers: int,
+    now: float,
+    workers_exempt: int = 28,
+    time_exempt: float = 480.0,
+) -> bool:
+    """O352-②(o351 18 局尸检):FB 缺失锁扩张闸(含豁免)。纯逻辑,可单测。
+
+    O57/o172/o175 的「townhalls≥2 且 FB 真缺失 → 不开矿」闸与 O344-②
+    threat 闸串联,把三矿彻底锁死(FB 被拆重建期动辄 100s+,期间经济
+    硬饱和也不许开矿)。加豁免:农民 ≥workers_exempt(硬饱和,不开矿
+    经济无出路)或 t≥time_exempt(拖后期兜底)时不锁。返回 True = 锁定(不开矿)。
+    O353-④(o352 六局尸检):豁免口径可达成化 —— 原 40 农/t≥600 触发时
+    局已崩;农民 28+ 在 ~450s 就出现,比 40 农早 60-150s。默认豁免改为
+    28 农 / t≥480(与 multi_expand_threat_ok 的 O353-④ 旁路同口径)。
+    """
+    if townhalls < 2 or not fb_truly_missing:
+        return False
+    if supply_workers >= workers_exempt or now >= time_exempt:
+        return False
+    return True
+
+
+def forge_pin_affordable(
+    minerals: float,
+    price: float = 150.0,
+    threat_active: bool = False,
+) -> bool:
+    """O352-③(o351 18 局尸检):forge 钉点近可负担门。纯逻辑,可单测。
+
+    O333 钉点在 Nexus 开工帧 critical 派工,驻点工人 232-300s 反复等钱
+    (钱被探机/GW2/SG/水晶同帧即时消费抢走),forge 落成迟到 237-354s;
+    O349 看门狗只是重排等钱循环。矿 ≥150(forge 造价)才实际派工;
+    矿不够不派工、不驻点、不设 tracker(避免看门狗误清)。
+    与 O262-③ 的 350 门同构。
+    O353-①(o352 六局尸检):威胁豁免 —— threat/rush 激活期矿恒 <150,
+    门成永久锁(g3 到死无 forge,首塔 tech_not_ready 空转 142-185s)。
+    威胁期免门恢复 critical 驻点行为:驻点等钱是对的,forge 是救命建筑;
+    非威胁期保持矿 ≥150 门。
+    """
+    if threat_active:
+        return True
+    return minerals >= price
+
+
+def fb_saving_window(sg_ready: bool, fb_present_or_pending: bool) -> bool:
+    """O353-③(o352 六局尸检):FB 攒钱窗判据(虚空兜底禁用窗)。纯逻辑,可单测。
+
+    SG 就绪且 FLEETBEACON 无实体未派工 = FB 攒钱窗。o352 实证:FB
+    pending 长达 275s,矿恒 24-294 差 300 一口气;O261 虚空兜底要求
+    FB 缺失才触发,恰好与本窗重合,2×250 矿反抢 FB 资金(game_03
+    在 622s 还点 2 艘虚空)。窗内一切非关键开销让位 FB 钉点。
+    """
+    return sg_ready and not fb_present_or_pending
+
+
 def pivot_primary_id(verdict: str | None, carrier_id, tempest_id):
     """策略 pivot：舰队成型前的主 C 选择（只挂 carrier 流，侦查驱动）。纯逻辑。
 
@@ -1417,7 +1532,7 @@ def carrier_quota_active(
     fleet_online: bool,
     tempest_count: int,
     carrier_count: int,
-    fleet_min: int = 8,
+    fleet_min: int = 4,
     carrier_target: int = 4,
     pending_tempest: int = 0,
     pending_carrier: int = 0,
@@ -1426,14 +1541,17 @@ def carrier_quota_active(
 
     当前 carrier 配方为 TEMPEST p0 / CARRIER p1 + save_up=0，freeflow 下
     TEMPEST 便宜且永远可负担，CARRIER 被永久截断、整局不出（O154 终局
-    编成 28 暴风 0 航母实证）。本函数在舰队成型后检测是否该强制补航母：
+    编成 28 暴风 0 航母实证；o351 18 局尸检 CARRIER=0 贯穿全场——配额
+    阈值达不到,截断从未被解除）。本函数在舰队成型后检测是否该强制补航母：
     - flow 必须是 carrier；
     - fleet_online（至少有一艘舰队主 C 出生/在产，保证气矿经济已运转）；
-    - 舰队总数（暴风+航母+在产）已达 fleet_min（默认 8，O156 从 12 下调——
-      VeryHard Zerg Power 局舰队常在 11 艘时就被压崩，永远到不了 12）；
+    - 舰队总数（暴风+航母+在产）已达 fleet_min（默认 4，O352-① 从 8 下调——
+      o351 18 局暴风峰值仅 0-8，阈值 8 在这组对局永远等不到；O156 曾从
+      12 下调到 8，对 VeryHard Zerg Timing 仍不可达）；
     - 航母数量 < carrier_target（默认 4）。
-    O156 追加安全网：舰队 6+ 且 0 航母、同时离阈值还差至少 2 艘时，必须
-    先把第一艘航母挤出来，避免“暴风憋到 11 艘被推平、航母从未出场”。
+    O156 追加安全网：舰队成型中且 0 航母、同时离阈值还差至少 2 艘时，必须
+    先把第一艘航母挤出来，避免“暴风憋到阈值前被推平、航母从未出场”。
+    O352-①:fallback 暴风门槛 6→3（与 fleet_min=4 同档，o351 尸检同据）。
     触发后由调用方把 spawn 主次对调并开动态 save_up，逼出航母。
     """
     if flow_name != "carrier" or not fleet_online:
@@ -1443,12 +1561,12 @@ def carrier_quota_active(
     fleet_total = tempest_count + carrier_count + pending_tempest + pending_carrier
     if fleet_total >= fleet_min:
         return True
-    # O156 fallback：6+ 暴风且 still 0 航母（含在产），同时离 fleet_min 只差
+    # O156 fallback：3+ 暴风且 still 0 航母（含在产），同时离 fleet_min 只差
     # 2 艘以内时，必须先把第一艘航母挤出来，避免“差一点到阈值被推平”。
     return (
         carrier_count == 0
         and pending_carrier == 0
-        and (tempest_count + pending_tempest) >= 6
+        and (tempest_count + pending_tempest) >= 3
         and fleet_total >= fleet_min - 2
     )
 
@@ -2336,6 +2454,24 @@ def probe_floor_needed(
     语义全保留。
     """
     return now <= until and not acute and workers < floor
+
+
+def probe_floor_cap(
+    is_zerg_timing: bool,
+    townhalls: int,
+    two_base_floor: int = 28,
+    one_base_floor: int = 16,
+) -> int:
+    """O353-②(o352 六局尸检):农民下限 floor 的两矿提升判据。纯逻辑,可单测。
+
+    o352 g1:两矿局 sprint 连续 240s + floor=16 把农民钉死在 16,
+    全局采矿仅 ~756/min(两矿饱和应 ~1800/min),是一切 no_money 的上游。
+    ZT 流程两矿(townhalls≥2)floor 提到 28;一矿保持 16
+    (一矿要冲刺出兵,矿给防御链)。
+    """
+    if is_zerg_timing and townhalls >= 2:
+        return two_base_floor
+    return one_base_floor
 
 
 # O147-①:关键三件(forge/首塔/GW1)—— 钉点豁免名单

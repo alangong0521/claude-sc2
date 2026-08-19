@@ -55,6 +55,10 @@ from bot.production_plans import (  # noqa: E402
     mineral_crisis_gas_stop,
     early_gas_overflow_pull,
     expand_pin_workers_ok,
+    multi_expand_threat_ok,
+    fb_missing_expand_hold,
+    fb_saving_window,
+    forge_pin_affordable,
     mothership_economy_ok,
     sg2_pin_economy_ok,
     zt_fast_expand_pin,
@@ -78,6 +82,7 @@ from bot.production_plans import (  # noqa: E402
     pivot_primary_id,
     pre_fleet_cap,
     pre_fleet_spawn,
+    probe_floor_cap,
     probe_floor_needed,
     critical_dispatch_exempt,
     hurt_retreat_needed,
@@ -107,6 +112,7 @@ from bot.production_plans import (  # noqa: E402
     serialize_presumed_cannons,
     spawn_pause_reason,
     sprint_blocks_probes,
+    sprint_timer_update,
     scout_early_redispatch_needed,
     scout_next_step,
     scout_verdict,
@@ -1137,22 +1143,26 @@ class TestCarrierQuota(unittest.TestCase):
             fleet_min=12, carrier_target=4
         ))
 
-    def test_o156_default_threshold_eight_and_first_carrier_fallback(self):
-        # O156: 默认阈值从 12 降到 8
+    def test_o352_default_threshold_four_and_first_carrier_fallback(self):
+        # O352-①: 默认阈值从 8 降到 4(o351 18 局暴风峰值 0-8,阈值 8 不可达)
         self.assertTrue(carrier_quota_active(
-            "carrier", True, tempest_count=8, carrier_count=0
+            "carrier", True, tempest_count=4, carrier_count=0
         ))
-        # 7 暴风 0 航母 → fallback（≥6 tempest & 0 carrier）
+        # 3 暴风 0 航母 → fallback(O352-① 门槛 6→3)
         self.assertTrue(carrier_quota_active(
-            "carrier", True, tempest_count=7, carrier_count=0
+            "carrier", True, tempest_count=3, carrier_count=0
         ))
-        # 5 暴风 0 航母 → 舰队规模还不够，不触发
+        # 2 暴风 0 航母 → 舰队规模还不够,不触发
         self.assertFalse(carrier_quota_active(
-            "carrier", True, tempest_count=5, carrier_count=0
+            "carrier", True, tempest_count=2, carrier_count=0
         ))
-        # 6+ 暴风但已有 1 航母 → 不触发（carrier_target 未达前按 fleet_min 算）
-        self.assertFalse(carrier_quota_active(
+        # 3+ 暴风但已有 1 航母且总数 ≥4 → 主判据触发(航母配额未满)
+        self.assertTrue(carrier_quota_active(
             "carrier", True, tempest_count=6, carrier_count=1
+        ))
+        # 总数 <4 且已有 1 航母 → fallback 不触发(等舰队成型)
+        self.assertFalse(carrier_quota_active(
+            "carrier", True, tempest_count=2, carrier_count=1
         ))
 
     def test_quota_counts_pending_fleet(self):
@@ -1167,9 +1177,12 @@ class TestCarrierQuota(unittest.TestCase):
             fleet_min=12,
         ))
         # 0 航母但已有航母在产 → fallback 不触发（等那艘航母完工）。
+        # (O352-① 后默认 fleet_min=4 会被主判据抢先触发,显式 12 保持
+        # 本用例语义)
         self.assertFalse(carrier_quota_active(
             "carrier", True, tempest_count=6, carrier_count=0,
             pending_tempest=0, pending_carrier=1,
+            fleet_min=12,
         ))
 
     def test_quota_spawn_swaps_priority(self):
@@ -3598,6 +3611,153 @@ class TestO329FastExpand(unittest.TestCase):
         self.assertFalse(zt_defense_at_natural(0, False, False))
         # rush 激活一律回退(O81 rush 教义:主基先保)
         self.assertFalse(zt_defense_at_natural(1, True, True))
+
+
+class TestO352Unlocks(unittest.TestCase):
+    """O352(o351 18 局尸检):航母产出解锁 / 三矿解锁 / forge 钉点近可负担门。"""
+
+    def test_multi_expand_threat_ok(self):
+        # O344-② 原语义:rush∧threat 同真 → 锁三矿(t<600 且敌强)
+        self.assertFalse(multi_expand_threat_ok(
+            True, True, 2, 300.0,
+            visible_enemy_army_supply=30.0, own_army_supply=10.0,
+        ))
+        # O352-② 旁路(a):时间兜底,同参数翻 True(O353-④ 从 t≥600 降到 t≥480)
+        self.assertTrue(multi_expand_threat_ok(
+            True, True, 2, 481.0,
+            visible_enemy_army_supply=30.0, own_army_supply=10.0,
+        ))
+        self.assertTrue(multi_expand_threat_ok(
+            True, True, 3, 480.0,
+            visible_enemy_army_supply=30.0, own_army_supply=10.0,
+        ))
+        # O353-④ 边界:479s 仍锁
+        self.assertFalse(multi_expand_threat_ok(
+            True, True, 2, 479.0,
+            visible_enemy_army_supply=30.0, own_army_supply=10.0,
+        ))
+        # O352-② 旁路(b):闸内放宽解除口径 max(8, 我方×1.25)
+        # 敌可见 9 < max(8, 8×1.25=10) → 视为威胁已退,放行
+        self.assertTrue(multi_expand_threat_ok(
+            True, True, 2, 300.0,
+            visible_enemy_army_supply=9.0, own_army_supply=8.0,
+        ))
+        # 敌可见 11 ≥ 10 → 仍锁
+        self.assertFalse(multi_expand_threat_ok(
+            True, True, 2, 300.0,
+            visible_enemy_army_supply=11.0, own_army_supply=8.0,
+        ))
+        # 绝对下限 8:我方 0 时敌可见 7 放行、9 锁
+        self.assertTrue(multi_expand_threat_ok(
+            True, True, 2, 300.0,
+            visible_enemy_army_supply=7.0, own_army_supply=0.0,
+        ))
+        self.assertFalse(multi_expand_threat_ok(
+            True, True, 2, 300.0,
+            visible_enemy_army_supply=9.0, own_army_supply=0.0,
+        ))
+        # 原语义保留:非 rush 或非 threat → 放行;首扩恒放行
+        self.assertTrue(multi_expand_threat_ok(
+            False, True, 2, 300.0,
+            visible_enemy_army_supply=30.0, own_army_supply=10.0,
+        ))
+        self.assertTrue(multi_expand_threat_ok(
+            True, False, 2, 300.0,
+            visible_enemy_army_supply=30.0, own_army_supply=10.0,
+        ))
+        self.assertTrue(multi_expand_threat_ok(
+            True, True, 1, 300.0,
+            visible_enemy_army_supply=30.0, own_army_supply=10.0,
+        ))
+
+    def test_fb_missing_expand_hold(self):
+        # 原语义:townhalls≥2 且 FB 真缺失 → 锁
+        self.assertTrue(fb_missing_expand_hold(2, True, 20, 300.0))
+        # O353-④ 豁免:农 ≥28 不锁(原 O352-② 的 40 不可达)
+        self.assertFalse(fb_missing_expand_hold(2, True, 28, 300.0))
+        self.assertFalse(fb_missing_expand_hold(3, True, 30, 300.0))
+        # O353-④ 豁免:t≥480 不锁(原 O352-② 的 600 触发时局已崩)
+        self.assertFalse(fb_missing_expand_hold(2, True, 20, 480.0))
+        self.assertFalse(fb_missing_expand_hold(2, True, 20, 481.0))
+        # 边界:27 农 + 479s 仍锁
+        self.assertTrue(fb_missing_expand_hold(2, True, 27, 479.0))
+        # FB 在场/单基地 → 不锁(原语义不变)
+        self.assertFalse(fb_missing_expand_hold(2, False, 30, 300.0))
+        self.assertFalse(fb_missing_expand_hold(1, True, 30, 300.0))
+
+    def test_forge_pin_affordable(self):
+        # O352-③:矿 <150 不派工/不驻点/不设 tracker;≥150 才钉
+        self.assertFalse(forge_pin_affordable(100.0))
+        self.assertFalse(forge_pin_affordable(149.0))
+        self.assertTrue(forge_pin_affordable(150.0))
+        self.assertTrue(forge_pin_affordable(300.0))
+        # 自定义造价口径
+        self.assertFalse(forge_pin_affordable(100.0, price=120.0))
+        self.assertTrue(forge_pin_affordable(120.0, price=120.0))
+
+    def test_forge_pin_affordable_threat_exempt(self):
+        # O353-①:威胁期(threat/rush 激活)免门 —— 矿 <150 也钉(救命建筑,
+        # 驻点等钱是对的);非威胁期保持矿 ≥150 门
+        self.assertTrue(forge_pin_affordable(100.0, threat_active=True))
+        self.assertTrue(forge_pin_affordable(0.0, threat_active=True))
+        self.assertFalse(forge_pin_affordable(100.0, threat_active=False))
+        self.assertTrue(forge_pin_affordable(150.0, threat_active=False))
+
+
+class TestO353SprintFloorFb(unittest.TestCase):
+    """O353(o352 六局尸检):sprint 累计制 / 两矿农民 floor / FB 攒钱窗。"""
+
+    def test_sprint_timer_jitter_keeps_age(self):
+        # O353-②:单帧抖动不清零 —— 冲刺中断 <10s,age 照累计(起点不动)
+        since, fs = sprint_timer_update(True, None, None, 200.0)
+        self.assertEqual(since, 200.0)
+        self.assertIsNone(fs)
+        # 抖动 3 帧(各 1s)不满足 → 计时保留,false_since 从首次中断起算
+        since, fs = sprint_timer_update(False, since, fs, 210.0)
+        self.assertEqual(since, 200.0)
+        self.assertEqual(fs, 210.0)
+        since, fs = sprint_timer_update(True, since, fs, 211.0)
+        self.assertEqual(since, 200.0)  # 恢复冲刺,false_since 清零
+        self.assertIsNone(fs)
+        since, fs = sprint_timer_update(False, since, fs, 212.0)
+        self.assertEqual(since, 200.0)
+
+    def test_sprint_timer_grace_exit(self):
+        # O353-②:连续 exit_grace(10s)不满足才清零(真退出);清零后可重新冲刺
+        since, fs = sprint_timer_update(True, None, None, 200.0)
+        since, fs = sprint_timer_update(False, since, fs, 250.0)
+        since, fs = sprint_timer_update(False, since, fs, 259.9)
+        self.assertEqual(since, 200.0)  # 未满 10s,仍保留
+        since, fs = sprint_timer_update(False, since, fs, 260.0)
+        self.assertIsNone(since)  # 满 10s → 清零
+        self.assertIsNone(fs)
+        since, fs = sprint_timer_update(True, since, fs, 300.0)
+        self.assertEqual(since, 300.0)  # 清零后重新冲刺从 300 起计
+
+    def test_sprint_escape_valve_60s(self):
+        # O353-②:ZT max_age=60s —— 累计 age>60 强制退出(农民恢复生产)
+        base = dict(
+            has_transition=True, defense_urgent=True, forge_ready=False,
+            first_cannon_ready=False, first_zealot_seen=False, enemy_home=0,
+            max_age=60.0,
+        )
+        self.assertTrue(defense_sprint_active(**base, sprint_age=59.0))
+        self.assertFalse(defense_sprint_active(**base, sprint_age=61.0))
+
+    def test_probe_floor_cap(self):
+        # O353-②:ZT 两矿 floor=28;一矿保持 16;非 ZT 恒 16
+        self.assertEqual(probe_floor_cap(True, 2), 28)
+        self.assertEqual(probe_floor_cap(True, 3), 28)
+        self.assertEqual(probe_floor_cap(True, 1), 16)
+        self.assertEqual(probe_floor_cap(False, 2), 16)
+
+    def test_fb_saving_window(self):
+        # O353-③:SG 就绪 + FB 无实体未派工 → 攒钱窗(虚空兜底禁用);
+        # FB 已派工/在场或无就绪 SG → 不在窗
+        self.assertTrue(fb_saving_window(True, False))
+        self.assertFalse(fb_saving_window(True, True))
+        self.assertFalse(fb_saving_window(False, False))
+        self.assertFalse(fb_saving_window(False, True))
 
 
 if __name__ == "__main__":

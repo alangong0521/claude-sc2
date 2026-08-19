@@ -9140,3 +9140,61 @@ O313 三点(塔地板 3 后置/需求封顶/threat 闸)、O314 三点
   召回纪律 vs 腐化波);②三矿时点一致性(胜局 562-582s 复现率);
   ③推进编成(追猎阈 vs 矿分配);④Harder 回归 lane(协议每
   3 轮一次,o340 后未跑)。
+
+
+## o352 结果(VH 0/6,跌破 15% 线) + O353(威胁期 forge 免门 + sprint 计时根治)
+
+**日期**:2026-08-19
+
+### o352 结果
+
+- **o352a VH 0/3 + o352b VH 0/3 = 0/6**;滚动 12 局(o351 1/6 +
+  o352 0/6)= **1/12 ≈ 8%,跌破 15% 线**。
+- 对手:VeryHard Zerg Timing,AbyssalReefLE。
+
+### o352 改动(本轮验证对象)
+
+1. **O352-① 解锁航母**:`carrier_quota_active` fleet_min 8→4
+   (fallback 6→3)、O239 气门 700→400、O260 暴风兜底 300→500、
+   O240 停探机门 800→500。
+2. **O352-② 解锁三矿**:`multi_expand_threat_ok`(t≥600 旁路 +
+   解除口径放宽)、`fb_missing_expand_hold`(40农/600s 豁免)。
+3. **O352-③ forge 钉点近可负担门**:`forge_pin_affordable`
+   (矿≥150 才派工不驻点)。
+
+### o352 尸检(六局全负)
+
+- **O352-① 未生效到求值时点**:六局全死于 233-682s 地面波,
+  舰队链(SG→FB→CARRIER)从未启动;o352a 三局连 STARGATE 都
+  是 0;o352b FB pending 长达 275s 全 no_money(O261 虚空
+  2×250 矿反抢资金窗);气烂 511-958 闲置。门槛改动成空转
+  —— **瓶颈在 FB 的 300 矿资金窗,不在任何气/数量门槛**。
+- **O352-② 未生效到求值时点**:三矿 0/6;三局死于 600s 旁路
+  激活之前;豁免(40农/t≥600)触发时局已崩。
+- **O352-③ 行为生效(零「干等 FORGE」日志)但威胁期反成永久
+  锁**:矿恒 <150 → g3(o352a)/g2(o352b)到死无 forge,首塔
+  tech_not_ready 空转 142-185s,首塔落成(301/438/从未)全部
+  晚于敌波。是本轮早亡(344-486s)的部分原因,**属引入的回归**。
+- **上游真凶**:defense_sprint 的 `_sprint_since` 被单帧抖动
+  反复重置,60s max_age 逃逸阀失效;农民被 `_probe_floor=16`
+  钉死 240s(o352b g1 采矿仅 8295 ≈756/min,两矿饱和应
+  ~1800/min)。
+- **败场形态再校准**:六局敌方零 CORRUPTOR,全是 233-560s
+  狗/毒爆/蟑螂/刺蛇地面 timing。「中局舰队墙」在更早的
+  「防御链+钱荒墙」面前还没机会出场。
+
+### O353 落地(四点,单测 691→697 绿,import 冒烟过)
+
+1. **forge_pin_affordable 加 threat_active 参数**:威胁期免门
+   恢复 critical 驻点(修 O352-③ 回归)。
+2. **sprint_timer_update + probe_floor_cap**:sprint 计时改
+   age 累计制 + 10s 滞回清零,60s 逃逸阀真正生效;ZT 两矿
+   floor 16→28。
+3. **fb_saving_window**:SG 就绪 + FB 缺失期禁 O261 虚空兜底;
+   FB critical 钉点通道确认已存在(O228)。
+4. **三矿豁免提前**:`fb_missing_expand_hold` 40农/600s→
+   28农/480s;`multi_expand_threat_ok` 旁路 600→480。
+
+**遗留风险(记入)**:FB critical 钉点被
+production_manager.py:2836 的 rush 总闸管辖,rush 期整帧跳过;
+下轮若仍见 FB pending 被 rush 闸跳过需豁免。

@@ -91,6 +91,10 @@ from bot.production_plans import (
     forge_first_pylon_yield,
     early_gas_overflow_pull,
     expand_pin_workers_ok,
+    multi_expand_threat_ok,
+    fb_missing_expand_hold,
+    fb_saving_window,
+    forge_pin_affordable,
     holding_abort_keep_first_expand,
     mothership_economy_ok,
     sg2_pin_economy_ok,
@@ -127,6 +131,7 @@ from bot.production_plans import (
     pivot_primary_id,
     pre_fleet_cap,
     pre_fleet_spawn,
+    probe_floor_cap,
     probe_floor_needed,
     redispatch_cooled_down,
     _pylon_redispatch_ok,
@@ -164,6 +169,7 @@ from bot.production_plans import (
     should_register_autosupply,
     spawn_pause_reason,
     sprint_blocks_probes,
+    sprint_timer_update,
     stargate_double_opener,
     stargate_gas_gate_bonus,
     tempest_primary_spawn,
@@ -345,6 +351,9 @@ class ProductionManager(Manager):
         self._sprint_active: bool = False
         # O130-①:冲刺起始时刻(逃逸阀计时;None=不在冲刺)
         self._sprint_since: float | None = None
+        # O353-②:冲刺中断滞回计时(连续 exit_grace 秒不满足才清零;
+        # None=上一帧在冲刺或计时器已清零)
+        self._sprint_false_since: float | None = None
         # O133-②:过渡期 timing 防御冲刺旗标(update 头部每帧重算;
         # F2 注册闸/塔目标/_rush_gateway_boost/_build_extra_production 读)
         # O144-②:判据缺省关断(无差别冲刺在非 rush 局白吃矿)→ 恒 False
@@ -1093,10 +1102,13 @@ class ProductionManager(Manager):
             and (not _early_core_missing or self._is_zerg_rush_timing())
         )
         # O130-①:逃逸阀计时(冲刺 >120s 强制退出,链断不拖死全局)
-        if _sprint and self._sprint_since is None:
-            self._sprint_since = self.ai.time
-        elif not _sprint:
-            self._sprint_since = None
+        # O353-②(o352 六局尸检):累计制滞回 —— 旧逻辑单帧 _sprint=False
+        # 即清零重计,被叉数/敌近家抖动反复重置(g1 连续 sprint 200-440s,
+        # 60s 逃逸阀形同虚设);改 sprint_timer_update:中断须连续 10s 才
+        # 清零,抖动期间 age 照累计,ZT 的 max_age=60s 真正生效。
+        self._sprint_since, self._sprint_false_since = sprint_timer_update(
+            _sprint, self._sprint_since, self._sprint_false_since, self.ai.time
+        )
         self._sprint_active = _sprint  # 供 _rush_gateway_boost 等闸外方法读
         # O133-②:过渡期 250-300 防御冲刺旗标(t≥240+过渡 active+verdict≠greedy)
         # —— 塔补到 3/GW 让位闸旁路,不管清净/威胁(timing 波必来);
@@ -2729,8 +2741,17 @@ class ProductionManager(Manager):
         ) or _zealot_sprint  # O124-③:首叉冲刺期农民也停(矿全留给首叉)
         # O146-①(元诊断:赢局退出时 15-20 农,现局被刹车家族压在 12):
         # t≤350 且非急性窗且农民 <16 → 必产,一切 yield/brake 不得压
+        # O353-②(o352 六局尸检):ZT 两矿 floor 16→28 —— g1 农民被 16
+        # 钉死 240s,全局采矿 ~756/min(两矿饱和应 ~1800/min),是一切
+        # no_money 的上游;一矿保持 16(一矿要冲刺出兵)。
         _probe_floor = probe_floor_needed(
-            self.ai.time, self.ai.supply_workers, _acute
+            self.ai.time,
+            self.ai.supply_workers,
+            _acute,
+            floor=probe_floor_cap(
+                self._opp_race == "zerg" and self._ai_build == "timing",
+                self.ai.townhalls.amount,
+            ),
         )
         # O203:经济崩溃底线——农民掉到临界值以下时,无论 rush/transition/
         # 重建窗,优先补农民。没有农民就没有矿物,没有矿物舰队/塔都造不出。
@@ -3078,10 +3099,13 @@ class ProductionManager(Manager):
         # 舰队 6-9 艘打不赢 60-90 supply 地面波。航母拦截机吸火+本体远程,
         # vs 无对空地面是质变(胜局均有 3-4 航母混编)。气烂且 FB 在时,
         # 空闲就绪星门直接点航母(每帧最多 1 座,can_afford 含 350 矿判)。
+        # O352-①(o351 18 局尸检):气门 700→400 —— 700 在 ZT 局不可达
+        # (气峰值常 300-600),O260 兜底 300 又把气提前点成暴风,航母
+        # 18 局产出全 0;400 与 O260 新门 500 错档,气先跨航母门。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and self.ai.vespene >= 700.0
+            and self.ai.vespene >= 400.0
             and self._fb_entities_now > 0
             and self.ai.can_afford(UnitID.CARRIER)
         ):
@@ -3102,10 +3126,14 @@ class ProductionManager(Manager):
         # O301-②(o300b game_03 实证):气门 500 太高 —— 气 365-507 窗星门
         # 全闲(G1 整局),暴风 175/125 本可负担却一艘不点,追猎洪水抢矿。
         # 300 以上即点(暴风气耗 125,留 175 余量给 FB/航母接力)。
+        # O352-①(o351 18 局尸检):气门 300→500 —— 300 门让气一到 300 就
+        # 点成暴风,永远攒不到 O239 航母门(新档 400),航母 18 局产出全 0;
+        # 500 > 400 让气先跨航母门,航母买不起(can_afford 含 350 矿判)
+        # 时才回落本兜底。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and self.ai.vespene >= 300.0
+            and self.ai.vespene >= 500.0
             and self._fb_entities_now > 0
             and not self.ai.can_afford(UnitID.CARRIER)
             and self.ai.can_afford(UnitID.TEMPEST)
@@ -3163,11 +3191,23 @@ class ProductionManager(Manager):
         # (9蟑螂+11狗)零对空 —— 虚空(仅需 SG)是死窗唯一的真实战力:
         # 2 艘虚空 ~20dps 无战损点杀蟑螂,o224 首胜编配里就有 3 虚空。
         # FB 就绪即停(舰队科技接管星门),最多 2 艘(300/200,不抢 FB 窗)。
+        # O353-③(o352 六局尸检):FB 攒钱窗内禁用 —— 本兜底要求 FB 缺失
+        # 才触发,恰好与 FB 攒钱窗重合(game_03 在 622s 还点 2 艘虚空,
+        # 2×250 矿反抢 FB 资金,FB pending 275s 矿恒差 300 一口气)。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and self._fb_entities_now == 0
             and not self._structure_present_or_pending(UnitID.FLEETBEACON)
+            and not fb_saving_window(
+                any(
+                    s.is_ready
+                    for s in self.manager_mediator.get_own_structures_dict[
+                        UnitID.STARGATE
+                    ]
+                ),
+                self._structure_present_or_pending(UnitID.FLEETBEACON),
+            )
             and (
                 self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.VOIDRAY)
                 + cy_unit_pending(self.ai, UnitID.VOIDRAY)
@@ -3245,11 +3285,24 @@ class ProductionManager(Manager):
         # 走位窗(opener 流水 +forge ≈800 矿 vs 窗内收入 ~1000),
         # 是工人到位银行 <400 被 ares 取消的共犯;开工后钉(落成
         # ~230s → 首塔 ~270s)仍赶上 270-300s 小股窗,塔链节奏不变。
+        # O352-③(o351 18 局尸检):近可负担门(矿 ≥150,与 O262-③
+        # 的 350 门同构)——critical 派工后驻点工人 232-300s 反复等钱
+        # (钱被探机/GW2/SG/水晶同帧即时消费抢走),forge 落成迟到
+        # 237-354s;矿不够不派工/不驻点/不设 tracker(避免 O349
+        # 看门狗误清),也不刷新 30s 节流(钱够下帧即钉)。
+        # O353-①(o352 六局尸检):威胁期(threat/rush 激活,O344-②
+        # 同款状态源)免门 —— 威胁期矿恒 <150,门成永久锁(g3 到死
+        # 无 forge,首塔 tech_not_ready 空转 142-185s);驻点等钱是
+        # 对的,forge 是救命建筑。非威胁期保持矿 ≥150 门。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and self.ai.townhalls.amount >= 2
             and not self._structure_present_or_pending(UnitID.FORGE)
+            and forge_pin_affordable(
+                self.ai.minerals,
+                threat_active=(self._threat_active or self._rush_active),
+            )
             # O340-①(o339b game_05 实证):forge 钉点失败静默 —— 预置塔链
             # 连报 tech_not_ready(108/138s)而 forge 钉点零事件,失败
             # 环节不可读;rc 簿记 + 30s 节流(与其他钉点同款)。
@@ -3399,10 +3452,18 @@ class ProductionManager(Manager):
             # 被无限封锁(2 基 47 农打 99 supply 滚死);波间隙(threat
             # 翻假)即开,O274-①「波打主基正是分矿空窗」同教义。
             # 首扩(townhalls==1)原语义不变(O274-① 已去 rush 闸)。
-            and (
-                not self._rush_active
-                or self.ai.townhalls.amount == 1
-                or not self._threat_active
+            # O352-②(o351 18 局尸检):threat latch 在持续挨打局近常真,
+            # 三矿 17/18 局从不开(唯一开出局=唯一胜局)。判据抽纯函数
+            # multi_expand_threat_ok:保留 rush∧threat 锁,加时间兜底
+            # (O353-④ 从 t≥600 下调到 t≥480)+ 闸内放宽解除口径
+            # (max(8, 我方×1.25))两道旁路。
+            and multi_expand_threat_ok(
+                rush_active=self._rush_active,
+                threat_active=self._threat_active,
+                townhalls=self.ai.townhalls.amount,
+                now=self.ai.time,
+                visible_enemy_army_supply=self._visible_enemy_army_supply(),
+                own_army_supply=self.ai.supply_used - self.ai.supply_workers,
             )
             and self.ai.minerals >= 350.0
             # O279:首波预警期暂停扩张钉点 —— 波出门后往分矿点派工人/拍
@@ -6475,9 +6536,15 @@ class ProductionManager(Manager):
         # 为真但实体永远落不了地,原「present_or_pending」门被绕过,三矿照样开。
         # O175 改用 update 头部稳定信号:连续 5s 无真正实体才视为缺失,避免
         # pending 抖动一帧破防。
-        if (
-            self.ai.townhalls.amount >= 2
-            and getattr(self, "_fb_truly_missing", False)
+        # O352-②(o351 18 局尸检):本闸与 O344-② threat 闸串联锁死三矿
+        # (FB 重建期 100s+ 内经济硬饱和也不许开)。判据抽纯函数
+        # fb_missing_expand_hold:农 ≥28 或 t≥480 豁免(O353-④ 从
+        # 40/600 下调 —— 原口径触发时局已崩,28 农 ~450s 即可达)。
+        if fb_missing_expand_hold(
+            self.ai.townhalls.amount,
+            getattr(self, "_fb_truly_missing", False),
+            self.ai.supply_workers,
+            self.ai.time,
         ):
             return False
         _fleet_total = (
@@ -6907,11 +6974,13 @@ class ProductionManager(Manager):
         ):
             return
         # O240:航母攒钱期探机(50 矿/个)同样让位,与产线暂停同口径。
+        # O352-①(o351 18 局尸检):气门 800→500 —— 800 在 ZT 局不可达
+        # (气峰值常 300-600),探机全程抢矿,航母资金窗永远凑不齐。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and not self._transition_active
-            and self.ai.vespene >= 800.0
+            and self.ai.vespene >= 500.0
             and getattr(self, "_fb_entities_now", 0) > 0
             and (
                 self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
