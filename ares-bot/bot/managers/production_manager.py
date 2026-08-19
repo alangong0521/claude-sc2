@@ -3261,19 +3261,30 @@ class ProductionManager(Manager):
             # no_placement(132-162s),分矿塔链整链卡死(274-300s 波
             # 零塔滚穿,384-389s 速败);分矿槽位全新且 forge 本就是
             # 分矿塔阵前置(司令防御集结 doctrine),一举两用。
-            _forge_base = next(
+            # O350-②(o348/o349 累计 355 次失败实证):分矿连挂 3 次
+            # 回退主基 —— 分矿 3x3 槽几何(矿线+nexus+GW2)在部分
+            # 出生点根本无解,自救水晶也铺不进;主基槽位充裕
+            # (O116 带电余 6-10 实证),forge 先立起来 > 站位教条。
+            _exp_forge = next(
                 (
                     t.position
                     for t in self.ai.townhalls
                     if t.position.distance_to(self.ai.start_location) > 5.0
                 ),
-                self.ai.start_location,
+                None,
+            )
+            self._o350_forge_fails = getattr(self, "_o350_forge_fails", 0)
+            _forge_base = (
+                self.ai.start_location
+                if (_exp_forge is None or self._o350_forge_fails >= 3)
+                else _exp_forge
             )
             _rc = self._dispatch_structure(
                 UnitID.FORGE, _forge_base, critical=True
             )
             if _rc == "dispatched" and not getattr(self, "_o333_forge_logged", False):
                 self._o333_forge_logged = True
+                self._o350_forge_fails = 0
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": "O333:forge钉点(Nexus在途,分矿塔链前置)",
@@ -3286,14 +3297,23 @@ class ProductionManager(Manager):
                 # 重试(30s 节流) forge 自然有位。O296-③ 主基首塔
                 # 自救的分矿版。
                 if _rc == "no_placement":
-                    self._dispatch_structure(
+                    self._o350_forge_fails += 1
+                    _prc = self._dispatch_structure(
                         UnitID.PYLON, _forge_base,
                         closest_to=_forge_base, needs_power=False,
                         critical=True, max_on_route=99,
                     )
+                else:
+                    _prc = "-"
+                # O350-①:失败事件带槽位三值+自救水晶 rc(下轮尸检直接
+                # 读是「无电」(带电余0)还是「无槽几何」(总=0/个位数))。
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
-                    "msg": f"O340:forge钉点失败={_rc}",
+                    "msg": (
+                        f"O340:forge钉点失败={_rc}"
+                        f"(槽{self._slot_counts_at(_forge_base, BuildingSize.THREE_BY_THREE)},"
+                        f"自救电={_prc})"
+                    ),
                 })
         # O349-①(o348a game_03 实证):forge 停滞看门狗 —— ares TechUp
         # 路径也会拍 forge 且不查 can_afford(O1 实证),工人驻点等钱
