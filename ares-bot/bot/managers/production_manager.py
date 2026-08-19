@@ -3295,10 +3295,36 @@ class ProductionManager(Manager):
                     "t": round(self.ai.time, 1),
                     "msg": f"O340:forge钉点失败={_rc}",
                 })
-        # O338-②(o337a game_03 实证):GW2 钉点随 Nexus 开工 —— 单兵营
-        # 28s/叉,波后补员是天花板(o315 实证 4-5 叉),敌 15-26 supply
-        # 波两线(主基+分矿小股)时 4-6 叉顾此失彼;双兵营产能翻倍。
-        # 位置取最近非主基基地(分矿堵口,与 O216 墙兵营同区)。
+        # O349-①(o348a game_03 实证):forge 停滞看门狗 —— ares TechUp
+        # 路径也会拍 forge 且不查 can_afford(O1 实证),工人驻点等钱
+        # 300s+(252→575s),期间 _structure_present_or_pending 恒真
+        # 把 O340 钉点锁死,主基首塔/分矿塔链 tech_not_ready 全灭
+        # (无塔期 320s+,653s 败)。无就绪 forge 且 tracker 条目
+        # >60s 未落成 → 清条目 + 钉点重派(带电自救),30s 节流
+        # (O324 runner 看门狗同构)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and not any(
+                s.is_ready
+                for s in self.manager_mediator.get_own_structures_dict[UnitID.FORGE]
+            )
+        ):
+            _forge_stale = False
+            _ftracker = self.manager_mediator.get_building_tracker_dict
+            for _tag, _info in list(_ftracker.items()):
+                if _info[TRACKER_ID] != UnitID.FORGE:
+                    continue
+                if self.ai.time - _info[TIME_ORDER_COMMENCED] > 60.0:
+                    self.manager_mediator.get_building_counter[UnitID.FORGE] -= 1
+                    _ftracker.pop(_tag)
+                    _forge_stale = True
+            if _forge_stale and not getattr(self, "_o349_forge_logged", False):
+                self._o349_forge_logged = True
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O349:forge驻点>60s未落成,清tracker重派",
+                })
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -3310,6 +3336,10 @@ class ProductionManager(Manager):
                 + self.manager_mediator.get_building_counter[UnitID.GATEWAY]
             ) < 2
         ):
+            # O338-②(o337a game_03 实证):GW2 钉点随 Nexus 开工 —— 单兵营
+            # 28s/叉,波后补员是天花板(o315 实证 4-5 叉),敌 15-26 supply
+            # 波两线(主基+分矿小股)时 4-6 叉顾此失彼;双兵营产能翻倍。
+            # 位置取最近非主基基地(分矿堵口,与 O216 墙兵营同区)。
             _gw2_base = next(
                 (
                     t.position
@@ -7129,6 +7159,15 @@ class ProductionManager(Manager):
                 })
             else:
                 # O337-③:失败 rc 可见化(同 O334-①;30s 节流已在钉点门上)
+                # O349-②(o348 全 6 局 23 次实证):SG no_placement 自救
+                # 补电 —— 主基带电 3x3 槽被 GW/core/forge/电池占满时
+                # SG 钉点空转(O348-① forge 同型),失败即贴主基钉
+                # 一根水晶(自带电源),下轮重试自然有位。
+                if _rc == "no_placement":
+                    self._dispatch_structure(
+                        UnitID.PYLON, self.ai.start_location,
+                        needs_power=False, critical=True, max_on_route=99,
+                    )
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": f"O323:SG钉点失败={_rc}",
