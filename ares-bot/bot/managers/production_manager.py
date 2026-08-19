@@ -1311,7 +1311,16 @@ class ProductionManager(Manager):
                 ExpansionController(
                     to_count=self.ai.townhalls.amount + _pending,
                     max_pending=_pending,
-                    prioritize=_preposition or self._o189_forced_expand,
+                    # O341-①:latch 期强制 prioritize(欠费先派走位,
+                    # 到位等钱)—— EC 非 prioritize 要全值 400,
+                    # 矿窗一帧后永不派工(o340a game_01/05 在途0 实证)
+                    prioritize=_preposition
+                    or self._o189_forced_expand
+                    or (
+                        getattr(self, "_o329_latched", False)
+                        and self._opp_race == "zerg"
+                        and self._ai_build == "timing"
+                    ),
                     location=_exp_loc,
                 )
             )
@@ -3142,6 +3151,12 @@ class ProductionManager(Manager):
         ):
             self._o329_logged = True
             self._o329_started_at = self.ai.time
+            # O341-①(o340a game_01/05 实证):钉点 latch —— 矿窗只开一帧
+            # (104s 摸到 350 后探机/水晶花到 35-60),EC 非 prioritize
+            # 要全值 400 永不派工(在途0 持续 300+s,514s 才开工);
+            # latch 到 Nexus 开工/rush 确认为止(解除在
+            # _want_dynamic_expand 的 O341-① 分支)。
+            self._o329_latched = True
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
                 "msg": "O329:速二矿启动(ExpansionController,120s向电脑看齐)",
@@ -6041,6 +6056,14 @@ class ProductionManager(Manager):
         # 局哑故障 200-400s),而 ExpansionController(location=口袋点)
         # 实战建成了全部 Nexus;钉点条件成立即「想开」,绕过 O216i
         # 首塔闸(塔链由 O329-③ 随 Nexus 在途铺,不再首塔先行)。
+        # O341-①(o340a game_01/05 实证):钉点 latch 生命周期 —— 矿窗
+        # 只开一帧(104s 摸到 350 后探机/水晶花到 35-60),EC 非
+        # prioritize 要全值 400 永不派工(在途0 持续 300+s);latch
+        # 到 Nexus 开工/rush 确认解除,期间「想开」+prioritize 双保。
+        if getattr(self, "_o329_latched", False) and (
+            self.ai.townhalls.amount >= 2 or self._rush_confirmed
+        ):
+            self._o329_latched = False
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
@@ -6051,6 +6074,14 @@ class ProductionManager(Manager):
                 self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
                 self._rush_confirmed,
             )
+        ):
+            return True
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and getattr(self, "_o329_latched", False)
+            and self.ai.townhalls.amount == 1
+            and not self._rush_confirmed
         ):
             return True
         if (
