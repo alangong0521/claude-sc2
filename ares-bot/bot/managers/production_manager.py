@@ -3256,29 +3256,15 @@ class ProductionManager(Manager):
             and self.ai.time - getattr(self, "_o333_forge_last", 0.0) > 30.0
         ):
             self._o333_forge_last = self.ai.time
-            # O344-①(o343b game_02/03 实证):forge 落位改分矿 —— 主基
-            # 带电 3x3 槽被 GW/core/电池占满,forge 钉点连报
-            # no_placement(132-162s),分矿塔链整链卡死(274-300s 波
-            # 零塔滚穿,384-389s 速败);分矿槽位全新且 forge 本就是
-            # 分矿塔阵前置(司令防御集结 doctrine),一举两用。
-            # O350-②(o348/o349 累计 355 次失败实证):分矿连挂 3 次
-            # 回退主基 —— 分矿 3x3 槽几何(矿线+nexus+GW2)在部分
-            # 出生点根本无解,自救水晶也铺不进;主基槽位充裕
-            # (O116 带电余 6-10 实证),forge 先立起来 > 站位教条。
-            _exp_forge = next(
-                (
-                    t.position
-                    for t in self.ai.townhalls
-                    if t.position.distance_to(self.ai.start_location) > 5.0
-                ),
-                None,
-            )
-            self._o350_forge_fails = getattr(self, "_o350_forge_fails", 0)
-            _forge_base = (
-                self.ai.start_location
-                if (_exp_forge is None or self._o350_forge_fails >= 3)
-                else _exp_forge
-            )
+            # O351-①(o350 槽位取证实证):forge 落位永久回主基 ——
+            # O344-① 的「forge 是分矿塔阵前置,站位跟着防御走」
+            # 教条证伪终结:① forge 是全局科技建筑(升级/解锁),
+            # 站位零战力贡献,防御集结的是塔/电池/墙不是 forge;
+            # ② 分矿 3x3 带电槽 = 0 常驻(o350:空闲 11-25 但带电
+            # 0/11-25,自救电水晶落点偏离塔位槽区,铺不进);
+            # ③ 主基有 O337-② 锚点补电自救(o336 实证带电余
+            # 0→4→10 恢复,o335-o340 胜期 forge 全在主基)。
+            _forge_base = self.ai.start_location
             _rc = self._dispatch_structure(
                 UnitID.FORGE, _forge_base, critical=True
             )
