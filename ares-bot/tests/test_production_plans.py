@@ -67,6 +67,9 @@ from bot.production_plans import (  # noqa: E402
     cannon_stall_rescue,
     ms_window_fleet_suppressed,
     mothership_supply_ok,
+    pin_reanchor,
+    zt_forge_pin_gate,
+    event_throttle_ok,
     tempest_dump_suppressed,
     cannon_capped,
     sg2_pin_economy_ok,
@@ -3951,6 +3954,64 @@ class TestO356MothershipWindowCannonRescue(unittest.TestCase):
         self.assertFalse(mothership_supply_ok(9.9))
         self.assertFalse(mothership_supply_ok(1.0))
         self.assertFalse(mothership_supply_ok(0.0))
+
+
+class TestO357ReanchorForgeFirstObservability(unittest.TestCase):
+    """O357(o356 尸检):死槽拉黑换锚 / 母舰块前移 / ZT forge-first 门 / 事件节流。"""
+
+    def test_pin_reanchor(self):
+        # O357-①:带电优先 —— 带电槽再远也先于不带电槽(o356 右下
+        # 死槽 (0,23,25):空闲 23 但带电 0,只挑空闲会重现死槽)
+        slots = [(5.0, 0.0, True, False), (50.0, 0.0, True, True)]
+        self.assertEqual(pin_reanchor(slots, (0.0, 0.0), []), (50.0, 0.0))
+        # 同带电性 → 离致死波入口(斜坡口)更近优先
+        slots2 = [(30.0, 0.0, True, True), (10.0, 0.0, True, True)]
+        self.assertEqual(pin_reanchor(slots2, (0.0, 0.0), []), (10.0, 0.0))
+        # 拉黑(取整坐标)后换下一锚 —— 再失败不回头重试死点
+        self.assertEqual(
+            pin_reanchor(slots2, (0.0, 0.0), [(10, 0)]), (30.0, 0.0)
+        )
+        # 占用槽不参与;全占/全黑/无槽 → None(调用方保持原锚点)
+        self.assertIsNone(pin_reanchor([(10.0, 0.0, False, True)], (0.0, 0.0), []))
+        self.assertIsNone(pin_reanchor(slots2, (0.0, 0.0), [(10, 0), (30, 0)]))
+        self.assertIsNone(pin_reanchor([], (0.0, 0.0), []))
+
+    def test_mothership_block_before_carrier(self):
+        # O357-②:O264 母舰块必须在 O239 航母块之前执行(o356b g2
+        # 两次同帧截胡实证);源码顺序回归锁,防后续改动悄悄挪回。
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "bot", "managers", "production_manager.py",
+        )
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        ms_pos = src.index("_ms_order_ready = (")
+        carrier_pos = src.index('"msg": f"O239:气烂银行点航母')
+        self.assertLess(
+            ms_pos, carrier_pos, "O264 母舰块必须在 O239 航母块之前"
+        )
+        # 全文件只此一处母舰下单判据(移动而非复制)
+        self.assertEqual(src.count("_ms_order_ready = ("), 1)
+
+    def test_zt_forge_pin_gate(self):
+        # O357-③:Nexus 开工(townhalls≥2)放行(旧 O333 语义保留)
+        self.assertTrue(zt_forge_pin_gate(2, 30.0))
+        self.assertTrue(zt_forge_pin_gate(3, 200.0))
+        # t≥60 即放行 —— forge ≤150s 落成确定性,不再 dice roll
+        self.assertTrue(zt_forge_pin_gate(1, 60.0))
+        self.assertTrue(zt_forge_pin_gate(1, 104.5))
+        # 单矿且 t<60 → 不钉(opener 早期资金窗零干扰)
+        self.assertFalse(zt_forge_pin_gate(1, 59.9))
+        self.assertFalse(zt_forge_pin_gate(1, 30.0))
+
+    def test_event_throttle_ok(self):
+        # O357-④:O340 同规约 30s 节流 —— 只节流言不节流行为
+        self.assertTrue(event_throttle_ok(530.0, 0.0))
+        self.assertTrue(event_throttle_ok(560.0, 530.0))
+        self.assertFalse(event_throttle_ok(559.9, 530.0))
+        # 显式 interval
+        self.assertTrue(event_throttle_ok(100.0, 50.0, interval=10.0))
+        self.assertFalse(event_throttle_ok(55.0, 50.0, interval=10.0))
 
 
 if __name__ == "__main__":

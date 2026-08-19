@@ -104,6 +104,9 @@ from bot.production_plans import (
     cannon_stall_rescue,
     ms_window_fleet_suppressed,
     mothership_supply_ok,
+    pin_reanchor,
+    zt_forge_pin_gate,
+    event_throttle_ok,
     tempest_dump_suppressed,
     cannon_capped,
     sg2_pin_economy_ok,
@@ -381,6 +384,13 @@ class ProductionManager(Manager):
         # O356-②d(o355b g1 实证):母舰 supply 卡死自救水晶的钉点节流
         # (终局 199/200 全资金满足却下不了单;30s 节流防刷)。
         self._o356_supply_pin_ts: float = 0.0
+        # O357-①(o356 尸检):右下出生点死槽拉黑换锚台账 ——
+        # {sid: {"anchor": (x,y)|None, "blacklist": [(rx,ry), ...]}};
+        # forge/机械台钉点 no_placement 即换锚(见 _dispatch_pin_reanchor)。
+        self._o357_reanchor: dict = {}
+        # O357-④a(o356b g3 实证):O239 航母点单簿记的 30s 节流时刻
+        # (只节流言不节流下单;同秒 8-14 条刷屏实证)。
+        self._o239_log_ts: float = 0.0
         # O133-②:过渡期 timing 防御冲刺旗标(update 头部每帧重算;
         # F2 注册闸/塔目标/_rush_gateway_boost/_build_extra_production 读)
         # O144-②:判据缺省关断(无差别冲刺在非 rush 局白吃矿)→ 恒 False
@@ -2766,9 +2776,15 @@ class ProductionManager(Manager):
                     closest_to=_anchor, needs_power=False, critical=True,
                     max_on_route=99,
                 )
+                # O357-④b(o356 尸检):死等自救独立事件标签 —— 旧版触发
+                # 与否不可判读;带死等时长,尸检直接读自救何时开火。
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
-                    "msg": f"O356:首塔死等自救补电(派工={_dispatch},自救电={_prc356})",
+                    "msg": (
+                        f"O357:首塔死等自救"
+                        f"(死等{self.ai.time - self._o356_cannon_fail_since:.0f}s,"
+                        f"派工={_dispatch},自救电={_prc356})"
+                    ),
                 })
 
         # custom behavior for all other production, using ares-sc2 to help
@@ -3179,84 +3195,13 @@ class ProductionManager(Manager):
         # 落位静默失败/tracker 泄漏,见方法注释)。_fleet_starved 豁免只管注册,
         # 不管"注册了但永远建不出来"。
         self._fleet_stall_watchdog(structures_dict)
-        # O239(o237 多局尸检):气烂 ≥700 而矿恒 <100 的局,暴风(250 矿)产不动,
-        # 舰队 6-9 艘打不赢 60-90 supply 地面波。航母拦截机吸火+本体远程,
-        # vs 无对空地面是质变(胜局均有 3-4 航母混编)。气烂且 FB 在时,
-        # 空闲就绪星门直接点航母(每帧最多 1 座,can_afford 含 350 矿判)。
-        # O352-①(o351 18 局尸检):气门 700→400 —— 700 在 ZT 局不可达
-        # (气峰值常 300-600),O260 兜底 300 又把气提前点成暴风,航母
-        # 18 局产出全 0;400 与 O260 新门 500 错档,气先跨航母门。
-        # O356-②a(o355a g2 实证):母舰资金窗内抑制 —— 794.2s 在气 614
-        # 时花 350 矿点航母,母舰只差 ≤50 矿被截胡;与 O260 的
-        # not self._ms_window 同口径,窗随矿 ≥400 自动关(自校正)。
-        if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
-            and self.ai.vespene >= 400.0
-            and self._fb_entities_now > 0
-            and self.ai.can_afford(UnitID.CARRIER)
-            and not self._ms_window
-        ):
-            for _sg in self.manager_mediator.get_own_structures_dict[
-                UnitID.STARGATE
-            ]:
-                if _sg.is_ready and _sg.is_idle:
-                    _sg.train(UnitID.CARRIER)
-                    self.ai._events.append({
-                        "t": round(self.ai.time, 1),
-                        "msg": f"O239:气烂银行点航母(气={self.ai.vespene:.0f})",
-                    })
-                    break
-        # O260-②(o259b-g02 实证):航母买不起(矿恒 <350)但暴风买得起且气
-        # ≥500 → 空闲星门先点暴风。save_up 截断(航母占比落后只留航母)把
-        # 星门押给永远凑不齐的 350 矿,气 1000+ 烂 300s 只产 1 暴风 1 航母;
-        # 舰队数量 > 完美配比,暴风落地即战力。
-        # O301-②(o300b game_03 实证):气门 500 太高 —— 气 365-507 窗星门
-        # 全闲(G1 整局),暴风 175/125 本可负担却一艘不点,追猎洪水抢矿。
-        # 300 以上即点(暴风气耗 125,留 175 余量给 FB/航母接力)。
-        # O352-①(o351 18 局尸检):气门 300→500 —— 300 门让气一到 300 就
-        # 点成暴风,永远攒不到 O239 航母门(新档 400),航母 18 局产出全 0;
-        # 500 > 400 让气先跨航母门,航母买不起(can_afford 含 350 矿判)
-        # 时才回落本兜底。
-        # O354-①(o353 五局尸检):航母破零优先 —— 航母(含在产)<2 且
-        # 暴风 <4 时不点暴风(game_01 气 886 点了第 7 艘暴风而非第 2 艘
-        # 航母;矿是唯一硬约束,留给 O239 的 350 矿航母订单)。
-        # O354-②:母舰资金窗内同抑制(矿让给母舰 400)。
-        if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
-            and self.ai.vespene >= 500.0
-            and self._fb_entities_now > 0
-            and not self.ai.can_afford(UnitID.CARRIER)
-            and self.ai.can_afford(UnitID.TEMPEST)
-            and not self._ms_window
-            and not tempest_dump_suppressed(
-                carriers=(
-                    self.manager_mediator.get_own_unit_count(
-                        unit_type_id=UnitID.CARRIER
-                    )
-                    + cy_unit_pending(self.ai, UnitID.CARRIER)
-                ),
-                tempests=(
-                    self.manager_mediator.get_own_unit_count(
-                        unit_type_id=UnitID.TEMPEST
-                    )
-                    + cy_unit_pending(self.ai, UnitID.TEMPEST)
-                ),
-                fb_ready=self._fb_entities_now > 0,
-                vespene=self.ai.vespene,
-            )
-        ):
-            for _sg in self.manager_mediator.get_own_structures_dict[
-                UnitID.STARGATE
-            ]:
-                if _sg.is_ready and _sg.is_idle:
-                    _sg.train(UnitID.TEMPEST)
-                    self.ai._events.append({
-                        "t": round(self.ai.time, 1),
-                        "msg": f"O260:气烂点暴风兜底(气={self.ai.vespene:.0f})",
-                    })
-                    break
+        # O357-②(o356b g2/o355a g2 实证):O264 母舰块前移到 O239 航母块
+        # 之前 —— 旧序 O239 在前,ms_window 判据是「矿<400」,矿一跨
+        # 400 窗关、O239 同帧先花 350 矿点航母(o356b g2:747.3→749.9、
+        # 791.5→791.7 两次实锤;o355a g2:794.2s 同款;o356b g2 窗开
+        # ~10 次母舰 0 艘)。母舰块每帧先判:买得起就先下母舰,同帧
+        # 截胡结构性消除。O356-② 的 supply 门与钉水晶自救原样保留
+        # (本块 if/elif),O239/O260 的 not self._ms_window 抑制不动。
         # O264-②(司令观察③):舰队 ≥3 艘后补母舰 —— 隐身场(Cloaking Field)
         # 覆盖航母/暴风/地面混编,Zerg Timing AI 反隐靠眼虫、推进通常不带,
         # 隐身期舰队存活显著拉长;母舰本体还有光束输出。只吃烂气窗口
@@ -3321,6 +3266,89 @@ class ProductionManager(Manager):
                     f"(左{self.ai.supply_left:.0f},自救电={_prc_ms})"
                 ),
             })
+        # O239(o237 多局尸检):气烂 ≥700 而矿恒 <100 的局,暴风(250 矿)产不动,
+        # 舰队 6-9 艘打不赢 60-90 supply 地面波。航母拦截机吸火+本体远程,
+        # vs 无对空地面是质变(胜局均有 3-4 航母混编)。气烂且 FB 在时,
+        # 空闲就绪星门直接点航母(每帧最多 1 座,can_afford 含 350 矿判)。
+        # O352-①(o351 18 局尸检):气门 700→400 —— 700 在 ZT 局不可达
+        # (气峰值常 300-600),O260 兜底 300 又把气提前点成暴风,航母
+        # 18 局产出全 0;400 与 O260 新门 500 错档,气先跨航母门。
+        # O356-②a(o355a g2 实证):母舰资金窗内抑制 —— 794.2s 在气 614
+        # 时花 350 矿点航母,母舰只差 ≤50 矿被截胡;与 O260 的
+        # not self._ms_window 同口径,窗随矿 ≥400 自动关(自校正)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.vespene >= 400.0
+            and self._fb_entities_now > 0
+            and self.ai.can_afford(UnitID.CARRIER)
+            and not self._ms_window
+        ):
+            for _sg in self.manager_mediator.get_own_structures_dict[
+                UnitID.STARGATE
+            ]:
+                if _sg.is_ready and _sg.is_idle:
+                    _sg.train(UnitID.CARRIER)
+                    # O357-④a(o356b g3 实证):30s 节流簿记(O340 同规约)
+                    # —— 旧版逐帧 append(同秒 8-14 条,514-530s 持续
+                    # 刷屏,日志不可读);下单行为本身不节流,只节流言。
+                    if event_throttle_ok(self.ai.time, self._o239_log_ts):
+                        self._o239_log_ts = self.ai.time
+                        self.ai._events.append({
+                            "t": round(self.ai.time, 1),
+                            "msg": f"O239:气烂银行点航母(气={self.ai.vespene:.0f})",
+                        })
+                    break
+        # O260-②(o259b-g02 实证):航母买不起(矿恒 <350)但暴风买得起且气
+        # ≥500 → 空闲星门先点暴风。save_up 截断(航母占比落后只留航母)把
+        # 星门押给永远凑不齐的 350 矿,气 1000+ 烂 300s 只产 1 暴风 1 航母;
+        # 舰队数量 > 完美配比,暴风落地即战力。
+        # O301-②(o300b game_03 实证):气门 500 太高 —— 气 365-507 窗星门
+        # 全闲(G1 整局),暴风 175/125 本可负担却一艘不点,追猎洪水抢矿。
+        # 300 以上即点(暴风气耗 125,留 175 余量给 FB/航母接力)。
+        # O352-①(o351 18 局尸检):气门 300→500 —— 300 门让气一到 300 就
+        # 点成暴风,永远攒不到 O239 航母门(新档 400),航母 18 局产出全 0;
+        # 500 > 400 让气先跨航母门,航母买不起(can_afford 含 350 矿判)
+        # 时才回落本兜底。
+        # O354-①(o353 五局尸检):航母破零优先 —— 航母(含在产)<2 且
+        # 暴风 <4 时不点暴风(game_01 气 886 点了第 7 艘暴风而非第 2 艘
+        # 航母;矿是唯一硬约束,留给 O239 的 350 矿航母订单)。
+        # O354-②:母舰资金窗内同抑制(矿让给母舰 400)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and self.ai.vespene >= 500.0
+            and self._fb_entities_now > 0
+            and not self.ai.can_afford(UnitID.CARRIER)
+            and self.ai.can_afford(UnitID.TEMPEST)
+            and not self._ms_window
+            and not tempest_dump_suppressed(
+                carriers=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER
+                    )
+                    + cy_unit_pending(self.ai, UnitID.CARRIER)
+                ),
+                tempests=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST
+                    )
+                    + cy_unit_pending(self.ai, UnitID.TEMPEST)
+                ),
+                fb_ready=self._fb_entities_now > 0,
+                vespene=self.ai.vespene,
+            )
+        ):
+            for _sg in self.manager_mediator.get_own_structures_dict[
+                UnitID.STARGATE
+            ]:
+                if _sg.is_ready and _sg.is_idle:
+                    _sg.train(UnitID.TEMPEST)
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": f"O260:气烂点暴风兜底(气={self.ai.vespene:.0f})",
+                    })
+                    break
         # O261-①(o224 胜局编配实证 + o254-o260 累计 0-58 死窗尸检):ZT 直爬
         # SG 就绪(261-281s)→FB 就绪(~385s)之间星门空转 100s+,而死窗波
         # (9蟑螂+11狗)零对空 —— 虚空(仅需 SG)是死窗唯一的真实战力:
@@ -3431,10 +3459,16 @@ class ProductionManager(Manager):
         # 对的,forge 是救命建筑。非威胁期保持矿 ≥150 门。
         # O354-⑤(o353b game_01 实证):非威胁期门 150→100(矿 254-380s
         # 持续 50-95,门恒关 forge 拖到 361.6s);威胁期免门不动。
+        # O357-③(o356 尸检):townhalls≥2 门改 zt_forge_pin_gate ——
+        # 左上开局 forge 落点原是 dice roll(forge-first 104.5s vs
+        # cyber-first 等 Nexus 钉点 217-237s,首塔 301s+ 晚于致死窗
+        # 274-322s);t≥60 即放行(矿 ≥100 近可负担门不变),forge
+        # ≤150s 落成成为确定性。rush 墙 fallback(threat/rush 免矿门)
+        # 不动。
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and self.ai.townhalls.amount >= 2
+            and zt_forge_pin_gate(self.ai.townhalls.amount, self.ai.time)
             and not self._structure_present_or_pending(UnitID.FORGE)
             and forge_pin_affordable(
                 self.ai.minerals,
@@ -3455,15 +3489,18 @@ class ProductionManager(Manager):
             # ③ 主基有 O337-② 锚点补电自救(o336 实证带电余
             # 0→4→10 恢复,o335-o340 胜期 forge 全在主基)。
             _forge_base = self.ai.start_location
-            _rc = self._dispatch_structure(
-                UnitID.FORGE, _forge_base, critical=True
-            )
+            # O357-①(o356 尸检):右下出生点死槽拉黑换锚 —— 首次
+            # no_placement 即加黑当前锚点并重选(带电优先、离斜坡口
+            # 更近优先,显式 closest_to),验收口径:右下 forge 落成
+            # <150s。下方 O348-① 自救水晶保留,但只补纯电问题
+            # (带电余=0);placement 几何故障走本换锚,不走补电。
+            _rc = self._dispatch_pin_reanchor(UnitID.FORGE, _forge_base)
             if _rc == "dispatched" and not getattr(self, "_o333_forge_logged", False):
                 self._o333_forge_logged = True
                 self._o350_forge_fails = 0
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
-                    "msg": "O333:forge钉点(Nexus在途,分矿塔链前置)",
+                    "msg": "O333:forge钉点(O357门放行,分矿塔链前置)",
                 })
             elif _rc != "dispatched":
                 # O348-①(o347 全 6 局实证):forge no_placement 自救补电
@@ -3739,8 +3776,11 @@ class ProductionManager(Manager):
             _robo_base = (
                 _robo_others[0].position if _robo_others else self.ai.start_location
             )
-            _robo_result = self._dispatch_structure(
-                UnitID.ROBOTICSFACILITY, _robo_base, critical=True
+            # O357-①(o356 尸检):机械台与 forge 走同一死槽拉黑换锚
+            # 机制 —— 右下出生点机械台同样三连 no_placement;首次
+            # 失败即换锚(带电优先、离主基斜坡口更近优先)。
+            _robo_result = self._dispatch_pin_reanchor(
+                UnitID.ROBOTICSFACILITY, _robo_base
             )
             # O245f(o245e 双 lane game_01 实证):建台派工反复尝试零落成,
             # 失败环节(no_worker/no_placement/taken/tech_not_ready)取证,
@@ -7099,6 +7139,69 @@ class ProductionManager(Manager):
             worker=worker, structure_type=sid, pos=placement
         )
         return "dispatched"
+
+    def _dispatch_pin_reanchor(self, sid, base_location) -> str:
+        """O357-①(o356 尸检):死槽拉黑换锚派工 —— _dispatch_structure
+        的钉点包装:critical 派工;no_placement 即把当前锚点(坐标
+        取整)加进拉黑集,并在该基地空闲 3x3 槽中按「带电优先、离
+        致死波入口(主基斜坡口)更近优先」重选新锚(pin_reanchor),
+        下次派工显式 closest_to=新锚 —— o355 已查明 ares
+        request_building_placement 无 radius 参数,坐标级控制只能
+        走 closest_to(任务书方案 a)。
+        o356 实证:AbyssalReefLE 右下出生点(50% 概率)主基 forge
+        钉点 ~135s 起确定性 no_placement(槽位三值 (0,23,25),多轮
+        4/4 局逐帧一致),自救水晶全落地但无效(几何故障不是没电),
+        机械台同样三连 no_placement。验收口径:右下 forge 落成
+        <150s。纯电问题(带电余=0)仍由 O356-① 自救水晶负责 —
+        换锚与补电不冲突(几何走换锚,没电走补电)。
+        """
+        st = self._o357_reanchor.setdefault(
+            sid, {"anchor": None, "blacklist": []}
+        )
+        rc = self._dispatch_structure(
+            sid,
+            base_location,
+            closest_to=(
+                Point2(st["anchor"]) if st["anchor"] is not None else None
+            ),
+            critical=True,
+        )
+        if rc != "no_placement":
+            return rc
+        _tried = (
+            st["anchor"]
+            if st["anchor"] is not None
+            else (base_location.x, base_location.y)
+        )
+        _key = (round(_tried[0]), round(_tried[1]))
+        if _key not in st["blacklist"]:
+            st["blacklist"].append(_key)
+        _ramp = getattr(self.ai, "main_base_ramp", None)
+        if _ramp is None or getattr(_ramp, "top_center", None) is None:
+            return rc
+        _ready_pylons = [
+            s
+            for s in self.manager_mediator.get_own_structures_dict[UnitID.PYLON]
+            if s.is_ready
+        ]
+        _heights = self.ai.game_info.terrain_height.data_numpy
+        _slots = [
+            (x, y, free, cy_pylon_matrix_covers(Point2((x, y)), _ready_pylons, _heights))
+            for x, y, free in self._free_3x3_slots_at(base_location)
+        ]
+        _new = pin_reanchor(
+            _slots, (_ramp.top_center.x, _ramp.top_center.y), st["blacklist"]
+        )
+        if _new is not None and _new != st["anchor"]:
+            st["anchor"] = _new
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O357:{sid.name}死槽换锚(黑{len(st['blacklist'])},"
+                    f"新锚=({_new[0]:.0f},{_new[1]:.0f}))"
+                ),
+            })
+        return rc
 
     def _first_cannon_anchor(self):
         """O356-①(o355 尸检):首塔钉点锚点 —— rush_cannon_bypass 派工与

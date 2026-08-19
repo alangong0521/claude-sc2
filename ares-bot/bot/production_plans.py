@@ -1490,6 +1490,37 @@ def forge_pin_affordable(
     return minerals >= price
 
 
+def zt_forge_pin_gate(
+    townhalls: int,
+    now: float,
+    min_t: float = 60.0,
+) -> bool:
+    """O357-③(o356 尸检):ZT forge 钉点门 —— 确定性 forge-first。纯逻辑,可单测。
+
+    o356 尸检:开局 forge 落点是 dice roll —— forge-first(104.5s,
+    o355 胜局走这条)vs cyber-first(forge 等 O333 的 Nexus 钉点
+    217-237s,o356a g3/o356b g3 走这条,首塔 301s+ 晚于 274-322s
+    致死窗)。钉点不再干等 Nexus 开工(townhalls≥2):t≥min_t 即
+    放行(forge_pin_affordable 的矿 ≥100 近可负担门不变,钱够下帧
+    即钉),forge ≤150s 落成从 dice roll 变确定性。60s 前不放行 —
+    opener 早期资金窗(水晶/兵营/钉点 400 矿)零干扰。rush 墙
+    fallback(threat/rush 激活免矿门)与 ms_window/capped 拦截不在
+    本门语义内,不受影响。
+    """
+    return townhalls >= 2 or now >= min_t
+
+
+def event_throttle_ok(now: float, last_ts: float, interval: float = 30.0) -> bool:
+    """O357-④(O340 同规约):事件簿记节流判据。纯逻辑,可单测。
+
+    只节流言、不节流行为:距上次簿记 ≥interval 秒才再记一次,下单/
+    派工动作本身每帧照常。O340 首扩诊断/O356 母舰 supply 钉点的
+    30s 规约显式化(O239 航母点单簿记用,o356b g3 同秒 8-14 条
+    刷屏实证)。
+    """
+    return now - last_ts >= interval
+
+
 def fb_saving_window(sg_ready: bool, fb_present_or_pending: bool) -> bool:
     """O353-③(o352 六局尸检):FB 攒钱窗判据(虚空兜底禁用窗)。纯逻辑,可单测。
 
@@ -1638,6 +1669,39 @@ def second_rescue_pylon_needed(
     dx = rescue_anchor[0] - cannon_xy[0]
     dy = rescue_anchor[1] - cannon_xy[1]
     return dx * dx + dy * dy > power_radius * power_radius
+
+
+def pin_reanchor(
+    slots: list,
+    ramp_xy: tuple[float, float],
+    blacklist: list,
+) -> tuple[float, float] | None:
+    """O357-①(o356 尸检):钉点死槽拉黑换锚。纯逻辑,可单测。
+
+    o356 实证:AbyssalReefLE 右下出生点(50% 出生概率)主基 forge
+    钉点 ~135s 起确定性 no_placement(槽位三值 (0,23,25),多轮
+    4/4 局逐帧一致),O356-① 自救水晶全部正常落地但无效 —— 是不
+    可放置(几何)不是没电;机械台同样三连 no_placement,o356b
+    game_01 右下 365s 早亡 forge/塔终生 0。钉点 no_placement 即把
+    当前锚点(坐标取整)加黑,下次派工显式 closest_to=新锚:主基
+    空闲 3x3 槽里「带电优先、离致死波入口(主基斜坡口)更近优先」
+    重选一位。无候选 → None(调用方保持原锚点,O356 自救水晶照常
+    补纯电问题)。
+    slots: [(x, y, free, powered), ...](_free_3x3_slots_at 加电力
+    标注);blacklist: [(round(x), round(y)), ...]。
+    """
+    rx, ry = ramp_xy
+    cands = [
+        (x, y, powered)
+        for x, y, free, powered in slots
+        if free and (round(x), round(y)) not in blacklist
+    ]
+    if not cands:
+        return None
+    x, y, _ = min(
+        cands, key=lambda s: (not s[2], (s[0] - rx) ** 2 + (s[1] - ry) ** 2)
+    )
+    return (x, y)
 
 
 def cannon_stall_rescue(
