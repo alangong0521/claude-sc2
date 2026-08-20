@@ -4746,7 +4746,12 @@ def fb_fund_probe_brake(
     return minerals < fb_minerals and workers >= min_workers
 
 
-def fb_bankrupt_needed(no_money_streak: int, threshold: int = 3) -> bool:
+def fb_bankrupt_needed(
+    no_money_streak: int,
+    threshold: int = 3,
+    fb_missing_s: float | None = None,
+    missing_window: float = 120.0,
+) -> bool:
     """O368-①b(o367 双 lane 尸检):FB 破产分支触发判据。纯逻辑,可单测。
 
     o367a 实证:O110「FB 建造停滞>45s 自救=no_money」从 330-362s 起
@@ -4756,8 +4761,15 @@ def fb_bankrupt_needed(no_money_streak: int, threshold: int = 3) -> bool:
     电池钉点/第 2+ 星门/升级,保命塔除外),直到 FB 钉下去或 threat
     激活。对单建筑的窄域暂停(O360 单建筑基金窗先例),不是全局
     资金冻结(O106 证伪边界不动)。
+    O369-①b(o368 双 lane 尸检):触发口径放宽 —— ① no_money 改
+    **累计** ≥threshold(不再要求连续:o368a g2 破产分支 526s 被
+    threat 解除后 rush 常亮,连击再也攒不到 3,FB 到死没落);
+    ② FB 缺失超 missing_window 秒直接触发(调用方只在 SG 就绪
+    且 truly_missing 口径下传 fb_missing_s,opener 期不误触)。
     """
-    return no_money_streak >= threshold
+    return no_money_streak >= threshold or (
+        fb_missing_s is not None and fb_missing_s >= missing_window
+    )
 
 
 def fb_bankrupt_cleared(fb_entities: int, threat_active: bool) -> bool:
@@ -4766,6 +4778,10 @@ def fb_bankrupt_cleared(fb_entities: int, threat_active: bool) -> bool:
     FB 实体出现(钉下去了,含在建)或 threat/rush 激活(被骑脸时
     防御链恢复优先)→ 解除暂停;无 latch,解除后 O110 连击计数
     重新积累,再破产再进。
+    O369-①b(o368a g2 实证):解除去掉 rush 常亮屏蔽 —— g2 破产
+    分支 526s 被 threat 解除后 rush 常亮,旧口径(threat or rush)
+    下 latch 再也保不住;调用方改只传 threat_active(rush 期也保
+    latch,只有 threat_active 才临时解除)。
     """
     return fb_entities > 0 or threat_active
 
@@ -4916,6 +4932,189 @@ def fb_arrival_guard_active(
     if fb_building:
         return True
     return fb_completed_at is not None and now - fb_completed_at < window
+
+
+def fb_fund_latch_needed(
+    sg_ready: bool,
+    fb_entities: int,
+    threat_active: bool,
+    minerals: float,
+    vespene: float,
+    fb_minerals: float = 300.0,
+    fb_gas: float = 200.0,
+) -> bool:
+    """O369-①a(o368 双 lane 尸检):FB fund-first latch 常态判据。
+    纯逻辑,可单测。
+
+    o368a 实证:O368-①a 把基金窗判据改矿≥300 后 Timing 三局窗
+    0 开(受压经济矿存永远够不到 300),FB 全靠 O110 no_money
+    自救硬钉,g2 连钉 12 次(374→825s)落成 0 次 —— 矿 5-756
+    反复被 Nexus/塔/电池/虚空抢走。改 latch 常态生效:SG 就绪
+    且 FB 无实体且非 threat 且(矿 <fb_minerals 或气 <fb_gas)
+    → 调用方停一切非保命支出(升级/SG2/分矿塔/电池 + 探机(农
+    ≥28)/三矿+,保命塔与二矿未成交的 Nexus 豁免),攒够 300+200
+    即钉。单建筑窄域暂停(O360 基金窗/O368 破产分支同谱系的
+    加强),非全局资金冻结(O106 证伪边界不动)。
+    """
+    return (
+        sg_ready
+        and fb_entities == 0
+        and not threat_active
+        and (minerals < fb_minerals or vespene < fb_gas)
+    )
+
+
+def fb_latch_stalled(
+    stall_since: float | None,
+    now: float,
+    window: float = 30.0,
+) -> bool:
+    """O369-①c(o368 尸检):FB latch 健康监控 —— latch 期矿净积累
+    ≤0 持续 ≥window 秒 → 临时解除(调用方 60s 后重评估)。纯逻辑,
+    可单测。
+
+    与 O367-① 基金窗健康监控同教义:latch 的职责是攒矿,攒不动
+    (受压局收入=支出)就别压 —— 暂停面再宽,零积累时它只压经济
+    不攒 FB。stall_since: 最近一次 10s 采样仍零积累的起点(None=
+    上一采样矿在涨,健康)。
+    """
+    return stall_since is not None and now - stall_since >= window
+
+
+def sg_idle_reset_needed(ready_sg: int, fleet_busy: bool) -> bool:
+    """O369-②a(o368a g2 实证):星门空转计时器销账判据。纯逻辑,
+    可单测。
+
+    o368a g2 实证:自救报空转 223s(设计 60s)—— 旧口径「就绪
+    SG 全闲,任何在产即销账」被在产虚空/先知(O261 死窗兜底/
+    oracle 产线)打断:填线在产 ≠ 舰队产线复活,却把计时反复
+    归零。新口径:只有「无就绪 SG」或「有 SG 在产舰队单位
+    (TEMPEST/CARRIER)」才销账;在产 VOIDRAY/ORACLE(填线)
+    保留计时(填线本身就是空转期的产物,不该销空转的证据)。
+    """
+    return ready_sg == 0 or fleet_busy
+
+
+def sg_post_fb_fill(
+    sg_idle_since: float | None,
+    now: float,
+    fb_entities: int,
+    minerals: float,
+    idle_threshold: float = 60.0,
+    tempest_minerals: float = 300.0,
+) -> bool:
+    """O369-②b(o368a g3 实证):post-FB 矿穷填线判据。纯逻辑,可单测。
+
+    o368a g3 实证:O368-② 自救按设计在 FB 落成后自灭,但矿穷期
+    SG 照样空转 153-237s(FB 建成 ~481s→首风暴 590s)—— 舰队
+    产线绑 can_afford(TEMPEST 300 矿),矿 <300 期 SG 全闲零
+    产出。FB 已落、空转计时 ≥idle_threshold 且买不起风暴
+    (矿 <tempest_minerals)→ 调用方允许产虚空填线(与 ① 的
+    latch 兼容:latch 只活在 FB 未落时,本分支 FB 已落,天然
+    不打架;矿够 300 正常产线接管,判据自灭)。
+    """
+    return (
+        sg_idle_since is not None
+        and fb_entities > 0
+        and minerals < tempest_minerals
+        and now - sg_idle_since >= idle_threshold
+    )
+
+
+def power_precheck_covered(sid_name: str, needs_power: bool) -> bool:
+    """O369-③(o368a g1 (162,22) 实证):供电预检覆盖清单判据。
+    纯逻辑,可单测。
+
+    o368a g1 实证:首塔 O116 not_viable(带电余=0)268-315s 正是
+    被穿窗口 —— O368-③ 的钉点前供电预检只盖 SG/FB,PHOTONCANNON
+    钉点(needs_power 的防御建筑)同样需要「先贴槽水晶再钉」。
+    覆盖清单:SG/FB(3x3)+ PHOTONCANNON/SHIELDBATTERY(2x2,
+    needs_power 的防御建筑);水晶自身(needs_power=False)与
+    无电建筑(Nexus/ASSIMILATOR 等)不入清单。
+    """
+    return needs_power and sid_name in (
+        "STARGATE",
+        "FLEETBEACON",
+        "PHOTONCANNON",
+        "SHIELDBATTERY",
+    )
+
+
+def reanchor_fallback_default(
+    sid_name: str,
+    blacklist_len: int,
+    threshold: int = 2,
+) -> bool:
+    """O369-④(o368a g1 实证):opener 关键链换锚死锁的快退化判据。
+    纯逻辑,可单测。
+
+    o368a g1 实证:BY 换锚黑名单二连黑后进 O358-④b 的 60s 冷却,
+    BY 拖到 221s,237s 狗毒爆破塔时没活到 SG —— 冷却对 opener
+    关键链是死等:60s 里科技链全停。黑名单 ≥threshold → 不进
+    冷却,调用方直接回退主基内侧常规槽(ares 默认 placement
+    通道,不带 closest_to)。仅 CYBERNETICSCORE/GATEWAY 等
+    opener 关键链生效:forge 已有 O351 主基锚,机械台非 opener
+    关键链,维持原冷却。
+    """
+    return sid_name in ("CYBERNETICSCORE", "GATEWAY") and (
+        blacklist_len >= threshold
+    )
+
+
+def cannon_investment_freeze(
+    enemy_corruptors: int,
+    fleet: int,
+    now: float,
+    wave_active: bool,
+    t_min: float = 600.0,
+    corruptor_min: int = 4,
+    fleet_min: int = 8,
+) -> bool:
+    """O369-⑤(o368b g2 实证):塔投资总量闸。纯逻辑,可单测。
+
+    o368b g2 反面教材:956s 有 25 座塔(≈3750 矿 ≈ 9 艘航母)
+    被腐化波逐波拆光,同期舰队停 6 艘 —— 塔保不住被狙的舰队,
+    腐化波需要的是舰队数量。t >t_min 且(敌腐化 ≥corruptor_min
+    或舰队(TEMPEST+CARRIER 含在产)<fleet_min)→ 冻结塔地板
+    继续上抬:调用方把 F2 塔目标钳到现有塔数(floor 不再增,
+    已注册 target 保持,被拆不补),把钱让给舰队/星门。threat
+    波(wave_active,敌 35+ supply,O367-⑤c 同口径)仍可按
+    wave floor 补 —— 冻结管常态投资,不管波到脸的生死窗。
+    """
+    if wave_active or now <= t_min:
+        return False
+    return enemy_corruptors >= corruptor_min or fleet < fleet_min
+
+
+def sg_gap_pin_needed(
+    fb_entities: int,
+    ready_sg: int,
+    ready_sg_all_busy: bool,
+    fleet: int,
+    sg_total: int,
+    minerals: float,
+    fleet_min: int = 8,
+    sg_max: int = 3,
+    min_minerals: float = 150.0,
+) -> bool:
+    """O369-⑥(o368b g2 实证):星门按舰队缺口硬钉判据。纯逻辑,可单测。
+
+    o368b g2 实证:O218 追加星门等气烂银行(气 ≥400)触发,794s
+    才动、到死只有 3 座(胜局 844s 已 7 座)—— 舰队缺口在前、
+    气淤积在后,等气就是等死。FB 落成后:就绪 SG 全忙(产线
+    满载,再加产能不浪费)且舰队(含在产)<fleet_min 且 SG 总数
+    <sg_max → 调用方直接 critical 钉 SG2/SG3(不等气烂银行);
+    矿 <min_minerals 不钉(与 O367-⑤b 矿门兼容:穷局钉点
+    no_money 事件空转,o366b 三次实证)。
+    """
+    return (
+        fb_entities > 0
+        and ready_sg > 0
+        and ready_sg_all_busy
+        and fleet < fleet_min
+        and sg_total < sg_max
+        and minerals >= min_minerals
+    )
 
 
 def tempest_gas_dump_ok(

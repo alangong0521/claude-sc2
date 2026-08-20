@@ -164,6 +164,14 @@ from bot.production_plans import (
     fb_fund_gas_gate,
     stargate_deadlock_voidray,
     power_precheck_needed,
+    fb_fund_latch_needed,
+    fb_latch_stalled,
+    sg_idle_reset_needed,
+    sg_post_fb_fill,
+    power_precheck_covered,
+    reanchor_fallback_default,
+    cannon_investment_freeze,
+    sg_gap_pin_needed,
     new_base_f2_cannon_floor,
     nexus_pin_yield_clamp,
     new_base_no_cannon_alarm,
@@ -523,10 +531,28 @@ class ProductionManager(Manager):
         # O368-①b(o367 双 lane 尸检):FB 破产分支 —— O110 FB no_money
         # 自救连击计数(≥3 触发)与暂停旗标(暂停 O337 分矿塔/O363
         # 电池钉点/第 2+ 星门/升级,保命塔除外;FB 落成/threat 解除)。
+        # O369-①b:计数改累计口径(不再要求连续),清零只在解除处。
         self._fb_nomoney_streak: int = 0
         self._fb_bankrupt: bool = False
+        # O369-①(o368 双 lane 尸检):FB fund-first latch 簿记 ——
+        # ①c stall 健康监控的 10s 滑窗矿采样(时刻/矿量)与零积累
+        # 起点(持续 30s 零积累临时解除),临时解除截止(60s 后重
+        # 评估);__init__ 初始化。
+        self._fb_latch_m_sample_t: float = 0.0
+        self._fb_latch_m_sample_v: float = 0.0
+        self._fb_latch_stall_since: float | None = None
+        self._fb_latch_release_until: float = 0.0
+        # O369-⑤(o368b g2 实证):塔投资总量闸旗标(F2 段每帧重算;
+        # O337 分矿守卫钉点闸读上一帧值)。
+        self._o369_cannon_freeze: bool = False
+        # O369-⑥(o368b g2 实证):舰队缺口硬钉星门的失败簿记 30s
+        # 节流时刻(只节流言不节流钉点)。
+        self._o369_sg_gap_ts: float = 0.0
         # O368-②(o367a 尸检):星门死锁自救计时 —— 就绪 SG 全闲起点
         # (None=有 SG 在产/无就绪 SG/FB 已落成);≥60s 转产虚空。
+        # O369-②a:销账口径改 sg_idle_reset_needed(只在产舰队单位
+        # 才销,在产虚空/先知填线保留计时);FB 落成不再销账(②b
+        # post-FB 矿穷填线读同一计时器)。
         self._sg_idle_since: float | None = None
         # O368-③(o367a g1 (162,22) 尸检):SG/FB 钉点供电预检事件
         # 30s 节流时刻(只节流言,预检拦截每帧生效)。
@@ -1072,7 +1098,13 @@ class ProductionManager(Manager):
                     })
                 # O368-①b:FB 破产分支暂停 O337 分矿塔(首座保命塔除外,
                 # _surv_exempt 即保命塔口径)。
-                if _pin_cn and (not self._fb_bankrupt or _surv_exempt):
+                # O369-⑤:塔投资冻结期分矿守卫同样停钉(首座保命塔
+                # 豁免;o368b g2 的 25 塔/6 舰队反面教材,钱让给舰队)。
+                if (
+                    _pin_cn
+                    and (not self._fb_bankrupt or _surv_exempt)
+                    and (not self._o369_cannon_freeze or _surv_exempt)
+                ):
                     self._o363_base_def_last[_bk] = self.ai.time
                     # O345-①:塔钉同病 —— 主基在途塔把分矿塔恒挡 taken,
                     # 目标点局部在途+就绪 <2 才钉(max_on_route=99 绕全局)。
@@ -2298,24 +2330,121 @@ class ProductionManager(Manager):
                 "t": round(self.ai.time, 1),
                 "msg": f"O360:FB基金窗90s超时,强制派工一次(派工={_fb_rc})",
             })
-        # O368-①b(o367 双 lane 尸检):FB 破产分支解除评估 —— 触发
-        # 在 O110 自救(no_money 连击 ≥3,见 _fleet_tech_stall_recovery);
-        # FB 实体出现(钉下去了)或 threat/rush 激活即解除,连击计数
-        # 同步清零重新积累。窄域暂停(O360 先例),非全局资金冻结。
-        if fb_bankrupt_cleared(
-            _fb_entities_now, self._rush_active or self._threat_active
+        # O369-①(o368 双 lane 尸检):FB fund-first latch —— 触发口径
+        # 从 O368-①b 的「no_money 连击 ≥3」改 latch 常态生效(o368a
+        # 三局基金窗 0 开、O110 连钉 12 次落成 0 次实证:矿 5-756
+        # 反复被 Nexus/塔/电池/虚空抢走):SG 就绪且 FB 无实体且非
+        # threat 且(矿 <300 或气 <200)即开暂停(升级/SG2/分矿塔/
+        # 电池四闸沿用 _fb_bankrupt,保命塔豁免;O369 追加探机(农
+        # ≥28)/三矿+让位,见 _build_probes/_want_dynamic_expand)。
+        # 兜底触发:no_money **累计** ≥3(不再要求连续,o368a g2
+        # rush 常亮把连击打断后再也攒不到 3)或 FB 缺失 >120s(仅
+        # SG 就绪+truly_missing 口径,opener 期不误触)。解除去掉
+        # rush 常亮屏蔽:只 threat_active 临时解除,rush 期也保
+        # latch。①c stall 防死锁:latch 期矿净积累 ≤0 持续 30s
+        # 临时解除,60s 后重评估(O367-① 健康监控同教义)。单建筑
+        # 窄域暂停(O360/O368 同谱系加强),非全局资金冻结。
+        _sg_ready_now = any(s.is_ready for s in _sg_all)
+        if not self._fb_bankrupt and not self._threat_active and (
+            self.ai.time >= self._fb_latch_release_until
         ):
+            _latch_missing_s = (
+                self.ai.time - self._fb_missing_since
+                if (
+                    _fb_truly_missing
+                    and _sg_ready_now
+                    and self._fb_missing_since is not None
+                )
+                else None
+            )
+            if fb_fund_latch_needed(
+                sg_ready=_sg_ready_now,
+                fb_entities=_fb_entities_now,
+                threat_active=self._threat_active,
+                minerals=self.ai.minerals,
+                vespene=self.ai.vespene,
+            ) or fb_bankrupt_needed(
+                self._fb_nomoney_streak, fb_missing_s=_latch_missing_s
+            ):
+                self._fb_bankrupt = True
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O369:FB fund-first latch触发"
+                        f"(矿{self.ai.minerals:.0f},气{self.ai.vespene:.0f},"
+                        f"no_money累计{self._fb_nomoney_streak},"
+                        f"缺失{0.0 if _latch_missing_s is None else _latch_missing_s:.0f}s)"
+                    ),
+                })
+        # O369-①a:攒够 300+200 即钉 —— latch 期买得起就 critical
+        # 钉 FB(tracker 在途即跳过,钉点族 pin fuse 自带 30s 重钉
+        # 冷却,不刷屏;落点同 O360 超时强制派工的安全锚)。
+        if (
+            self._fb_bankrupt
+            and _fb_entities_now == 0
+            and self.ai.can_afford(UnitID.FLEETBEACON)
+            and self.ai.not_started_but_in_building_tracker(UnitID.FLEETBEACON)
+            == 0
+        ):
+            _fb_rc = self._dispatch_structure(
+                UnitID.FLEETBEACON,
+                self.ai.start_location,
+                closest_to=self._fb_safe_anchor(),
+                critical=True,
+            )
+            if _fb_rc == "dispatched":
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O369:FB latch攒够300+200,critical钉FB",
+                })
+        # O369-①c:latch 健康监控 —— 10s 滑窗采样矿量,零积累起点
+        # 累计 30s → 临时解除 60s(攒不动就别压,O367-① 同教义);
+        # 采样台账随解除/触发轮换重建。
+        if self._fb_bankrupt:
+            if self._fb_latch_m_sample_t == 0.0:
+                self._fb_latch_m_sample_t = self.ai.time
+                self._fb_latch_m_sample_v = self.ai.minerals
+            elif self.ai.time - self._fb_latch_m_sample_t >= 10.0:
+                if self.ai.minerals - self._fb_latch_m_sample_v <= 0.0:
+                    if self._fb_latch_stall_since is None:
+                        self._fb_latch_stall_since = self.ai.time
+                else:
+                    self._fb_latch_stall_since = None
+                self._fb_latch_m_sample_t = self.ai.time
+                self._fb_latch_m_sample_v = self.ai.minerals
+            if fb_latch_stalled(self._fb_latch_stall_since, self.ai.time):
+                self._fb_bankrupt = False
+                self._fb_latch_release_until = self.ai.time + 60.0
+                self._fb_latch_stall_since = None
+                self._fb_latch_m_sample_t = 0.0
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O369:FB latch30s矿净积累≤0,临时解除60s"
+                        f"(矿{self.ai.minerals:.0f})"
+                    ),
+                })
+        # O368-①b(o367 双 lane 尸检):FB 破产分支解除评估 —— 触发
+        # 在 O110 自救与 O369-① latch 常态判据;FB 实体出现(钉下去
+        # 了)或 threat 激活即解除,连击计数同步清零重新积累。窄域
+        # 暂停(O360 先例),非全局资金冻结。
+        # O369-①b:解除只传 threat_active(去掉 rush 常亮屏蔽 ——
+        # o368a g2 破产分支 526s 解除后 rush 常亮,latch 再也保不住,
+        # FB 到死没落);stall 台账同步销。
+        if fb_bankrupt_cleared(_fb_entities_now, self._threat_active):
             if self._fb_bankrupt:
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": (
                         f"O368:FB破产分支解除"
                         f"(FB实体={_fb_entities_now},"
-                        f"threat={self._rush_active or self._threat_active})"
+                        f"threat={self._threat_active})"
                     ),
                 })
             self._fb_bankrupt = False
             self._fb_nomoney_streak = 0
+            self._fb_latch_m_sample_t = 0.0
+            self._fb_latch_stall_since = None
         # O368-④(o367 双 lane 尸检):Nexus 落成时刻台账 —— 新基地
         # 保命塔硬兜底(④a F2 target 下限/④c 60s 无塔告警)的 age
         # 口径;基地被拆 key 保留(重建同点位重置为新落成,语义正确)。
@@ -3019,6 +3148,47 @@ class ProductionManager(Manager):
                 # 主基目标(波打主基时塔照拉满)。
                 if cannons > 0 and not self._threat_active and not self._rush_active:
                     cannons = min(cannons, 1)
+            # O369-⑤(o368b g2 反面教材):塔投资总量闸 —— g2 在 956s
+            # 有 25 座塔(≈3750 矿 ≈ 9 艘航母)被腐化波逐波拆光,同期
+            # 舰队停 6 艘:塔保不住被狙的舰队,腐化波需要的是舰队
+            # 数量。t>600 且(敌腐化 ≥4 或舰队(TEMPEST+CARRIER 含
+            # 在产)<8)→ 冻结塔地板继续上抬:F2 目标钳到现有塔数
+            # (floor 不再增,已注册 target 保持,被拆不补),钱让给
+            # 舰队/星门;35+ 波(wave_active,O367-⑤c 同口径)仍可
+            # 按 wave floor 补 —— 冻结管常态投资,不管波到脸的
+            # 生死窗。旗标挂实例,O337 分矿守卫钉点闸读(上一帧值)。
+            self._o369_cannon_freeze = cannon_investment_freeze(
+                enemy_corruptors=sum(
+                    1
+                    for u in self.ai.enemy_units
+                    if u.type_id == UnitID.CORRUPTOR
+                ),
+                fleet=_fleet_total_now,
+                now=self.ai.time,
+                wave_active=self._visible_enemy_army_supply() > 35.0,
+            )
+            if self._o369_cannon_freeze:
+                _cn_global_now = (
+                    len(
+                        self.manager_mediator.get_own_structures_dict[
+                            UnitID.PHOTONCANNON
+                        ]
+                    )
+                    + self.manager_mediator.get_building_counter[
+                        UnitID.PHOTONCANNON
+                    ]
+                )
+                cannons = min(cannons, _cn_global_now)
+                _cannons_expansion = min(_cannons_expansion, _cn_global_now)
+                if event_throttle_ok(self.ai.time, self._o367_wave_log_ts):
+                    self._o367_wave_log_ts = self.ai.time
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            f"O369:塔投资冻结,目标钳现有{_cn_global_now}"
+                            f"(舰队={_fleet_total_now})"
+                        ),
+                    })
             # O365-④(o364b g1 实证):倒挂前置到钉点排队层 —— g1 在
             # 196-225s 先立 3 塔+2 电池(~500 矿),Nexus ~318s 才钉,
             # 二矿 381.7s 比胜局晚 80s,O364-① 的 hold 根本没机会
@@ -3691,6 +3861,11 @@ class ProductionManager(Manager):
             # 50 矿/个是 FB no_money 的帧级抽水机之一;窗随 FB 实体
             # 落成/90s 超时自动关(自校正,无 latch)。
             self._fb_fund_window, self.ai.supply_workers
+        ) or fb_fund_probe_yield(
+            # O369-①a(o368a g2 实证):FB latch 期探机同口径让位
+            # (农≥28 才停,小农局探机是收入本身)—— g2 矿 5-756
+            # 反复被探机/塔/电池/虚空抢走,FB 连钉 12 次落成 0 次。
+            self._fb_bankrupt, self.ai.supply_workers
         ) or fb_fund_probe_brake(
             # O362-④(o361b 尸检):窗开 45s 仍凑不够 300 矿 → 强制停
             # 探机一轮(农≥20);窄口刹车,窗随成交/超时自关,非全局
@@ -4082,6 +4257,49 @@ class ProductionManager(Manager):
                             f"气={self.ai.vespene:.0f})"
                         ),
                     })
+        # O369-⑥(o368b g2 实证):星门按舰队缺口硬钉 —— O218 等气烂
+        # 银行(气 ≥400)触发太晚:g2 追加 794s 才动、到死只有 3 座
+        # (胜局 844s 已 7 座);舰队缺口在前、气淤积在后,等气就是
+        # 等死。FB 落成后:就绪 SG 全忙(产线满载,加产能不浪费)
+        # 且舰队(含在产)<8 且 SG 总数 <3 → 直接 critical 钉
+        # SG2/SG3;矿 <150 不钉(O367-⑤b 矿门兼容:穷局钉点
+        # no_money 空转,o366b 三次实证)。与 ① latch 不冲突:
+        # latch 只活在 FB 未落时,本钉要求 FB 已落。
+        _sg_ready_o369 = [
+            s for s in structures_dict[UnitID.STARGATE] if s.is_ready
+        ]
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and sg_gap_pin_needed(
+                fb_entities=self._fb_entities_now,
+                ready_sg=len(_sg_ready_o369),
+                ready_sg_all_busy=all(
+                    not s.is_idle for s in _sg_ready_o369
+                ),
+                fleet=_fleet_total_now,
+                sg_total=_sg_total_o218,
+                minerals=self.ai.minerals,
+            )
+        ):
+            _rc = self._dispatch_structure(
+                UnitID.STARGATE, self.ai.start_location, critical=True
+            )
+            if _rc == "dispatched":
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O369:舰队缺口硬钉星门(SG={_sg_total_o218},"
+                        f"舰队={_fleet_total_now})"
+                    ),
+                })
+            elif event_throttle_ok(self.ai.time, self._o369_sg_gap_ts):
+                # 失败 30s 节流(只节流言不节流钉点,O357-④ 规约)
+                self._o369_sg_gap_ts = self.ai.time
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O369:舰队缺口硬钉星门失败={_rc}",
+                })
         # O83(n5m-zerg-rush game_03 实证):舰队饥饿豁免 —— 慢性威胁/持续抄家时
         # rush 分支(上)与 E9 让位(tech_yields_to_threat)把舰队航标永久冻结:
         # 3 就绪星门 250s 零产出、气烂 2500+ 败亡(流派出兵全是耗气的暴风/航母)。
@@ -4408,6 +4626,9 @@ class ProductionManager(Manager):
                 self.ai.vespene,
                 self.ai.calculate_cost(UnitID.VOIDRAY).vespene,
             )
+            # O369-①a:FB latch 期不产虚空(250 矿/艘正是 latch 要
+            # 攒的 300 矿的同台竞争者;latch 解除自动恢复)。
+            and not self._fb_bankrupt
         ):
             for _sg in self.manager_mediator.get_own_structures_dict[
                 UnitID.STARGATE
@@ -4426,8 +4647,14 @@ class ProductionManager(Manager):
         # fb_entities,FB pending(挂出落不了)期 O261 被 O353-③
         # 攒钱窗抑制,SG 恒闲;o367b 胜局 VOIDRAY@418 证明虚空能
         # 撑中段。自救豁免 ①c 气耗闸:死锁 = FB 已落不了,保气线
-        # 救的对象不存在,空转比花气更亏。FB 落成(实体 >0)判据
-        # 自灭,正常产线(TEMPEST/CARRIER)接管,计时器同步清零。
+        # 救的对象不存在,空转比花气更亏。
+        # O369-②a(o368a g2 实证):起点口径修复 —— 旧口径「任何在
+        # 产即销账」被在产虚空/先知(O261 死窗兜底/oracle 产线)
+        # 打断:g2 自救报空转 223s(设计 60s),填线在产 ≠ 舰队
+        # 产线复活却把计时反复归零。新口径(sg_idle_reset_needed):
+        # 只有无就绪 SG 或有 SG 在产舰队单位(TEMPEST/CARRIER)
+        # 才销账;在产 VOIDRAY/ORACLE(填线)保留计时。FB 落成
+        # 不再销账(②b post-FB 矿穷填线要读同一计时器)。
         _sg_ready_all = [
             s
             for s in self.manager_mediator.get_own_structures_dict[
@@ -4435,11 +4662,17 @@ class ProductionManager(Manager):
             ]
             if s.is_ready
         ]
-        if (
-            not _sg_ready_all
-            or any(not s.is_idle for s in _sg_ready_all)
-            or self._fb_entities_now > 0
-        ):
+        _sg_fleet_busy = any(
+            (not s.is_idle)
+            and s.orders
+            and s.orders[0].ability.id
+            in (
+                AbilityId.STARGATETRAIN_TEMPEST,
+                AbilityId.STARGATETRAIN_CARRIER,
+            )
+            for s in _sg_ready_all
+        )
+        if sg_idle_reset_needed(len(_sg_ready_all), _sg_fleet_busy):
             self._sg_idle_since = None
         elif self._sg_idle_since is None:
             self._sg_idle_since = self.ai.time
@@ -4454,6 +4687,8 @@ class ProductionManager(Manager):
                 + cy_unit_pending(self.ai, UnitID.VOIDRAY)
             ) < 4
             and self.ai.can_afford(UnitID.VOIDRAY)
+            # O369-①a:latch 期不产(攒钱给 FB;latch 解除自动恢复)
+            and not self._fb_bankrupt
         ):
             for _sg in _sg_ready_all:
                 if _sg.is_idle:
@@ -4464,6 +4699,40 @@ class ProductionManager(Manager):
                             f"O368:星门死锁自救,转产虚空"
                             f"(SG空转{self.ai.time - self._sg_idle_since:.0f}s,"
                             "FB未落成)"
+                        ),
+                    })
+                    break
+        # O369-②b(o368a g3 实证):post-FB 矿穷填线 —— O368-② 自救
+        # 按设计在 FB 落成后自灭,但矿穷期 SG 照样空转 153-237s
+        # (g3:FB 建成 ~481s→首风暴 590s):舰队产线绑 can_afford
+        # (TEMPEST 300 矿),矿 <300 期 SG 全闲零产出。FB 已落、
+        # 空转 ≥60s 且买不起风暴 → 产虚空填线(与 ① latch 兼容:
+        # latch 只活在 FB 未落时,本分支 FB 已落,天然不打架;
+        # 矿够 300 正常产线接管,判据自灭)。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and sg_post_fb_fill(
+                self._sg_idle_since,
+                self.ai.time,
+                self._fb_entities_now,
+                self.ai.minerals,
+            )
+            and (
+                self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.VOIDRAY)
+                + cy_unit_pending(self.ai, UnitID.VOIDRAY)
+            ) < 4
+            and self.ai.can_afford(UnitID.VOIDRAY)
+        ):
+            for _sg in _sg_ready_all:
+                if _sg.is_idle:
+                    _sg.train(UnitID.VOIDRAY)
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            f"O369:post-FB矿穷填线,产虚空"
+                            f"(SG空转{self.ai.time - self._sg_idle_since:.0f}s,"
+                            f"矿{self.ai.minerals:.0f}<300)"
                         ),
                     })
                     break
@@ -5937,11 +6206,13 @@ class ProductionManager(Manager):
             # ≥3 次开破产分支(暂停非必要支出,见 update 解除评估与
             # 升级/SG2/O337/O363 四处暂停闸);dispatched(钉下去了)
             # 即清零。o367a g1/g3 各 6-8 次循环到死的直接对策。
+            # O369-①b(o368a g2 实证):改**累计**口径 —— 不再要求
+            # 连续(g2 破产分支 526s 解除后 rush 常亮,连击被打断
+            # 再也攒不到 3,FB 到死没落);清零只在 update 解除处
+            # (FB 落成/threat/stall 释放)。
             if sid == fb:
                 if _retry == "no_money":
                     self._fb_nomoney_streak += 1
-                else:
-                    self._fb_nomoney_streak = 0
                 if fb_bankrupt_needed(self._fb_nomoney_streak) and (
                     not self._fb_bankrupt
                 ):
@@ -7941,6 +8212,14 @@ class ProductionManager(Manager):
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
         self._zt_pocket_expand_debug()  # O283d:激活判据节流记账(排查期)
+        # O369-①a(o368a g2 实证):FB fund-first latch 期三矿+让位 ——
+        # g2 矿 5-756 反复被 Nexus/塔/电池/虚空抢走,FB 连钉 12 次
+        # 落成 0 次。二矿未成交豁免(Timing 经济命脉,o368a g3 二矿
+        # 494s 太晚的教训不动);二矿已成交后 400 矿/座的 Nexus 是
+        # FB 300/200 的同台竞争者,latch 解除(FB 落成/threat/stall)
+        # 自动恢复。
+        if self._fb_bankrupt and self.ai.townhalls.amount >= 2:
+            return False
         # O168:8 农民 carrier 核心科技缺失期间禁扩张，避免 Nexus 把
         # CYBERNETICCORE/STARGATE/FLEETBEACON 的资金窗吸干。
         # O216:Zerg Timing 下二矿是生存前提,150s 触发不能被 early_core_missing
@@ -8552,14 +8831,21 @@ class ProductionManager(Manager):
         # (330-362s 起到死)里永不执行,FB no_placement 死等整局。
         # 簿记拿不到槽(_slot_counts_at 的 (99,99,-1))不触发,
         # 几何死槽(空闲余=0)归 O357 换锚管,本预检只补电。
-        if sid in (UnitID.STARGATE, UnitID.FLEETBEACON) and needs_power:
-            _pw, _fr, _ = self._slot_counts_at(
-                base_location, BuildingSize.THREE_BY_THREE
+        # O369-③(o368a g1 (162,22) 实证):覆盖清单推广到 needs_power
+        # 的防御建筑(PHOTONCANNON/SHIELDBATTERY,2x2 槽)—— g1 首塔
+        # O116 not_viable(带电余=0)268-315s 正是被穿窗口,塔钉点
+        # 需要同款「先贴槽水晶再钉」;事件 30s 节流(只节流言)。
+        if power_precheck_covered(sid.name, needs_power):
+            _pc_size = (
+                BuildingSize.THREE_BY_THREE
+                if sid in (UnitID.STARGATE, UnitID.FLEETBEACON)
+                else BuildingSize.TWO_BY_TWO
             )
+            _pw, _fr, _ = self._slot_counts_at(base_location, _pc_size)
             if power_precheck_needed(_pw, _fr):
                 if self._in_flight_near(UnitID.PYLON, base_location) == 0:
                     _pw_anchor = pick_slot_anchor(
-                        self._free_3x3_slots_at(base_location),
+                        self._free_3x3_slots_at(base_location, _pc_size),
                         (base_location.x, base_location.y),
                     )
                     self._dispatch_structure(
@@ -8754,6 +9040,23 @@ class ProductionManager(Manager):
         _key = (round(_tried[0]), round(_tried[1]))
         if _key not in st["blacklist"]:
             st["blacklist"].append(_key)
+        # O369-④(o368a g1 实证):BY/GATEWAY 等 opener 关键链黑名单
+        # ≥2 → 不进 O358-④b 的 60s 冷却,直接回退主基内侧常规槽
+        # (ares 默认 placement 通道,不带 closest_to)—— g1 BY 换锚
+        # 二连黑后进冷却拖到 221s,237s 狗毒爆破塔时没活到 SG;
+        # 60s 冷却对 opener 关键链是死等(科技链全停)。forge 已有
+        # O351 主基锚、机械台非 opener 关键链,维持原冷却。
+        if reanchor_fallback_default(sid.name, len(st["blacklist"])):
+            _rc2 = self._dispatch_structure(sid, base_location, critical=True)
+            if _rc2 == "dispatched":
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O369:{sid.name}换锚黑{len(st['blacklist'])},"
+                        "回退默认槽(不带closest_to)"
+                    ),
+                })
+            return _rc2
         # O358-④b:拉黑 ≥3 次仍 no_placement → 开冷却(60s)
         _cd = reanchor_cooldown_until(len(st["blacklist"]), self.ai.time)
         if _cd is not None:
@@ -9007,8 +9310,12 @@ class ProductionManager(Manager):
         """O112-①:主基空闲 3x3 槽数(_free_3x3_at 的主基便捷口径)。"""
         return self._free_3x3_at(self.ai.start_location)
 
-    def _free_3x3_slots_at(self, base_location) -> list:
-        """O113-①:某基地 3x3 槽 [(x, y, free), ...] —— 贴槽落水晶的锚点源。"""
+    def _free_3x3_slots_at(self, base_location, size=None) -> list:
+        """O113-①:某基地 3x3 槽 [(x, y, free), ...] —— 贴槽落水晶的锚点源。
+        O369-③:size 参数(默认 THREE_BY_THREE 保持旧口径)—— 塔/电池
+        钉点的供电预检要贴 2x2 空闲槽落水晶。"""
+        if size is None:
+            size = BuildingSize.THREE_BY_THREE
         placements = self.manager_mediator.get_placements_dict
         if not placements:
             return []
@@ -9017,9 +9324,7 @@ class ProductionManager(Manager):
         )
         return [
             (pos.x, pos.y, v.get("available") and not v.get("worker_on_route"))
-            for pos, v in placements[bloc].get(
-                BuildingSize.THREE_BY_THREE, {}
-            ).items()
+            for pos, v in placements[bloc].get(size, {}).items()
         ]
 
     def _fb_safe_anchor(self):

@@ -132,6 +132,14 @@ from bot.production_plans import (  # noqa: E402
     fb_fund_gas_gate,
     stargate_deadlock_voidray,
     power_precheck_needed,
+    fb_fund_latch_needed,
+    fb_latch_stalled,
+    sg_idle_reset_needed,
+    sg_post_fb_fill,
+    power_precheck_covered,
+    reanchor_fallback_default,
+    cannon_investment_freeze,
+    sg_gap_pin_needed,
     new_base_f2_cannon_floor,
     nexus_pin_yield_clamp,
     new_base_no_cannon_alarm,
@@ -4692,6 +4700,114 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(power_precheck_needed(0, 0))
         # 簿记拿不到槽(99,99,-1)→ 不挡任何闸
         self.assertFalse(power_precheck_needed(99, 99))
+
+    def test_fb_fund_latch_needed(self):
+        # O369-①a:latch 常态生效 —— SG 就绪+FB 无实体+非 threat+
+        # 矿 <300 → 触发(o368a g2 矿 5-756 被抢实证档)
+        self.assertTrue(fb_fund_latch_needed(True, 0, False, 5.0, 400.0))
+        self.assertTrue(fb_fund_latch_needed(True, 0, False, 299.9, 200.0))
+        # 气 <200(FB 气耗未就绪)→ 同样 latch(攒够 300+200 才钉)
+        self.assertTrue(fb_fund_latch_needed(True, 0, False, 500.0, 150.0))
+        # 解除三态:矿 ≥300 且气 ≥200(攒够即钉,判据自灭)
+        self.assertFalse(fb_fund_latch_needed(True, 0, False, 300.0, 200.0))
+        # threat 激活 → 临时解除(防御链恢复优先)
+        self.assertFalse(fb_fund_latch_needed(True, 0, True, 5.0, 400.0))
+        # FB 实体出现(钉下去了)→ 解除
+        self.assertFalse(fb_fund_latch_needed(True, 1, False, 5.0, 400.0))
+        # SG 未就绪 → 不 latch(FB 前置未齐,opener 期不误触)
+        self.assertFalse(fb_fund_latch_needed(False, 0, False, 5.0, 400.0))
+
+    def test_fb_bankrupt_needed_o369(self):
+        # O369-①b:no_money 累计 ≥3(不再要求连续)→ 触发
+        self.assertTrue(fb_bankrupt_needed(3))
+        # FB 缺失 >120s(调用方只传 SG 就绪+truly_missing 口径)→ 触发
+        self.assertTrue(fb_bankrupt_needed(0, fb_missing_s=120.0))
+        self.assertTrue(fb_bankrupt_needed(1, fb_missing_s=200.0))
+        # 缺失 <120s 且累计 <3 → 不触发
+        self.assertFalse(fb_bankrupt_needed(2, fb_missing_s=119.9))
+        # 缺失时刻未知(None)→ 不触发
+        self.assertFalse(fb_bankrupt_needed(0, fb_missing_s=None))
+
+    def test_fb_latch_stalled(self):
+        # O369-①c:零积累持续 ≥30s → 临时解除(防死锁)
+        self.assertTrue(fb_latch_stalled(100.0, 130.0))
+        # 不足 30s → 维持
+        self.assertFalse(fb_latch_stalled(100.0, 129.9))
+        # 上一采样矿在涨(None)→ 健康,不解除
+        self.assertFalse(fb_latch_stalled(None, 600.0))
+
+    def test_sg_idle_reset_needed(self):
+        # O369-②a:起点口径 —— 无就绪 SG → 销账
+        self.assertTrue(sg_idle_reset_needed(0, False))
+        # 有 SG 在产舰队单位(TEMPEST/CARRIER)→ 销账(产线复活)
+        self.assertTrue(sg_idle_reset_needed(2, True))
+        # 在产仅填线(虚空/先知)→ 保留计时(g2 223s 被打断修复档)
+        self.assertFalse(sg_idle_reset_needed(1, False))
+        self.assertFalse(sg_idle_reset_needed(3, False))
+
+    def test_sg_post_fb_fill(self):
+        # O369-②b:FB 已落+空转 ≥60s+矿 <300 → 允许产虚空填线
+        # (o368a g3:FB 481s→风暴 590s 空转档)
+        self.assertTrue(sg_post_fb_fill(481.0, 541.0, 1, 200.0))
+        # 矿够 300(买得起风暴)→ 正常产线接管,不填线
+        self.assertFalse(sg_post_fb_fill(481.0, 541.0, 1, 300.0))
+        # FB 未落成 → 归 O368-② 死锁自救管,本分支不触发
+        self.assertFalse(sg_post_fb_fill(481.0, 541.0, 0, 200.0))
+        # 空转 <60s → 不触发
+        self.assertFalse(sg_post_fb_fill(481.0, 540.9, 1, 200.0))
+        # 有舰队在产(计时已销)→ 不触发
+        self.assertFalse(sg_post_fb_fill(None, 600.0, 1, 200.0))
+
+    def test_power_precheck_covered(self):
+        # O369-③:覆盖清单 —— SG/FB 之外推广到 needs_power 防御建筑
+        self.assertTrue(power_precheck_covered("STARGATE", True))
+        self.assertTrue(power_precheck_covered("FLEETBEACON", True))
+        self.assertTrue(power_precheck_covered("PHOTONCANNON", True))
+        self.assertTrue(power_precheck_covered("SHIELDBATTERY", True))
+        # needs_power=False(水晶/无电建筑)→ 不入清单
+        self.assertFalse(power_precheck_covered("PHOTONCANNON", False))
+        self.assertFalse(power_precheck_covered("PYLON", False))
+        # 无电建筑(Nexus/气矿)→ 不入清单
+        self.assertFalse(power_precheck_covered("NEXUS", True))
+
+    def test_reanchor_fallback_default(self):
+        # O369-④:BY 黑名单 ≥2 → 回退默认槽(o368a g1 BY 拖 221s 档)
+        self.assertTrue(reanchor_fallback_default("CYBERNETICSCORE", 2))
+        self.assertTrue(reanchor_fallback_default("GATEWAY", 3))
+        # 黑名单 <2 → 照常换锚
+        self.assertFalse(reanchor_fallback_default("CYBERNETICSCORE", 1))
+        # forge(O351 主基锚)/机械台(非 opener 链)→ 维持原冷却
+        self.assertFalse(reanchor_fallback_default("FORGE", 5))
+        self.assertFalse(reanchor_fallback_default("ROBOTICSFACILITY", 5))
+
+    def test_cannon_investment_freeze(self):
+        # O369-⑤ 三象限:敌腐化 ≥4 → 冻结(o368b g2 腐化波档)
+        self.assertTrue(cannon_investment_freeze(4, 10, 700.0, False))
+        # 舰队 <8 → 冻结(25 塔/6 舰队反面教材档)
+        self.assertTrue(cannon_investment_freeze(0, 6, 956.0, False))
+        # 腐化 <4 且舰队 ≥8 → 不冻结
+        self.assertFalse(cannon_investment_freeze(3, 8, 700.0, False))
+        # 35+ 波(wave_active)→ 豁免(wave floor 照补)
+        self.assertFalse(cannon_investment_freeze(4, 6, 700.0, True))
+        # t ≤600 → 不冻结(开局防御链优先)
+        self.assertFalse(cannon_investment_freeze(4, 6, 600.0, False))
+
+    def test_sg_gap_pin_needed(self):
+        # O369-⑥:FB 已落+就绪 SG 全忙+舰队 <8+SG <3+矿 ≥150 → 硬钉
+        # (o368b g2:O218 等气烂银行 794s 才动档)
+        self.assertTrue(sg_gap_pin_needed(1, 2, True, 6, 2, 200.0))
+        # 舰队 ≥8 → 不钉(数量够了)
+        self.assertFalse(sg_gap_pin_needed(1, 2, True, 8, 2, 200.0))
+        # SG 总数 ≥3 → 不钉(后续追加归 O218 气烂银行管)
+        self.assertFalse(sg_gap_pin_needed(1, 3, True, 6, 3, 200.0))
+        # 就绪 SG 有空闲 → 不钉(产能没满载,加了也空转)
+        self.assertFalse(sg_gap_pin_needed(1, 2, False, 6, 2, 200.0))
+        # FB 未落成 → 不钉(latch 期 SG2 让位 FB,O369-①)
+        self.assertFalse(sg_gap_pin_needed(0, 2, True, 6, 2, 200.0))
+        # 矿 <150 → 不钉(O367-⑤b 矿门:穷局钉点 no_money 空转)
+        self.assertFalse(sg_gap_pin_needed(1, 2, True, 6, 2, 149.9))
+        # 无就绪 SG → 不钉
+        self.assertFalse(sg_gap_pin_needed(1, 0, True, 6, 2, 200.0))
 
     def test_new_base_f2_cannon_floor(self):
         # O368-④a:新基地(落成 <120s)target 下限 1
