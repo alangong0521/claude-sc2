@@ -5046,6 +5046,36 @@ def fb_fund_latch_needed(
     )
 
 
+def fb_latch_pin_afford_ok(
+    minerals: float,
+    vespene: float,
+    sg2_reserve: bool,
+    fb_minerals: float = 300.0,
+    fb_gas: float = 200.0,
+    sg_minerals: float = 150.0,
+    sg_gas: float = 150.0,
+) -> bool:
+    """O375-③a(o374b 三局尸检):latch 钉 FB 的可负担判据(SG2
+    预扣口径)。纯逻辑,可单测。
+
+    o374b 实证:O374-③ 修好 Nexus 循环后二矿提前 150-240s,
+    latch 提前触发(g1 450.2s/g2 395.1s)囤矿 300+200,SG2 饿死
+    (851.8/871.9/全程没有 vs o373b 胜局 413.8s)—— 旧判据
+    can_afford(FB) 在 300/200 即钉,SG2 的 150/150 永被 latch
+    暂停清单压住。sg2_reserve=True(调用方:zerg timing 且 SG1
+    就绪且 SG2 未钉)时攒矿口径改「存款 ≥FB+SG2 全款」—— SG2
+    豁免钉点(见 sg2_pre_fb_pin_needed)在 latch 期随时可钉,
+    本预扣保证 SG2 钉走后 latch 仍能攒回 FB 全款,FB 不被饿死;
+    SG2 已在途/落成 → 预扣自灭,恢复 300/200 原口径。
+    """
+    if sg2_reserve:
+        return (
+            minerals >= fb_minerals + sg_minerals
+            and vespene >= fb_gas + sg_gas
+        )
+    return minerals >= fb_minerals and vespene >= fb_gas
+
+
 def fb_rebuild_latch_needed(
     fb_ever_completed: bool,
     fb_entities: int,
@@ -5202,7 +5232,11 @@ def nexus_repin_loop_forced(loop_count: int, max_rounds: int = 1) -> bool:
     return loop_count > max_rounds
 
 
-def nexus_repin_afford_ok(minerals: float, nexus_cost: float = 400.0) -> bool:
+def nexus_repin_afford_ok(
+    minerals: float,
+    nexus_cost: float = 400.0,
+    forced: bool = False,
+) -> bool:
     """O374-③a(o373b g3 实证):Nexus 重派工的矿量门。纯逻辑,可单测。
 
     o373b g3 实证:「条目消失无实体」6 轮烧 150s,强制直钉
@@ -5213,8 +5247,15 @@ def nexus_repin_afford_ok(minerals: float, nexus_cost: float = 400.0) -> bool:
     返回 "no_money",O364 hold 资金窗与 O51/O54 holding 让位
     继续攒钱),够了才钉 —— 钉即开工,循环失去燃料;循环计数
     只在「派了工又消失」时涨,no_money 期不涨。
+    O375-⑤a(o374b g3 尸检):forced(循环 ≥2 轮,O371-③ 强制
+    直钉同门槛)免矿量门 —— g3 三轮 no_money 重派工 336→424s
+    原地空转(银行 88s 没过 400,保命开销持续吃钱):门后无派工
+    = 零进展,驻点钉出后 O364/O51/O54 让位继续攒钱、矿到 400
+    自动开工,等钱从「每帧空判」变「驻点等成交」。forced 路径
+    自带 max_on_route=99+清保险丝冷却(O370-②b),与旧驻点空转
+    (无强制、被 pop 即 30s 冷却)不同构。
     """
-    return minerals >= nexus_cost
+    return forced or minerals >= nexus_cost
 
 
 def sg_idle_reset_needed(ready_sg: int, fleet_busy: bool) -> bool:
@@ -5358,6 +5399,49 @@ def cannon_freeze_clamp(
     每个新矿名额 +1,与 O368-④a 的首座保命塔下限对齐。
     """
     return min(target, max(existing, floor_snapshot) + new_base_exempt)
+
+
+def sg2_pre_fb_pin_needed(
+    sg1_ready: bool,
+    sg_total: int,
+    fb_entities: int,
+) -> bool:
+    """O375-③a(o374b 三局尸检):zerg lane SG1 落成即钉 SG2 判据。
+    纯逻辑,可单测。
+
+    o373b 胜局配方:SG2@413.8s + 12 虚空 + 82 supply 是中段支柱;
+    o374b latch 提前触发后 O326-②(FB 在途+气 ≥400+豁免 latch/
+    基金窗全不满足)与 O369-⑥(要求 FB 已落成)双双够不到,SG2
+    饿死到 851.8/871.9/全程没有。SG1 就绪且 SG 总数(含在途)<2
+    且 FB 未落成 → 调用方 critical 钉 SG2(豁免疫 FB latch 暂停
+    清单与基金窗 SG2 让位;150/150 由 fb_latch_pin_afford_ok 的
+    预扣口径保底,FB 不被饿死)。FB 落成后本判据自灭,SG2+/SG3
+    回归 O326-②/O369-⑥ 常态通道。二矿/Nexus 资金窗两道既有
+    让位闸(sg2_pin_economy_ok、nexus_fund_hold_blocks)在调用
+    方保留 —— SG2 不抢扩张全款。
+    """
+    return sg1_ready and sg_total < 2 and fb_entities == 0
+
+
+def sg_prefb_voidray_fill(
+    ready_sg: int,
+    fb_entities: int,
+    voidrays: int,
+    cap: int = 8,
+) -> bool:
+    """O375-③b(o374b 三局尸检):pre-FB 星门闲置即产虚空填充判据。
+    纯逻辑,可单测。
+
+    o374b 实证:O368-② 死锁自救要 SG 全闲 60s 才转产,叠加 latch
+    期不产,虚空峰 2/4/1 vs o373b 胜局 12(胜局中段支柱正是
+    虚空群);SG 落成到 FB 落成动辄 100-200s,60s 死锁门槛把
+    填充窗砍掉大半。改为就绪 SG 存在且 FB 未落成即允许填充
+    (O368-② 同通道合并,不另立分支;O369-②a 的空转计时器保留
+    给 ②b post-FB 矿穷填线),cap 4→8(验收口径虚空峰 ≥6,胜局
+    12 含常态产线;填充通道留气给舰队接力)。latch 期不产
+    (攒钱给 FB+SG2,调用方闸),latch 解除自动恢复。
+    """
+    return ready_sg > 0 and fb_entities == 0 and voidrays < cap
 
 
 def sg_gap_pin_needed(
@@ -5530,6 +5614,45 @@ def wave_cannon_floor_active(opp_race: str, ai_build: str) -> bool:
     """
     return (opp_race == "zerg" and ai_build in ("timing", "rush")) or (
         opp_race == "terran"
+    )
+
+
+def enemy_supply_credited(visible_supply: float, sticky_peak: float) -> float:
+    """O375-④(o374b g2 实证):敌 supply 信用口径。纯逻辑,可单测。
+
+    o374b g2 实证:两次 O302 commit 后 3-10s 敌 51-79 supply 才
+    显形 —— 出发闸/塔地板只认当帧可见(enemy_units),波在迷雾
+    里集结时口径归零,出击即顶波。口径 = max(当帧可见, 近 60s
+    remembered 峰值)(aa_peak_sticky 同构粘滞簿记,调用方每帧
+    喂当帧可见值;O375-② 塔地板与本出发闸共用同一台账)。
+    """
+    return max(visible_supply, sticky_peak)
+
+
+def wave_cannon_floor_trigger(
+    credited_supply: float,
+    opp_race: str,
+    now: float,
+    peak_need: float = 30.0,
+    terran_time: float = 480.0,
+) -> bool:
+    """O375-②(o374 双 lane 尸检):F2 波次塔地板的预警触发判据。
+    纯逻辑,可单测。
+
+    O374-④c 的触发源「敌可见 supply>35」= 讣告:o374a 三局地板
+    全部在波已进门后才抬(g1 547.9/g2 833.3/g3 812.6),塔峰 4-6
+    反而低于胜局 11 —— 波在迷雾集结时可见 supply 归零,进门才
+    显形,塔建造要 25-29s,进门再抬永远晚一拍。改预警口径:
+    信用 supply(enemy_supply_credited = max(当帧可见, 60s
+    remembered 峰值))≥peak_need 即触发(波离视野 60s 内仍认账,
+    进门前把塔立起来);terran 加 t ≥terran_time 定时兜底
+    (o374a 三局 MM 波全部 527s+ 到门,480s 起常态抬地板,
+    不依赖侦察是否撞见集结)。峰值 35→30:粘滞峰值含已交战的
+    波,30 即生死窗(O367-⑤c 的 35 是当帧口径,信用口径同量
+    级前移)。种族门仍在调用方(wave_cannon_floor_active)。
+    """
+    return credited_supply >= peak_need or (
+        opp_race == "terran" and now >= terran_time
     )
 
 
@@ -6232,22 +6355,39 @@ def zerg_departure_floor_ok(
 def transition_push_hold(
     fb_done: bool,
     fleet_count: int,
-    min_base_cannons: int,
-    fleet_need: int = 8,
+    main_base_cannons: int,
+    threat_active: bool,
+    fleet_need: int = 5,
     min_cannons: int = 2,
 ) -> bool:
     """O374-④b(o373a g1/g2 实证):Terran 转型真空期出击留守判据。
     纯逻辑,可单测。
 
     o373a g1 509.4s/g2 528.5s 的 O302 出击与敌 515/533s 抄家
-    窗口重叠 —— FB 落成到舰队 ≥8 的转型真空期(550-700s 舰队
-    仅 2-6 艘),舰队出门时家最空,MM 波必穿。留守条件:每基地
+    窗口重叠 —— FB 落成到舰队成型的转型真空期(550-700s 舰队
+    仅 2-6 艘),舰队出门时家最空,MM 波必穿。留守条件:主基
     就绪塔 ≥min_cannons 或舰队 ≥fleet_need(转型完成);不满足
     → True(守家不跟压,舰队留守 = 蹲守锚点保家,调用方走既有
     热点回防/蹲守分支,不发明新分支)。FB 未落成(真空前半段归
     既有塔链/波次逻辑管)或非转型期 → False 原闸不动。
+    O375-①(o374a 三局 0/3 尸检):去 min 化+条件收窄 —— 旧判据
+    「min(全基地就绪塔)<2 且 fleet<8」几乎常态成立(新矿 0 塔即
+    全局锁死),FB 落成起锁到死:o374a O302 从 o373a 胜局 ×29 掉
+    到 0/0/2,g3 舰队 757.3s 刚到 8 立即解锁 ×2(时间戳严丝合缝,
+    8 就是绑定约束);「留守保家」同时被证伪(三局舰队全在家,
+    527-561s 波照样穿)。改法:①塔口径改主基就绪塔(主基 = 必须
+    守住的基地,新矿 0 塔不再全局锁死;不选「任一基地 ≥2」——
+    新矿立 2 塔而主基裸奔时放行等于换家);②fleet_need 8→5
+    (对齐 o373a 胜局配方 528.5s fleet=5 起推 ×29);③hold 只在
+    threat_active(敌波压境)时生效,无波不锁(无波时舰队在家
+    也防不住任何东西,出击反而换战损)。
     """
-    return fb_done and fleet_count < fleet_need and min_base_cannons < min_cannons
+    return (
+        fb_done
+        and threat_active
+        and fleet_count < fleet_need
+        and main_base_cannons < min_cannons
+    )
 
 
 def cyber_core_np_default_fallback(streak: int, threshold: int = 2) -> bool:

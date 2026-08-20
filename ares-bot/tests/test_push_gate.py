@@ -76,6 +76,9 @@ class TestCarrierPushGate(unittest.TestCase):
                 _rush_active=False,
                 _primary_unit_id=lambda: UnitID.CARRIER,
                 _visible_enemy_army_supply=lambda: enemy_supply,
+                # O375-④:出发闸改信用口径(max(当帧可见, 60s 粘滞
+                # 峰值));夹具无迷雾,信用值=当帧可见
+                _enemy_army_supply_credited=lambda: enemy_supply,
             ),
         )
         counts = {UnitID.CARRIER: own_carriers}

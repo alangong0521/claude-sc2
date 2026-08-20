@@ -603,7 +603,12 @@ class CombatManager(Manager):
             # 这条);② zerg 全局(O302 黄金窗是胜局实证的主动压出,
             # zerg 侧行为一行不变)。
             _own_army = self.ai.supply_used - self.ai.supply_workers
-            _enemy_vis = self.ai.production_manager._visible_enemy_army_supply()
+            # O375-④(o374b g2 实证):敌 supply 口径改信用值
+            # (max(当帧可见, 60s remembered 峰值),
+            # _enemy_army_supply_credited)—— g2 两次 O302 commit 后
+            # 3-10s 敌 51-79 supply 才显形,只认当帧 = 波进迷雾即
+            # 归零,出击即顶波;与 O375-② 塔地板共用同一台账。
+            _enemy_vis = self.ai.production_manager._enemy_army_supply_credited()
             _opp_is_zerg = (
                 _pm_o227 is not None
                 and getattr(_pm_o227, "_opp_race", "") == "zerg"
@@ -621,32 +626,40 @@ class CombatManager(Manager):
                 _own_army, _enemy_vis, _hard_aa
             )
             # O374-④b(o373a g1/g2 尸检):Terran 转型真空期(FB 落成→
-            # 舰队 ≥8)出击留守闸 —— g1 509.4s/g2 528.5s 的 O302 出击
+            # 舰队成型)出击留守闸 —— g1 509.4s/g2 528.5s 的 O302 出击
             # 与敌 515/533s 抄家窗口重叠,舰队出门时家最空(550-700s
-            # 舰队仅 2-6 艘对 MM 27-56 supply)。每基地就绪塔 ≥2 或
-            # 舰队 ≥8 才放行;否则 _army_gate_ok 收 False,风暴守家
+            # 舰队仅 2-6 艘对 MM 27-56 supply)。主基就绪塔 ≥2 或
+            # 舰队达标才放行;否则 _army_gate_ok 收 False,风暴守家
             # 不跟压(走下方既有热点回防/蹲守锚点,不发明新分支)。
             # 塔口径与 production_manager 的 _cannons_near 同源
             # (就绪 PHOTONCANNON 距基地 <12 格)。
+            # O375-①(o374a 三局 0/3 尸检):去 min 化+条件收窄 ——
+            # 旧「min(全基地就绪塔)<2 且 fleet<8」几乎常态成立(新矿
+            # 0 塔即全局锁死),FB 落成起锁到死:O302 从 o373a 胜局
+            # ×29 掉到 0/0/2;o374a g3 舰队 757.3s 刚到 8 立即解锁 ×2
+            # (时间戳严丝合缝);「留守保家」被证伪(三局舰队全在家,
+            # 527-561s 波照样穿)。塔口径改主基(新矿 0 塔不再全局锁;
+            # 不选「任一基地 ≥2」—— 新矿 2 塔主基裸奔时放行 = 换家),
+            # fleet 释放线 8→5(对齐胜局配方 528.5s fleet=5 起推
+            # ×29),hold 只在 threat_active(敌波压境)时生效,无波
+            # 不锁。
             if (
                 _pm_o227 is not None
                 and getattr(_pm_o227, "_opp_race", "") == "terran"
             ):
-                _o374_cn = [
-                    sum(
-                        1
-                        for s in self.ai.structures.ready
-                        if s.type_id == UnitID.PHOTONCANNON
-                        and s.position.distance_to(th.position) < 12
-                    )
-                    for th in self.ai.townhalls
-                ]
-                if _o374_cn and transition_push_hold(
+                _o375_main_cn = sum(
+                    1
+                    for s in self.ai.structures.ready
+                    if s.type_id == UnitID.PHOTONCANNON
+                    and s.position.distance_to(self.ai.start_location) < 12
+                )
+                if transition_push_hold(
                     fb_done=(
                         getattr(_pm_o227, "_fb_completed_at", None) is not None
                     ),
                     fleet_count=_fleet_count,
-                    min_base_cannons=min(_o374_cn),
+                    main_base_cannons=_o375_main_cn,
+                    threat_active=getattr(_pm_o227, "_threat_active", False),
                 ):
                     _army_gate_ok = False
             # O372-⑤(o371a g2 尸检):推进 commit 期 AA 30s 重评 ——

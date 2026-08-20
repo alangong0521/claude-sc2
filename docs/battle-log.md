@@ -10594,3 +10594,57 @@ Nexus/FB);③ SG ≤300s;④ 停气触发后 30s 内气增长压
 - O374-④b 的「留守过半」按整队留守实现(锚点框架不支持分兵),若 bench 显示转型期压制不足再议。
 - o373a 两局 latch 在二矿落成前 1-1.4s 触发的口径边界未收紧。
 - Terran 转型真空若 ④ 修不透,候选:转型期电池阵加厚/风暴集火维京逻辑。
+
+
+## o374 结果(VH Terran Power 0/3 回归 + VH Zerg Rush 0/3 回归)+ O374 六验收判定(双 lane 元凶实锤)+ O375(④b 去 min 化+塔地板预警+SG2 豁免+出发闸吃峰值+no_money 封顶)
+
+**日期**:2026-08-20
+
+### o374 结果
+
+- o374a carrier vs VH Terran Power:0/3(上轮 1/3,回归)。
+- o374b carrier vs VH Zerg Rush:0/3(上轮 1/3,回归)——**O374 双 lane 回归**。
+- **总目标盘点**:VH Zerg Power/Rush 打穿、Timing 封存;Terran Power 2/12;Terran Rush/Timing 未测。
+
+### O374 六验收判定(本轮验证对象)
+
+- O374-① zerg AA 信用记忆 → 机制生效(sticky 簿记 920s 峰 8→980s 回落 5;g2/g3 cred=11 撤蹲激活)但无收益:尖塔全程未见(+2 信用从未生效),腐化首见=致死波已到脸。
+- O374-② zerg 出发宽下限 → **字面零违规但闸被战争迷雾系统性绕过**(o374b g2 两次 O302 commit 后 3-10s 敌 51-79 supply 才显形)。
+- O374-③ O365 循环收敛 → **2/3**(循环 6 轮→0-1 轮,二矿提前 150-240s;g3 三轮 no_money 空转 336→424s);**但修好循环暴露了 SG2 饿死的存量病(见回归判决)**。
+- O374-④ Terran 转型真空防守 → **④b 是 Terran 元凶(见回归判决)**;④a 转型提前可见但航母没出得更早(中性);④c 塔地板触发=讣告(全部在波进门后抬:547.9/833.3/812.6s,塔峰 4-6 低于胜局 11)。
+- O374-⑤ F2 target 字面收口 → **通过**(注册全部 ≥1)。
+- **验收⑥:双 0/3 未达成 ✗**。
+
+### 回归判决(两 lane 元凶不同,都实锤)
+
+**Terran 元凶 = O374-④b transition_push_hold(锁死赢法)**:
+
+- 判据 min(全基地就绪塔)<2 且 fleet<8 几乎常态成立(任何新矿 0 塔即全局锁死),FB 落成起 _army_gate_ok=False 锁到死。
+- O302 从 o373a 胜局 ×29 掉到 0/0/2;o374a g3 舰队 757.3s 刚到 8 立即解锁 ×2——时间戳严丝合缝。
+- **反证:o373a 胜局配方(528.5s fleet=5 起推 ×29)在 ④b 下就是非法的**——把唯一实证的赢法立法禁止了。
+- 「留守保家」被证伪:三局舰队全在家,527-561s 波照样穿(1 塔+2-3 风暴对 10-12 地面+坦克)。
+- 后果链:零压制 → Terran AI 自由运营到 64-94 supply → 我方 41-45 supply 被质量碾。
+
+**Zerg 元凶 = O374-③「成功」暴露的存量病(SG2 饿死)**:
+
+- o373b 胜局真正支柱是 12 虚空+82 own supply(不是航母);Nexus 循环 6 轮意外拖晚 FB 到 883.9s,空出的资金窗让 SG2 在 413.8s 落成、虚空堆到 12 架。
+- O374-③ 修好循环 → 二矿提前 → O369 FB latch 提前触发(g1 450.2/g2 395.1s)→ 囤矿 300+200 → SG2 饿死(851.8/871.9/全程没有 vs 413.8s)→ 虚空峰 2/4/1 → own supply 46/58/36 vs 82。
+- ①②战斗闸实证零伤害(全程基本空转,宽下限在所有安静窗都是开的)。
+
+### O375 落地(下一轮验证对象,五项,单测 816→822 绿,冒烟过)
+
+1. **④b 去 min 化+条件收窄**:transition_push_hold 签名改(fb_done, fleet_count, main_base_cannons, threat_active, fleet_need=5)——塔口径 min(全基地)→主基就绪塔(不选「任一基地」:新矿 2 塔主基裸奔时放行=换家);fleet 8→5(对齐胜局 528.5s fleet=5);threat_active 才锁(无波不锁)。
+2. **④c 塔地板改预警**:wave_cannon_floor_trigger(信用 supply=max(当帧,60s remembered 峰值)≥30 或 terran t≥480 定时)——波进门前立塔不是讣告;_o375_supply_peak 台账(②④共用)。
+3. **SG2 豁免+闲置填充**:fb_latch_pin_afford_ok(预扣口径:latch 钉 FB 改「存款 ≥FB+SG2 全款 450/350」保证 FB 不饿死);sg2_pre_fb_pin_needed(SG1 落成即 critical 钉 SG2,豁免疫 latch/基金窗,保留二矿让位与 Nexus 资金窗两道闸);sg_prefb_voidray_fill(SG 闲置产虚空 cap 8,60s 死锁门槛移除)。
+4. **出发闸吃 remembered 峰值**:enemy_supply_credited(max 当帧/粘滞峰),zerg_departure_floor_ok 与 push_enemy_army_gate 同吃。
+5. **no_money 封顶+FB/二矿硬序**:nexus_repin_afford_ok 加 forced 参数(循环 ≥2 轮免矿量门驻点等钱成交);FB 基金窗加 fb_latch_trigger_gated 硬序(二矿未开工不开窗,o374a g1 的 FB 285s 抢在二矿 321s 前实证)。
+
+### 本轮 bench 验收口径
+
+① Terran 局 O302 恢复(×10+);② 塔地板在波进门前触发;③ zerg 局 SG2 ≤450s+虚空峰 ≥6;④ 零「commit 后 10s 内敌 2× 显形」出击;⑤ Nexus 循环零 no_money 空转+FB 不抢在二矿前;⑥ Terran ≥1/3 恢复+Rush ≥1/3 恢复。
+
+**遗留风险(记入)**:
+
+- terran t≥480 定时地板是常态抬 target≥3,与 O360-③ 塔投资软顶(12 座)并存,穷局可能压舰队资金——若 bench 出现舰队晚于此,回查该档。
+- o374b g1 在 847-896s 各闸静态全通仍零 O302(疑似 steer stance/E9 滞回或 hot 锚点抖动),已加 near-miss 簿记需求待下轮直读。
+- stargate_deadlock_voidray/f2_wave_cannon_floor 变为无调用方(函数与旧单测保留)。

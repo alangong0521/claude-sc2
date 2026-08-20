@@ -152,7 +152,6 @@ from bot.production_plans import (
     fb_arrival_guard_active,
     tempest_gas_dump_ok,
     gas_stop_repull_action,
-    f2_wave_cannon_floor,
     zt_expand_reserve_exempt,
     expand_exempt_zealot_only,
     oracle_gas_yield,
@@ -162,7 +161,6 @@ from bot.production_plans import (
     fb_bankrupt_needed,
     fb_bankrupt_cleared,
     fb_fund_gas_gate,
-    stargate_deadlock_voidray,
     power_precheck_needed,
     fb_fund_latch_needed,
     fb_latch_stalled,
@@ -188,6 +186,12 @@ from bot.production_plans import (
     f2_target_literal,
     nexus_repin_afford_ok,
     wave_cannon_floor_active,
+    wave_cannon_floor_trigger,
+    enemy_supply_credited,
+    aa_peak_sticky,
+    fb_latch_pin_afford_ok,
+    sg2_pre_fb_pin_needed,
+    sg_prefb_voidray_fill,
     fb_rebuild_latch_needed,
     fb_latch_yields_first_cannon,
     sg_power_reserve_needed,
@@ -612,6 +616,15 @@ class ProductionManager(Manager):
         # ((round(x),round(y));循环 ≥2 轮换矿点时排除,None=未派过);
         # __init__ 初始化。
         self._o374_nexus_last_target: tuple | None = None
+        # O375-②/④(o374 双 lane 尸检):敌 supply remembered 峰值台账
+        # (aa_peak_sticky 同构 60s 粘滞;每帧由
+        # _enemy_army_supply_credited 喂当帧可见值)—— 塔地板预警
+        # 与出发闸共用;__init__ 初始化。
+        self._o375_supply_peak: float = 0.0
+        self._o375_supply_peak_at: float = -9999.0
+        # O375-③a(o374b 三局尸检):SG1 落成即钉 SG2 的 30s 节流时刻
+        # (只节流言不节流钉点,O357-④ 规约);__init__ 初始化。
+        self._o375_sg2_last: float = 0.0
         # O374-④a(o373a 双负尸检):敌坦克首现 latch(SIEGETANK/
         # SIEGETANKSIEGED 任一可见即锁存)—— E10 航母转型点与敌情
         # 挂钩的输入;__init__ 初始化。
@@ -2430,6 +2443,11 @@ class ProductionManager(Manager):
         # 淤积、星门空转 170s 实证:窗开→停气禁→气≥400→窗续开,
         # 窗自持)。新增健康监控:窗开期间矿净积累 ≤0(10s 滑窗)
         # 立即关窗放行 30s(o366a g2 三窗零成交纯压经济实证)。
+        # O375-⑤b(o374a g1 尸检):FB/二矿硬序 —— g1 FB(285s)抢在
+        # 二矿(321s)前落成,基金窗与扩张争矿,二矿 +100s(胜局钱序
+        # 221 二矿→309 FB)。二矿未开工(townhalls 含在建口径 <2,
+        # 与 O373-③a latch 触发门同判据)不开 FB 基金窗;Nexus 开工
+        # 后恢复常态。
         _fb_fund_raw = fb_fund_window(
             sg_ready=any(s.is_ready for s in _sg_all),
             fb_entities=_fb_entities_now,
@@ -2439,7 +2457,7 @@ class ProductionManager(Manager):
             vespene=self.ai.vespene,
             minerals=self.ai.minerals,
             window_open=self._fb_fund_window,
-        )
+        ) and fb_latch_trigger_gated(self.ai.townhalls.amount)
         if _fb_fund_raw:
             if self._fb_fund_since is None:
                 self._fb_fund_since = self.ai.time
@@ -2647,10 +2665,29 @@ class ProductionManager(Manager):
         self._o373_fb_pin_yield = not fb_latch_pin_allowed(
             _o370_second_base_dealt, self._o364_nexus_fund_hold()
         )
+        # O375-③a(o374b 三局尸检):SG2 预扣 —— o374b latch 提前触发
+        # (g1 450.2s/g2 395.1s)囤矿 300+200,SG2 饿死(851.8/871.9/
+        # 全程没有 vs o373b 胜局 413.8s)。zerg timing 且 SG1 就绪且
+        # SG2 未钉(含在途 <2)时,钉 FB 的可负担口径改「存款 ≥FB+
+        # SG2 全款」(fb_latch_pin_afford_ok):SG2 豁免钉点(下方
+        # sg2_pre_fb_pin_needed 分支)随时可钉,预扣保证 SG2 钉走后
+        # latch 仍能攒回 FB 全款,FB 不被饿死;SG2 在途/落成后预扣
+        # 自灭,恢复 300/200 原口径。
+        _o375_sg2_reserve = (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and _sg_ready_now
+            and (
+                len(_sg_all)
+                + self.manager_mediator.get_building_counter[UnitID.STARGATE]
+            ) < 2
+        )
         if (
             self._fb_bankrupt
             and _fb_entities_now == 0
-            and self.ai.can_afford(UnitID.FLEETBEACON)
+            and fb_latch_pin_afford_ok(
+                self.ai.minerals, self.ai.vespene, _o375_sg2_reserve
+            )
         ):
             if _o370_fb_in_tracker:
                 if event_throttle_ok(self.ai.time, self._o370_latch_inflight_ts):
@@ -3406,10 +3443,17 @@ class ProductionManager(Manager):
             # —— 旧门只认 zerg timing/rush,Terran 三局 35+ 窗口地板
             # 零触发(门没开,判据无恙),550-700s 塔厚度不够被 MM 波
             # 连穿;terran 全 build 开门,protoss 无证据不开。
-            if wave_cannon_floor_active(self._opp_race, self._ai_build):
-                _wave_floored = f2_wave_cannon_floor(
-                    self._visible_enemy_army_supply(), cannons
-                )
+            # O375-②(o374 双 lane 尸检):触发源改预警 —— 旧「敌可见
+            # supply>35」全部在波已进门后才抬(o374a g1 547.9/g2
+            # 833.3/g3 812.6,塔峰 4-6 低于胜局 11);改信用口径
+            # (max(当帧可见, 60s remembered 峰值)≥30)或 terran
+            # t≥480 定时兜底,波进门前把塔立起来。
+            if wave_cannon_floor_active(
+                self._opp_race, self._ai_build
+            ) and wave_cannon_floor_trigger(
+                self._enemy_army_supply_credited(), self._opp_race, self.ai.time
+            ):
+                _wave_floored = max(cannons, 3)
                 if _wave_floored != cannons:
                     cannons = _wave_floored
                     if event_throttle_ok(self.ai.time, self._o367_wave_log_ts):
@@ -3417,8 +3461,8 @@ class ProductionManager(Manager):
                         self.ai._events.append({
                             "t": round(self.ai.time, 1),
                             "msg": (
-                                f"O367:敌35+波,F2塔目标地板抬3"
-                                f"(敌supply={self._visible_enemy_army_supply():.0f})"
+                                f"O375:敌波预警,F2塔目标地板抬3"
+                                f"(信用supply={self._o375_supply_peak:.0f})"
                             ),
                         })
             # O216j(o216h-lane2 game_04 实证):O210 的「买不起即归零」让新分矿
@@ -4738,6 +4782,52 @@ class ProductionManager(Manager):
                     "t": round(self.ai.time, 1),
                     "msg": f"O369:舰队缺口硬钉星门失败={_rc}",
                 })
+        # O375-③a(o374b 三局尸检):SG1 落成即钉 SG2 —— o373b 胜局
+        # 配方 SG2@413.8s;o374b latch 提前触发(g1 450.2s/g2 395.1s)
+        # 后 O326-②(FB 在途+气≥400+豁免 latch/基金窗)与 O369-⑥
+        # (FB 已落成)双双够不到,SG2 饿死 851.8/871.9/全程没有。
+        # pre-FB 窗口 critical 钉 SG2:豁免疫 FB latch 暂停清单与
+        # 基金窗 SG2 让位(150/150 由 latch 钉 FB 的预扣口径
+        # fb_latch_pin_afford_ok 保底,FB 不被饿死);二矿让位
+        # (sg2_pin_economy_ok)与 Nexus 资金窗独占
+        # (nexus_fund_hold_blocks)两道既有闸保留,SG2 不抢扩张
+        # 全款;30s 节流防连拍(O333-④ 同规约),dispatched 簿记
+        # 走 O370-⑤b 同一 30s 重钉通道。FB 落成后判据自灭,回归
+        # O326-②/O369-⑥ 常态通道。
+        if (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and sg2_pre_fb_pin_needed(
+                sg1_ready=len(_sg_ready_o369) > 0,
+                sg_total=_sg_total_o218,
+                fb_entities=self._fb_entities_now,
+            )
+            and sg2_pin_economy_ok(self.ai.townhalls.amount, self.ai.minerals)
+            and self.ai.can_afford(UnitID.STARGATE)
+            and self.ai.time - self._o375_sg2_last > 30.0
+            and not (
+                self._o364_nexus_fund_hold()
+                and nexus_fund_hold_blocks("STARGATE", _sg_total_o218)
+            )
+        ):
+            self._o375_sg2_last = self.ai.time
+            _rc = self._dispatch_structure(
+                UnitID.STARGATE, self.ai.start_location, critical=True
+            )
+            if _rc == "dispatched":
+                self._o370_sg_pin_at = self.ai.time  # O370-⑤b:同 O218 簿记
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O375:SG1落成即钉SG2(豁免FB latch预扣,"
+                        f"SG={_sg_total_o218})"
+                    ),
+                })
+            else:
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O375:SG2预扣钉点失败={_rc}",
+                })
         # O370-⑤b(o369 尸检):追加星门钉点 30s 未落成重钉 ——
         # O218/O369-⑥ 「dispatched 后没落成」归因:钉点派工后气被
         # 产线花掉气门(≥400)关闭,触发闸永假;条目被 O362 保险丝/
@@ -5206,6 +5296,12 @@ class ProductionManager(Manager):
         # 只有无就绪 SG 或有 SG 在产舰队单位(TEMPEST/CARRIER)
         # 才销账;在产 VOIDRAY/ORACLE(填线)保留计时。FB 落成
         # 不再销账(②b post-FB 矿穷填线要读同一计时器)。
+        # O375-③b(o374b 三局尸检):填充判据改 sg_prefb_voidray_fill
+        # —— 60s 死锁门槛叠加 latch 期不产,o374b 虚空峰 2/4/1 vs
+        # o373b 胜局 12(胜局中段支柱正是虚空群);SG 落成到 FB 落成
+        # 动辄 100-200s,门槛把填充窗砍掉大半。就绪 SG 存在且 FB 未
+        # 落成即允许填充(本通道合并,不另立分支;空转计时器保留给
+        # ②b),cap 4→8(验收口径虚空峰 ≥6;填充通道留气给舰队接力)。
         _sg_ready_all = [
             s
             for s in self.manager_mediator.get_own_structures_dict[
@@ -5230,15 +5326,17 @@ class ProductionManager(Manager):
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and stargate_deadlock_voidray(
-                self._sg_idle_since, self.ai.time, self._fb_entities_now
+            and sg_prefb_voidray_fill(
+                ready_sg=len(_sg_ready_all),
+                fb_entities=self._fb_entities_now,
+                voidrays=(
+                    self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.VOIDRAY)
+                    + cy_unit_pending(self.ai, UnitID.VOIDRAY)
+                ),
             )
-            and (
-                self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.VOIDRAY)
-                + cy_unit_pending(self.ai, UnitID.VOIDRAY)
-            ) < 4
             and self.ai.can_afford(UnitID.VOIDRAY)
-            # O369-①a:latch 期不产(攒钱给 FB;latch 解除自动恢复)
+            # O369-①a/O375-③b:latch 期不产(攒钱给 FB+SG2 预扣,
+            # 不饿死 FB;latch 解除自动恢复)
             and not self._fb_bankrupt
         ):
             for _sg in _sg_ready_all:
@@ -5247,8 +5345,8 @@ class ProductionManager(Manager):
                     self.ai._events.append({
                         "t": round(self.ai.time, 1),
                         "msg": (
-                            f"O368:星门死锁自救,转产虚空"
-                            f"(SG空转{self.ai.time - self._sg_idle_since:.0f}s,"
+                            f"O375:pre-FB星门填充,产虚空"
+                            f"(SG空转{0.0 if self._sg_idle_since is None else self.ai.time - self._sg_idle_since:.0f}s,"
                             "FB未落成)"
                         ),
                     })
@@ -9232,6 +9330,24 @@ class ProductionManager(Manager):
             if not u.is_structure and u.type_id not in workers
         )
 
+    def _enemy_army_supply_credited(self) -> float:
+        """O375-②/④(o374 双 lane 尸检):敌 supply 信用口径 —— 每帧
+        喂当帧可见值进 remembered 峰值台账(_o375_supply_peak,
+        aa_peak_sticky 60s 粘滞),返回 max(当帧可见, 粘滞峰值)
+        (enemy_supply_credited)。o374b g2 实证:O302 commit 后
+        3-10s 敌 51-79 supply 才显形,只认当帧 = 波进迷雾即归零;
+        o374a 三局塔地板全在波进门后才抬。塔地板预警(O375-②)
+        与 combat 出发闸(O375-④)共用本口径(同帧多次调用幂等:
+        峰值时刻不后退)。"""
+        _vis = self._visible_enemy_army_supply()
+        self._o375_supply_peak, self._o375_supply_peak_at = aa_peak_sticky(
+            self.ai.time,
+            _vis,
+            self._o375_supply_peak,
+            self._o375_supply_peak_at,
+        )
+        return enemy_supply_credited(_vis, self._o375_supply_peak)
+
     def _visible_enemy_army_count(self) -> int:
         """敌可见作战单位数(E2 分矿塔数估算;口径同 _visible_enemy_army_supply)。"""
         workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
@@ -9847,10 +9963,18 @@ class ProductionManager(Manager):
         no_money 期不涨(nexus_repin_afford_ok)。
         O374-③b:force(循环 ≥2 轮)且目标同上轮 → 换矿点(排除
         上轮目标选最近空闲点)—— 同一矿点反复消失(被堵/被压)
-        不再死磕;唯一空闲点/目标已变 → 原选取不动。"""
+        不再死磕;唯一空闲点/目标已变 → 原选取不动。
+        O375-⑤a(o374b g3 尸检):force(循环 ≥2 轮)免矿量门 ——
+        g3 三轮 no_money 重派工 336→424s 原地空转(银行 88s 没过
+        400,保命开销持续吃钱):门后无派工 = 零进展。forced 直接
+        驻点等钱成交(max_on_route=99+清保险丝冷却,O370-②b),
+        O364/O51/O54 让位继续攒钱,矿到 400 自动开工;与旧驻点
+        空转(无强制、被 pop 即 30s 冷却)不同构。"""
         # O374-③a:矿量门(驻点等钱在本路径已证伪:等钱的条目
         # 被 pop 构成循环,不是「钱到即开工」)
-        if not nexus_repin_afford_ok(self.ai.minerals):
+        # O375-⑤a:forced(循环 ≥2 轮)免门 —— no_money 封顶,
+        # 不再原地空转(nexus_repin_afford_ok 的 forced 口径)。
+        if not nexus_repin_afford_ok(self.ai.minerals, forced=force):
             return "no_money"
         _free = [
             el

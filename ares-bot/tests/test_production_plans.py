@@ -169,6 +169,11 @@ from bot.production_plans import (  # noqa: E402
     nexus_repin_afford_ok,
     transition_push_hold,
     wave_cannon_floor_active,
+    wave_cannon_floor_trigger,
+    enemy_supply_credited,
+    fb_latch_pin_afford_ok,
+    sg2_pre_fb_pin_needed,
+    sg_prefb_voidray_fill,
     zerg_aa_credited,
     zerg_departure_floor_ok,
     fleet_formed_release_rush,
@@ -5184,16 +5189,19 @@ class TestO365Fixes(unittest.TestCase):
         self.assertTrue(zerg_departure_floor_ok(20.0, 0.0))
 
     def test_transition_push_hold(self):
-        # O374-④b:留守条件 —— FB 落成+舰队 <8+有基地塔 <2 →
-        # 守家不跟压(o373a g1/g2 出击与抄家窗口重叠档)
-        self.assertTrue(transition_push_hold(True, 5, 1))
-        self.assertTrue(transition_push_hold(True, 0, 0))
-        # 每基地塔 ≥2 → 放行(防线够厚)
-        self.assertFalse(transition_push_hold(True, 5, 2))
-        # 舰队 ≥8(转型完成)→ 放行(原闸管)
-        self.assertFalse(transition_push_hold(True, 8, 0))
+        # O375-①:三条件各态 —— ①threat 闸:无波不锁(o374a「留守
+        # 保家」证伪:舰队全在家波照样穿)
+        self.assertFalse(transition_push_hold(True, 0, 0, False))
+        # ②FB 落成+有波+舰队 <5+主基塔 <2 → 守家不跟压
+        # (o373a g1/g2 出击与抄家窗口重叠档)
+        self.assertTrue(transition_push_hold(True, 4, 1, True))
+        self.assertTrue(transition_push_hold(True, 0, 0, True))
+        # 主基塔 ≥2 → 放行(新矿 0 塔不再全局锁死,o374a 锁死档)
+        self.assertFalse(transition_push_hold(True, 4, 2, True))
+        # ③fleet 释放线 5(对齐胜局配方 528.5s fleet=5 起推 ×29)
+        self.assertFalse(transition_push_hold(True, 5, 0, True))
         # FB 未落成(真空前半段)→ 原闸不动
-        self.assertFalse(transition_push_hold(False, 3, 0))
+        self.assertFalse(transition_push_hold(False, 3, 0, True))
 
     def test_nexus_repin_afford_ok(self):
         # O374-③a:矿量门 —— 矿 <400 不派工(o373b g3 银行
@@ -5203,6 +5211,77 @@ class TestO365Fixes(unittest.TestCase):
         # 够 400 → 派工(钉即开工,循环失去燃料)
         self.assertTrue(nexus_repin_afford_ok(400.0))
         self.assertTrue(nexus_repin_afford_ok(445.0))
+        # O375-⑤a:forced(循环 ≥2 轮)免矿量门 —— no_money 封顶,
+        # 驻点等钱成交不再原地空转(o374b g3 三轮 336→424s 档)
+        self.assertTrue(nexus_repin_afford_ok(210.0, forced=True))
+        self.assertTrue(nexus_repin_afford_ok(0.0, forced=True))
+        # 非 forced 原口径不变
+        self.assertFalse(nexus_repin_afford_ok(399.0, forced=False))
+
+    def test_wave_cannon_floor_trigger(self):
+        # O375-②:预警触发三态 —— ①信用 supply(含 60s remembered
+        # 峰值)≥30 即触发,波进门前立塔(o374a 地板全在波进门后
+        # 才抬档;当帧 0 但峰值 42 → 仍触发)
+        self.assertTrue(wave_cannon_floor_trigger(42.0, "terran", 300.0))
+        self.assertTrue(wave_cannon_floor_trigger(30.0, "zerg", 300.0))
+        # ②terran t≥480 定时兜底(信用 0 也触发,o374a MM 波全部
+        # 527s+ 到门档)
+        self.assertTrue(wave_cannon_floor_trigger(0.0, "terran", 480.0))
+        self.assertTrue(wave_cannon_floor_trigger(10.0, "terran", 812.6))
+        # ③信用 <30 且(非 terran 或 t<480)→ 不触发(zerg 无定时
+        # 档;terran 早窗不误抬)
+        self.assertFalse(wave_cannon_floor_trigger(29.9, "zerg", 600.0))
+        self.assertFalse(wave_cannon_floor_trigger(0.0, "terran", 479.9))
+
+    def test_enemy_supply_credited(self):
+        # O375-④:信用口径 —— 当帧 0 但 60s 粘滞峰 51 → 仍计 51
+        # (o374b g2 commit 后 3-10s 敌 51-79 supply 显形档)
+        self.assertEqual(enemy_supply_credited(0.0, 51.0), 51.0)
+        # 当帧更大 → 取当帧
+        self.assertEqual(enemy_supply_credited(79.0, 51.0), 79.0)
+        # 全无 → 0(出发闸不误拦)
+        self.assertEqual(enemy_supply_credited(0.0, 0.0), 0.0)
+
+    def test_fb_latch_pin_afford_ok(self):
+        # O375-③a:SG2 预扣 —— sg2_reserve=True 时攒矿口径改
+        # 「存款 ≥FB+SG2 全款」(300+150/200+150),SG2 钉走后 latch
+        # 仍能攒回 FB 全款,FB 不被饿死(o374b SG2 饿死档)
+        self.assertFalse(fb_latch_pin_afford_ok(300.0, 200.0, True))
+        self.assertFalse(fb_latch_pin_afford_ok(449.9, 350.0, True))
+        self.assertTrue(fb_latch_pin_afford_ok(450.0, 350.0, True))
+        self.assertTrue(fb_latch_pin_afford_ok(500.0, 400.0, True))
+        # SG2 在途/落成 → 预扣自灭,恢复 300/200 原口径
+        self.assertTrue(fb_latch_pin_afford_ok(300.0, 200.0, False))
+        self.assertFalse(fb_latch_pin_afford_ok(299.9, 200.0, False))
+
+    def test_sg2_pre_fb_pin_needed(self):
+        # O375-③a:SG1 落成即钉 SG2(o373b 胜局 SG2@413.8s 配方)
+        self.assertTrue(sg2_pre_fb_pin_needed(True, 1, 0))
+        # SG 总数(含在途)≥2 → 不重复钉
+        self.assertFalse(sg2_pre_fb_pin_needed(True, 2, 0))
+        # FB 已落成 → 判据自灭,回归 O326-②/O369-⑥ 常态通道
+        self.assertFalse(sg2_pre_fb_pin_needed(True, 1, 1))
+        # SG1 未就绪 → 不钉
+        self.assertFalse(sg2_pre_fb_pin_needed(False, 0, 0))
+
+    def test_sg_prefb_voidray_fill(self):
+        # O375-③b:pre-FB 闲置填充三态 —— ①就绪 SG 存在+FB 未落成
+        # +虚空 <8 → 填充(o373b 胜局 12 虚空配方;60s 死锁门槛
+        # 砍掉填充窗的 o374b 虚空峰 2/4/1 档)
+        self.assertTrue(sg_prefb_voidray_fill(1, 0, 0))
+        self.assertTrue(sg_prefb_voidray_fill(2, 0, 7))
+        # ②cap 满(≥8)→ 停(留气给舰队接力)
+        self.assertFalse(sg_prefb_voidray_fill(1, 0, 8))
+        # ③FB 已落成/无就绪 SG → 自灭(正常产线接管)
+        self.assertFalse(sg_prefb_voidray_fill(1, 1, 0))
+        self.assertFalse(sg_prefb_voidray_fill(0, 0, 0))
+
+    def test_fb_fund_second_base_gate(self):
+        # O375-⑤b:FB/二矿硬序门 —— 二矿未开工(townhalls 含在建
+        # <2)不开 FB 基金窗(o374a g1 FB 285s 抢在二矿 321s 前档;
+        # 胜局钱序 221 二矿→309 FB);与 O373-③a latch 触发门同判据
+        self.assertFalse(fb_latch_trigger_gated(1))
+        self.assertTrue(fb_latch_trigger_gated(2))
 
     def test_wave_cannon_floor_active(self):
         # O374-④c:terran 全 build 开门(o373a 三局 35+ 窗口
