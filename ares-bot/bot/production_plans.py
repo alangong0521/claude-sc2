@@ -1776,6 +1776,21 @@ def event_throttle_ok(now: float, last_ts: float, interval: float = 30.0) -> boo
     return now - last_ts >= interval
 
 
+def sg_rebuild_cooldown_ok(
+    now: float, last_at: float, cooldown: float = 30.0
+) -> bool:
+    """O376-⑥(o375a 尸检):O182 紧急重建星门的冷却判据。纯逻辑,可单测。
+
+    o375a g2 实证:1260s 一秒连发 15 条「O182:紧急重建星门」——
+    register_behavior 每帧重注册(星门建造 43s,就绪+在途归零
+    的窗口内每帧都满足触发条件),建造队列被重复注册刷爆。与
+    event_throttle_ok(只节流言不节流行为)相反:本闸节流的是
+    行为本身(注册动作),冷却期内不重注册;落成/在途出现
+    (就绪+在途 >0)判据自灭,冷却只是建造窗内的防连发兜底。
+    """
+    return now - last_at >= cooldown
+
+
 def fb_saving_window(sg_ready: bool, fb_present_or_pending: bool) -> bool:
     """O353-③(o352 六局尸检):FB 攒钱窗判据(虚空兜底禁用窗)。纯逻辑,可单测。
 
@@ -4917,6 +4932,36 @@ def f2_target_literal(
     return target
 
 
+def f2_global_cannon_cap(
+    cannons_main: int,
+    cannons_expansion: int,
+    bases: int,
+    fb_done: bool,
+    threat_active: bool,
+    total_cap: int = 14,
+    per_base_cap: int = 4,
+) -> tuple[int, int]:
+    """O376-④(o375b 尸检):F2 塔目标的全局总闸。纯逻辑,可单测。
+
+    o375b g2 实证:塔目标三路叠加无总闸 —— F2 常态累积 + O375-②
+    波次地板(≥3) + O366-①c FB 落成+2,塔峰 23 ≈3450 矿 ≈ 一艘
+    半航母舰队,舰队资金被塔吃光。FB 落成后(舰队成型资金窗):
+    全局帽 = min(总塔 ≤total_cap, 每基地 ≤per_base_cap),主基先
+    占份额,分矿均摊余额;波到脸(threat/rush)豁免 —— 生死窗
+    塔不设顶(O375-② 地板语义优先)。FB 未落成不钳(前期塔链
+    /O268-② 底线/O274-② 分矿 fortify 原样)。帽内账:3 基地
+    主 4+余额 10 均摊 5 取小 4 → 4+4×2=12;4 基地 4+10//3×
+    3=13;均 ≤14。O375-② 地板 3 在任何基地数下都活(主 3+
+    分 3×(n-1) ≤ 3n ≤ 14 对 n≤4 成立)。
+    """
+    if not fb_done or threat_active:
+        return cannons_main, cannons_expansion
+    main = min(cannons_main, per_base_cap, total_cap)
+    remaining = max(0, total_cap - main)
+    exp_cap = min(per_base_cap, remaining // max(1, bases - 1))
+    return main, min(cannons_expansion, exp_cap)
+
+
 def nexus_pin_yield_clamp(target: int) -> int:
     """O368-④b(o367 双 lane 尸检):Nexus 钉点让位钳新语义。纯逻辑,可单测。
 
@@ -5401,6 +5446,24 @@ def cannon_freeze_clamp(
     return min(target, max(existing, floor_snapshot) + new_base_exempt)
 
 
+def zerg_sg_pin_lane_active(opp_race: str, ai_build: str) -> bool:
+    """O376-①(o375 双 lane 尸检):SG/FB 钉点家族(SG2 预扣/舰队缺口
+    硬钉/pre-FB 虚空填充/post-FB 填线/30s 重钉/SG2 紧随 FB)的
+    种族门。纯逻辑,可单测。
+
+    o375b 实证:bench zerg lane 协议含 `--ai-build Rush`
+    (_ai_build=="rush"),SG 钉点家族三处 `== "timing"` 单值门把
+    rush lane 整族关门外 —— g2 有 341.5→630.8 整整 290s 的
+    「SG1 就绪+FB 未落」窗口,SG2 钉点/虚空填充一次没进。同款
+    前科:O364-① 被同一 "timing" 门门住(见本文件 4016 行附近
+    注释)。口径与 wave_cannon_floor_active(O374-④c)对齐:
+    zerg timing/rush 开门(rush 出 transition 后舰队成型走同一
+    SG/FB 通道,判据内的经济/威胁闸不变);zerg power/terran/
+    protoss 无尸检证据,不开。
+    """
+    return opp_race == "zerg" and ai_build in ("timing", "rush")
+
+
 def sg2_pre_fb_pin_needed(
     sg1_ready: bool,
     sg_total: int,
@@ -5622,9 +5685,11 @@ def enemy_supply_credited(visible_supply: float, sticky_peak: float) -> float:
 
     o374b g2 实证:两次 O302 commit 后 3-10s 敌 51-79 supply 才
     显形 —— 出发闸/塔地板只认当帧可见(enemy_units),波在迷雾
-    里集结时口径归零,出击即顶波。口径 = max(当帧可见, 近 60s
-    remembered 峰值)(aa_peak_sticky 同构粘滞簿记,调用方每帧
-    喂当帧可见值;O375-② 塔地板与本出发闸共用同一台账)。
+    里集结时口径归零,出击即顶波。口径 = max(当帧可见, remembered
+    峰值)(aa_peak_sticky 同构粘滞簿记,调用方每帧喂当帧可见值;
+    O375-② 塔地板与本出发闸共用同一台账)。O376-③:supply 台账
+    粘滞窗 60s→120s(对齐 Zerg Rush 90-120s 波次节奏,o375b 出击
+    正撞 60s 侦察空窗实证);AA 粘滞窗不动(60s 已验证)。
     """
     return max(visible_supply, sticky_peak)
 
@@ -5643,9 +5708,10 @@ def wave_cannon_floor_trigger(
     全部在波已进门后才抬(g1 547.9/g2 833.3/g3 812.6),塔峰 4-6
     反而低于胜局 11 —— 波在迷雾集结时可见 supply 归零,进门才
     显形,塔建造要 25-29s,进门再抬永远晚一拍。改预警口径:
-    信用 supply(enemy_supply_credited = max(当帧可见, 60s
-    remembered 峰值))≥peak_need 即触发(波离视野 60s 内仍认账,
-    进门前把塔立起来);terran 加 t ≥terran_time 定时兜底
+    信用 supply(enemy_supply_credited = max(当帧可见, remembered
+    峰值;O376-③ 起 supply 台账窗 120s))≥peak_need 即触发(波离
+    视野一个波次周期内仍认账,进门前把塔立起来);terran 加
+    t ≥terran_time 定时兜底
     (o374a 三局 MM 波全部 527s+ 到门,480s 起常态抬地板,
     不依赖侦察是否撞见集结)。峰值 35→30:粘滞峰值含已交战的
     波,30 即生死窗(O367-⑤c 的 35 是当帧口径,信用口径同量
@@ -6240,6 +6306,9 @@ def push_enemy_army_gate(
     army supply ×supply_ratio(量级不送死)且 敌硬对空(维京/
     腐化/凤凰/飞蛇,调用方 _HARD_AA 口径)<max_hard_aa(舰队不
     被点名)。敌可见 0(被榨干/迷雾收割)自然过闸(0 ≤ 任何)。
+    O376-②(o375 尸检):「0 自然过闸」语义已被 blind_push_blocked
+    在调用方覆盖 —— 信用 supply=0(当帧+粘滞峰值全空)= 盲推,
+    不过闸。
     O373-⑥(o372a g1 实证):supply_ratio 1.5→1.0,并入 O302 出发
     闸 —— g1 舰队 5 于 562.9s 顶波出击离家,3 秒后敌 46 supply
     波进门,三矿→二矿→主基连掉(×1.5 时 own≥31 即放行);出发
@@ -6350,6 +6419,36 @@ def zerg_departure_floor_ok(
     不动的胜局打法一行不变。
     """
     return enemy_visible_supply < own_army_supply * ratio
+
+
+def push_fleet_floor_ok(fleet_total: int, floor: int = 6) -> bool:
+    """O376-⑤(o375b 尸检):O302 出击舰队(含在产)下限。纯逻辑,可单测。
+
+    o375b g2 实证:两次 fleet=4 出击无果+撞波 —— 4 艘舰队压不死人
+    也跑不掉,出门就是送战损(下限 4 的口径被实证击穿)。出击闸
+    路径(_army_gate_ok 分支,调用方并入)舰队(含在产)≥floor
+    才放行;黄金窗 min_fleet(zt_golden_window_push,舰队 ≥3+
+    追猎齐编)与 _force_push(舰队 ≥6/8+t>540)通道不动 —— 那
+    两条自带数量/编成前提,豁免语义一行不变。
+    """
+    return fleet_total >= floor
+
+
+def blind_push_blocked(credited_supply: float) -> bool:
+    """O376-②(o375 双 lane 尸检):盲推硬闸。纯逻辑,可单测。
+
+    o375a g1 实证:两次 O302 出击时敌当帧可见+remembered 峰值
+    全空(信用 supply=0),推出去撞 57→85 supply 主力团灭;
+    o375b g2 O302@927.8 commit 后 0.3s 敌 37 supply 显形,
+    6 虚空 12s 全灭。信用 supply(enemy_supply_credited =
+    max(当帧可见, remembered 粘滞峰值))为 0 = 对敌情一无所
+    知,出击即盲推 → 不推(调用方并入 _army_gate_ok,与
+    O374-②/O373-⑥ 同判不三判;_force_push/黄金窗通道豁免
+    不动)。push_enemy_army_gate 的「敌可见 0 自然过闸」旧
+    语义由本闸在调用方覆盖 —— 0 不再等于「被榨干可收割」,
+    而是「无情报不出击」。
+    """
+    return credited_supply <= 0.0
 
 
 def transition_push_hold(

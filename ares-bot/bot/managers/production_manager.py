@@ -126,6 +126,7 @@ from bot.production_plans import (
     zt_cannon_pending_probe_yield,
     zt_second_cannon_pin_ok,
     event_throttle_ok,
+    sg_rebuild_cooldown_ok,
     tempest_dump_suppressed,
     cannon_capped,
     sg2_pin_economy_ok,
@@ -184,6 +185,7 @@ from bot.production_plans import (
     new_base_no_cannon_alarm,
     f2_survival_floor,
     f2_target_literal,
+    f2_global_cannon_cap,
     nexus_repin_afford_ok,
     wave_cannon_floor_active,
     wave_cannon_floor_trigger,
@@ -192,6 +194,7 @@ from bot.production_plans import (
     fb_latch_pin_afford_ok,
     sg2_pre_fb_pin_needed,
     sg_prefb_voidray_fill,
+    zerg_sg_pin_lane_active,
     fb_rebuild_latch_needed,
     fb_latch_yields_first_cannon,
     sg_power_reserve_needed,
@@ -617,7 +620,7 @@ class ProductionManager(Manager):
         # __init__ 初始化。
         self._o374_nexus_last_target: tuple | None = None
         # O375-②/④(o374 双 lane 尸检):敌 supply remembered 峰值台账
-        # (aa_peak_sticky 同构 60s 粘滞;每帧由
+        # (aa_peak_sticky 同构粘滞;O376-③ 起窗长 120s;每帧由
         # _enemy_army_supply_credited 喂当帧可见值)—— 塔地板预警
         # 与出发闸共用;__init__ 初始化。
         self._o375_supply_peak: float = 0.0
@@ -625,6 +628,10 @@ class ProductionManager(Manager):
         # O375-③a(o374b 三局尸检):SG1 落成即钉 SG2 的 30s 节流时刻
         # (只节流言不节流钉点,O357-④ 规约);__init__ 初始化。
         self._o375_sg2_last: float = 0.0
+        # O376-⑥(o375a g2 实证):O182 紧急重建星门的 30s 冷却时刻
+        # (一秒连发 15 条实证;节流注册行为本身,非只节流言);
+        # __init__ 初始化。
+        self._o182_sg_rebuild_last: float = 0.0
         # O374-④a(o373a 双负尸检):敌坦克首现 latch(SIEGETANK/
         # SIEGETANKSIEGED 任一可见即锁存)—— E10 航母转型点与敌情
         # 挂钩的输入;__init__ 初始化。
@@ -2674,8 +2681,7 @@ class ProductionManager(Manager):
         # latch 仍能攒回 FB 全款,FB 不被饿死;SG2 在途/落成后预扣
         # 自灭,恢复 300/200 原口径。
         _o375_sg2_reserve = (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            zerg_sg_pin_lane_active(self._opp_race, self._ai_build)  # O376-①
             and _sg_ready_now
             and (
                 len(_sg_all)
@@ -3446,7 +3452,8 @@ class ProductionManager(Manager):
             # O375-②(o374 双 lane 尸检):触发源改预警 —— 旧「敌可见
             # supply>35」全部在波已进门后才抬(o374a g1 547.9/g2
             # 833.3/g3 812.6,塔峰 4-6 低于胜局 11);改信用口径
-            # (max(当帧可见, 60s remembered 峰值)≥30)或 terran
+            # (max(当帧可见, remembered 峰值;O376-③ 起窗 120s)≥30)
+            # 或 terran
             # t≥480 定时兜底,波进门前把塔立起来。
             if wave_cannon_floor_active(
                 self._opp_race, self._ai_build
@@ -3685,6 +3692,19 @@ class ProductionManager(Manager):
                         "t": round(self.ai.time, 1),
                         "msg": f"O366:FB落成增防,主基塔target+2(={cannons})",
                     })
+            # O376-④(o375b 尸检):F2 塔目标全局总闸 —— o375b g2 塔峰
+            # 23(F2 累积+O375-② 地板+O366-①c +2 三路叠加)≈3450 矿
+            # ≈ 一艘半航母舰队。FB 落成后钳 min(总塔 ≤14, 每基地 ≤4)
+            # (f2_global_cannon_cap),主基先占份额分矿均摊余额;
+            # threat/rush 豁免(生死窗塔不设顶,O375-② 地板语义优先)。
+            # 放在所有地板/增防之后:帽管总量,不管哪一路抬上来的。
+            cannons, _cannons_expansion = f2_global_cannon_cap(
+                cannons,
+                _cannons_expansion,
+                bases=max(1, self.ai.townhalls.ready.amount),
+                fb_done=self._fb_completed_at is not None,
+                threat_active=(self._threat_active or self._rush_active),
+            )
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
             # O207:非紧急状态下把 mor 压到 1，避免 PSD 一次派多个工人等钱
@@ -4519,6 +4539,9 @@ class ProductionManager(Manager):
             # O182:星门被拆光且有余钱时紧急重建产能，避免 late-game 气体烂银行
             # 却造不出舰队。前置：FB 还在科技链上、非 rush/timing 冲刺保命期、
             # 至少还有一个基地能落建筑。
+            # O376-⑥(o375a g2 实证):30s 冷却 —— 星门建造 43s,就绪+在途
+            # 归零窗内每帧都满足触发,1260s 一秒连发 15 条注册;冷却期
+            # 不重注册(sg_rebuild_cooldown_ok),落成/在途出现判据自灭。
             _sg_ready_and_pending = (
                 len(self.manager_mediator.get_own_structures_dict[UnitID.STARGATE])
                 + self.manager_mediator.get_building_counter[UnitID.STARGATE]
@@ -4530,7 +4553,11 @@ class ProductionManager(Manager):
                 and not self._rush_active
                 and not self._timing_sprint
                 and self.ai.can_afford(UnitID.STARGATE)
+                and sg_rebuild_cooldown_ok(
+                    self.ai.time, self._o182_sg_rebuild_last
+                )
             ):
+                self._o182_sg_rebuild_last = self.ai.time
                 self.ai.register_behavior(
                     BuildStructure(self.ai.start_location, UnitID.STARGATE)
                 )
@@ -4749,8 +4776,7 @@ class ProductionManager(Manager):
             s for s in structures_dict[UnitID.STARGATE] if s.is_ready
         ]
         if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            zerg_sg_pin_lane_active(self._opp_race, self._ai_build)  # O376-①
             and sg_gap_pin_needed(
                 fb_entities=self._fb_entities_now,
                 ready_sg=len(_sg_ready_o369),
@@ -4795,8 +4821,7 @@ class ProductionManager(Manager):
         # 走 O370-⑤b 同一 30s 重钉通道。FB 落成后判据自灭,回归
         # O326-②/O369-⑥ 常态通道。
         if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            zerg_sg_pin_lane_active(self._opp_race, self._ai_build)  # O376-①
             and sg2_pre_fb_pin_needed(
                 sg1_ready=len(_sg_ready_o369) > 0,
                 sg_total=_sg_total_o218,
@@ -4839,8 +4864,7 @@ class ProductionManager(Manager):
         if _o370_sg_pending and self._o370_sg_pin_at > 0.0:
             self._o370_sg_pin_at = 0.0  # 落成/在途销账
         elif (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            zerg_sg_pin_lane_active(self._opp_race, self._ai_build)  # O376-①
             and stargate_pin_retry_needed(
                 self._o370_sg_pin_at, self.ai.time, _o370_sg_pending
             )
@@ -5324,8 +5348,7 @@ class ProductionManager(Manager):
         elif self._sg_idle_since is None:
             self._sg_idle_since = self.ai.time
         if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            zerg_sg_pin_lane_active(self._opp_race, self._ai_build)  # O376-①
             and sg_prefb_voidray_fill(
                 ready_sg=len(_sg_ready_all),
                 fb_entities=self._fb_entities_now,
@@ -5359,8 +5382,7 @@ class ProductionManager(Manager):
         # latch 只活在 FB 未落时,本分支 FB 已落,天然不打架;
         # 矿够 300 正常产线接管,判据自灭)。
         if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            zerg_sg_pin_lane_active(self._opp_race, self._ai_build)  # O376-①
             and sg_post_fb_fill(
                 self._sg_idle_since,
                 self.ai.time,
@@ -9333,18 +9355,23 @@ class ProductionManager(Manager):
     def _enemy_army_supply_credited(self) -> float:
         """O375-②/④(o374 双 lane 尸检):敌 supply 信用口径 —— 每帧
         喂当帧可见值进 remembered 峰值台账(_o375_supply_peak,
-        aa_peak_sticky 60s 粘滞),返回 max(当帧可见, 粘滞峰值)
+        aa_peak_sticky 粘滞),返回 max(当帧可见, 粘滞峰值)
         (enemy_supply_credited)。o374b g2 实证:O302 commit 后
         3-10s 敌 51-79 supply 才显形,只认当帧 = 波进迷雾即归零;
         o374a 三局塔地板全在波进门后才抬。塔地板预警(O375-②)
         与 combat 出发闸(O375-④)共用本口径(同帧多次调用幂等:
-        峰值时刻不后退)。"""
+        峰值时刻不后退)。
+        O376-③(o375 双 lane 尸检):supply 峰值粘滞窗 60s→120s ——
+        60s 窗对 Zerg Rush ~90-120s 波次节奏太短,o375b 出击正撞
+        侦察空窗(波离视野 >60s 即归零);120s 覆盖一个完整波次周
+        期。AA 粘滞窗(combat _o374_aa_peak)不动,60s 已验证。"""
         _vis = self._visible_enemy_army_supply()
         self._o375_supply_peak, self._o375_supply_peak_at = aa_peak_sticky(
             self.ai.time,
             _vis,
             self._o375_supply_peak,
             self._o375_supply_peak_at,
+            window=120.0,  # O376-③:supply 窗 120s(AA 窗仍 60s)
         )
         return enemy_supply_credited(_vis, self._o375_supply_peak)
 
@@ -10557,8 +10584,7 @@ class ProductionManager(Manager):
         # 出场(o325a game_04 实证)。FB 拍下 + 首 SG 就绪 + 气 ≥400 +
         # SG <2 → 钉点第二星门,双 SG 并行把舰队 6 艘提前 ~150s。
         if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            zerg_sg_pin_lane_active(self._opp_race, self._ai_build)  # O376-①
             and any(s.is_ready for s in structures_dict[UnitID.STARGATE])
             and self._structure_present_or_pending(UnitID.FLEETBEACON)
             and self.ai.vespene >= 400.0

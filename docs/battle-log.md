@@ -10648,3 +10648,49 @@ Nexus/FB);③ SG ≤300s;④ 停气触发后 30s 内气增长压
 - terran t≥480 定时地板是常态抬 target≥3,与 O360-③ 塔投资软顶(12 座)并存,穷局可能压舰队资金——若 bench 出现舰队晚于此,回查该档。
 - o374b g1 在 847-896s 各闸静态全通仍零 O302(疑似 steer stance/E9 滞回或 hot 锚点抖动),已加 near-miss 簿记需求待下轮直读。
 - stargate_deadlock_voidray/f2_wave_cannon_floor 变为无调用方(函数与旧单测保留)。
+
+
+## o375 结果(VH Terran Power 0/3 + VH Zerg Rush 0/3,连续第二轮双 0/3)+ O375 六验收判定(SG2 死代码主元凶)+ O376(门修透+盲推硬闸+sticky 120s+全局塔帽+舰队下限+SG 重建冷却)
+
+**日期**:2026-08-20
+
+### o375 结果
+
+- o375a carrier vs VH Terran Power:0/3(上轮 0/3,连续未恢复)。
+- o375b carrier vs VH Zerg Rush:0/3(上轮 0/3)——**连续第二轮双 0/3(o374+o375 累计 0/12)**。
+- **总目标盘点**:VH Zerg Power/Rush 打穿、Timing 封存;Terran Power 2/15;Terran Rush/Timing 未测。
+
+### O375 六验收判定(本轮验证对象)
+
+- O375-① ④b 去 min 化 → **部分生效**:O302 从近 ×0 恢复 ×2/×4(g3 舰队 757.3s 到 8 立即解锁的锁链解除),但质量差——g1 两次均黄金窗=False 且敌信息全空,盲推撞 57→85 supply 主力团灭。
+- O375-② 塔地板改预警 → **生效(真收益)**:6 局 ~50 次「O375:敌波预警」事件,信用 supply/t≥480 双口径实证,主力波前 10-92s 抬地板;但收益被落地层吃掉(no_placement/贴槽水晶,a-g1 二矿告警 241s 被抄时仍无塔)。
+- O375-③ SG2 豁免+虚空填充 → **死代码(主元凶)**:production_manager.py:4799/:5328/:5363 三处被 `_ai_build == "timing"` 门住,而 zerg lane bench 协议是 `--ai-build Rush` → 永不求值(o375b g2 有 290s SG1 就绪窗口一次没进);SG2 仍靠 O218 气烂银行 798.6s 兜底或没有,虚空峰 1/6/2 vs 胜局 12。**第二次犯同一类错**(O364-① 同款门死)。
+- O375-④ 出发闸吃峰值 → **未生效/窗太短**:o375b g2 O302@927.8 commit 后 0.3s 敌 37 supply 显形,6 虚空 12s 全灭;60s sticky 窗对 Zerg Rush 90-120s 波次节奏太短。
+- O375-⑤ no_money 封顶+FB 硬序 → **生效 6/6**(FB 均在二矿后,无 no_money 死循环、无 forced 驻点)。
+- **验收⑥:双 0/3 未达成 ✗**。
+
+### o375 尸检(两尸检一致)
+
+- **bisect 不值得做**:三个主要病灶(塔 placement 死锁/SG 供电槽紧张/SG 长期空置)在 o373 胜局里就存在(老遗留);SG2 饿死是 o374 引入,o375 修了个死代码没修到;根因已代码级实锤(门没开=静态可读+事件零触发双证),机时应投给修门后的验证轮。
+- **塔三路叠加无总闸**:o375b g2 塔峰 23(F2 累积+O375 地板+O366 FB 落成+2)≈3450 矿 ≈ 一艘半航母舰队,舰队被拖到 956s 才有首航母。
+- **胜败分水岭在舰队体量**:o373a 胜局舰队峰 29、o373b 胜局虚空 12+SG2@414;o375 六局舰队峰 1-10、虚空 1-6。
+- SG 产能空置遗留恶化:o375a g3 四个 SG 全程只产 1 架风暴、气 300-520 烂银行;O218 追加信号 150s 无响应。
+
+### O376 落地(下一轮验证对象,六项,单测 822→829 绿,冒烟过)
+
+1. **门修透+防再犯**:zerg_sg_pin_lane_active(与 wave_cannon_floor_active 同口径);三处目标门(4824/5351/5385)+同族联动 4 处(2684/4779/4867/10587)放宽 `in ("timing","rush")`;**全文审计 93 组 `=="timing"`+6 组 `=="rush"` 单值门逐处处置**(审计清单在代码注释);**防再犯单测 test_protocol_matrix_reachability**(协议矩阵 × 关键闸可达性)。
+2. **盲推硬闸**:blind_push_blocked(信用 supply=0 即拦,并入 _army_gate_ok 同一判,_force_push/黄金窗豁免)。
+3. **sticky 窗 60→120s**(对齐 Zerg Rush 90-120s 波次;AA 粘滞窗不动 60s)。
+4. **全局塔数帽**:f2_global_cannon_cap(FB 落成后钳 min(总塔 ≤14,每基地 ≤4),threat 豁免)。
+5. **出击舰队下限 4→6**:push_fleet_floor_ok(黄金窗 min_fleet 与 _force_push 不动)。
+6. **O182 连发冷却**:sg_rebuild_cooldown_ok(30s,节流注册行为本身)。
+
+### 本轮 bench 验收口径
+
+① zerg rush lane 出现「SG1落成即钉SG2」事件+SG2 ≤450s+虚空峰 ≥6;② 零盲推;③ 零「commit 后 60s 内敌 2× 显形」;④ 塔峰值 ≤14;⑤ 零 fleet<6 出击;⑥ 双 lane ≥1/3 恢复。
+
+**遗留风险(记入)**:
+
+- 审计标注两个「同族观察项」(O239/O260 气烂折现、O294-③/O362-③ 舰队基建通道)本轮无尸检证据未放宽,若 o376 bench 再现气烂/SG 迟滞下轮凭证据再议。
+- O208/O216h 等 transition 块内 timing 门是防御性死分支(timing 禁入 transition 不可达但无害),未动避免无关 churn。
+- 若 o376 修门后仍 0/3,回退到 o373 态(eff47ff)复跑量化 O374/O375 净效应才有增量价值。

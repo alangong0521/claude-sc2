@@ -174,6 +174,11 @@ from bot.production_plans import (  # noqa: E402
     fb_latch_pin_afford_ok,
     sg2_pre_fb_pin_needed,
     sg_prefb_voidray_fill,
+    zerg_sg_pin_lane_active,
+    blind_push_blocked,
+    push_fleet_floor_ok,
+    f2_global_cannon_cap,
+    sg_rebuild_cooldown_ok,
     zerg_aa_credited,
     zerg_departure_floor_ok,
     fleet_formed_release_rush,
@@ -5520,6 +5525,130 @@ class TestO365Fixes(unittest.TestCase):
         # ≤35 → 零变化
         self.assertEqual(f2_wave_cannon_floor(35.0, 0), 0)
         self.assertEqual(f2_wave_cannon_floor(0.0, 2), 2)
+
+
+class TestO376Plans(unittest.TestCase):
+    """O376(o375 双 lane 0/3 尸检)六项落地的纯函数单测。"""
+
+    def test_zerg_sg_pin_lane_active(self):
+        # O376-①a:SG/FB 钉点家族种族门 —— o375b 的「== "timing"
+        # 单值门把 rush lane 关门外 290s」死代码修复;口径与
+        # wave_cannon_floor_active 对齐(zerg timing/rush 开门)
+        self.assertTrue(zerg_sg_pin_lane_active("zerg", "timing"))
+        self.assertTrue(zerg_sg_pin_lane_active("zerg", "rush"))
+        # zerg power/terran/protoss 无尸检证据 → 不开
+        self.assertFalse(zerg_sg_pin_lane_active("zerg", "power"))
+        self.assertFalse(zerg_sg_pin_lane_active("zerg", "macro"))
+        self.assertFalse(zerg_sg_pin_lane_active("terran", "power"))
+        self.assertFalse(zerg_sg_pin_lane_active("protoss", "timing"))
+        self.assertFalse(zerg_sg_pin_lane_active("", ""))
+
+    def test_protocol_matrix_reachability(self):
+        # O376-①c 防再犯:bench 协议矩阵(zerg lane=timing/rush/
+        # power、terran lane=power)× 关键闸可达性 —— 门 + 判据
+        # 联合求值,断言协议内 lane 不被单值门关门外(O364-①/
+        # O375-③ 同款前科)。
+        matrix = [
+            ("zerg", "timing"),
+            ("zerg", "rush"),
+            ("zerg", "power"),
+            ("terran", "power"),
+        ]
+        # SG/FB 钉点家族:zerg timing/rush 可达,power/terran 不可达
+        sg_gates = [
+            lambda: sg2_pre_fb_pin_needed(True, 1, 0),
+            lambda: sg_prefb_voidray_fill(1, 0, 0),
+            lambda: sg_post_fb_fill(481.0, 541.0, 1, 200.0),
+            lambda: sg_gap_pin_needed(1, 1, True, 4, 2, 200.0),
+            lambda: stargate_pin_retry_needed(100.0, 131.0, False),
+        ]
+        for race, build in matrix:
+            for gate in sg_gates:
+                reachable = zerg_sg_pin_lane_active(race, build) and gate()
+                if race == "zerg" and build in ("timing", "rush"):
+                    self.assertTrue(reachable, f"{race}/{build} 应可达")
+                else:
+                    self.assertFalse(reachable, f"{race}/{build} 不应可达")
+        # 波次塔地板:zerg timing/rush + terran 全 build 可达,
+        # zerg power 不可达(无尸检证据)
+        for race, build in matrix:
+            floor_reachable = wave_cannon_floor_active(
+                race, build
+            ) and wave_cannon_floor_trigger(30.0, race, 500.0)
+            if (race == "zerg" and build in ("timing", "rush")) or (
+                race == "terran"
+            ):
+                self.assertTrue(floor_reachable, f"{race}/{build} 应可达")
+            else:
+                self.assertFalse(floor_reachable, f"{race}/{build} 不应可达")
+        # 转型真空留守闸(terran lane 用):判据域内可达
+        self.assertTrue(transition_push_hold(True, 4, 1, True))
+        self.assertFalse(transition_push_hold(True, 5, 1, True))
+
+    def test_blind_push_blocked(self):
+        # O376-②:信用 supply=0(当帧可见+remembered 峰值全空)
+        # → 盲推不推(o375a g1 撞 57→85 supply、o375b g2 commit
+        # 后 0.3s 敌 37 supply 显形档);>0 → 放行(有情报才出击)
+        self.assertTrue(blind_push_blocked(0.0))
+        self.assertFalse(blind_push_blocked(0.1))
+        self.assertFalse(blind_push_blocked(37.0))
+
+    def test_supply_sticky_window_120(self):
+        # O376-③:supply 峰值粘滞窗 60s→120s(对齐 Zerg Rush
+        # 90-120s 波次节奏)—— 窗内(119.9s)峰值保持,超窗
+        # (120.1s)回落当帧;AA 窗默认 60s 不动(已验证)
+        peak, peak_at = aa_peak_sticky(100.0, 40, 0, -9999.0)
+        self.assertEqual((peak, peak_at), (40, 100.0))
+        # 120s 窗:119.9s 仍粘滞
+        peak, peak_at = aa_peak_sticky(
+            219.9, 0, peak, peak_at, window=120.0
+        )
+        self.assertEqual((peak, peak_at), (40, 100.0))
+        # 120s 窗:120.1s 超窗回落当帧
+        peak, peak_at = aa_peak_sticky(
+            220.1, 0, peak, peak_at, window=120.0
+        )
+        self.assertEqual((peak, peak_at), (0, 220.1))
+        # AA 默认窗 60s 不变:60.1s 即回落
+        peak, peak_at = aa_peak_sticky(100.0, 20, 0, -9999.0)
+        peak, peak_at = aa_peak_sticky(160.1, 0, peak, peak_at)
+        self.assertEqual((peak, peak_at), (0, 160.1))
+
+    def test_f2_global_cannon_cap(self):
+        # O376-④:FB 落成后全局帽 min(总塔 ≤14, 每基地 ≤4)
+        # (o375b g2 塔峰 23 ≈3450 矿档)
+        # FB 未落成 → 不钳(前期塔链原样)
+        self.assertEqual(f2_global_cannon_cap(5, 5, 3, False, False), (5, 5))
+        # threat/rush → 豁免(生死窗塔不设顶,O375-② 地板优先)
+        self.assertEqual(f2_global_cannon_cap(5, 5, 3, True, True), (5, 5))
+        # FB 落成+非威胁:3 基地主 5/分 5 → 主 4,余额 10 均摊 5
+        # 取小 4 → (4,4),总 4+4×2=12 ≤14
+        self.assertEqual(f2_global_cannon_cap(5, 5, 3, True, False), (4, 4))
+        # 4 基地:主 4,余额 10//3=3 → (4,3),总 4+3×3=13 ≤14
+        self.assertEqual(f2_global_cannon_cap(5, 5, 4, True, False), (4, 3))
+        # O375-② 地板 3 存活:帽不压低地板(3 基地 (3,3) 原样)
+        self.assertEqual(f2_global_cannon_cap(3, 3, 3, True, False), (3, 3))
+        # 单基地:无分矿,只钳主基 per_base
+        self.assertEqual(f2_global_cannon_cap(6, 0, 1, True, False), (4, 0))
+        # 目标低于帽 → 不抬
+        self.assertEqual(f2_global_cannon_cap(2, 1, 3, True, False), (2, 1))
+
+    def test_push_fleet_floor_ok(self):
+        # O376-⑤:出击舰队(含在产)下限 4→6(o375b g2 两次
+        # fleet=4 无果+撞波档);≥6 放行,黄金窗/_force_push
+        # 通道不走本闸(调用方语义)
+        self.assertFalse(push_fleet_floor_ok(4))
+        self.assertFalse(push_fleet_floor_ok(5))
+        self.assertTrue(push_fleet_floor_ok(6))
+        self.assertTrue(push_fleet_floor_ok(8))
+
+    def test_sg_rebuild_cooldown_ok(self):
+        # O376-⑥:O182 紧急重建星门 30s 冷却(o375a g2 一秒连发
+        # 15 条档)—— 冷却期内不重注册,超期放行
+        self.assertFalse(sg_rebuild_cooldown_ok(1260.0, 1259.0))
+        self.assertFalse(sg_rebuild_cooldown_ok(1260.0, 1230.1))
+        self.assertTrue(sg_rebuild_cooldown_ok(1260.0, 1230.0))
+        self.assertTrue(sg_rebuild_cooldown_ok(1260.0, 0.0))
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ sys.path[:0] = [
 ]
 
 from sc2.ids.unit_typeid import UnitTypeId as UnitID  # noqa: E402
+from sc2.data import Race  # noqa: E402
 from sc2.position import Point2  # noqa: E402
 
 from bot.managers.combat_manager import CombatManager  # noqa: E402
@@ -39,6 +40,15 @@ class _StructList(list):
 
     def closest_to(self, p):
         return self._closest
+
+
+class _OwnStructList(list):
+    """我方 structures 假件 —— 可迭代(O376-⑤ 的 cy_unit_pending
+    要遍历在产订单)且带 .ready(主基就绪塔口径要读)。"""
+
+    def __init__(self, items=(), ready=()):
+        super().__init__(items)
+        self.ready = list(ready)
 
 
 def _enemy(tag, type_id, pos=None):
@@ -63,7 +73,8 @@ class TestCarrierPushGate(unittest.TestCase):
             start_location=MAIN,
             townhalls=[th],
             ready_townhalls=[th],
-            structures=SimpleNamespace(ready=[]),
+            structures=_OwnStructList(),
+            race=Race.Protoss,  # O376-⑤:cy_unit_pending 要读
             enemy_units=list(enemies),
             enemy_structures=_StructList(),
             enemy_race=SimpleNamespace(name="Zerg"),

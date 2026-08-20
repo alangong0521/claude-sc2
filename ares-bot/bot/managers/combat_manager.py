@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from ares import ManagerMediator
 from ares.consts import UnitRole
 from ares.managers.manager import Manager
+from cython_extensions.general_utils import cy_unit_pending
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.position import Point2
 from sc2.units import Units
@@ -45,6 +46,8 @@ from bot.production_plans import (
     zerg_aa_credited,
     zerg_aa_exemption_capped,
     zerg_departure_floor_ok,
+    blind_push_blocked,
+    push_fleet_floor_ok,
     two_base_guard_point,
     main_defense_first,
     zt_golden_window_push,
@@ -523,6 +526,12 @@ class CombatManager(Manager):
                 and e.type_id in self._HARD_AA
             )
             _fleet_count: int = _carriers + _tempests
+            # O376-⑤(o375b 尸检):出击舰队口径含在产(与生产侧
+            # _fleet_total_now 同口径)—— fleet=4 出击两次无果+撞波
+            # 实证,下限 4→6(push_fleet_floor_ok,下方出击闸并入)。
+            _fleet_total: int = _fleet_count + cy_unit_pending(
+                self.ai, UnitID.TEMPEST
+            ) + cy_unit_pending(self.ai, UnitID.CARRIER)
             # O164/O195(o194-vh-zerg-rush game_01 实证):舰队成型后(航母+暴风 ≥8)
             # 且游戏时间 >9 分钟仍蹲家 → 强制推进,不再等待 supply 优势。
             # 原阈值 10 艘/10 分钟在 Rush 局优势顶点 9 艘不触发,导致被滚雪球。
@@ -604,7 +613,7 @@ class CombatManager(Manager):
             # zerg 侧行为一行不变)。
             _own_army = self.ai.supply_used - self.ai.supply_workers
             # O375-④(o374b g2 实证):敌 supply 口径改信用值
-            # (max(当帧可见, 60s remembered 峰值),
+            # (max(当帧可见, remembered 峰值;O376-③ 起窗 120s),
             # _enemy_army_supply_credited)—— g2 两次 O302 commit 后
             # 3-10s 敌 51-79 supply 才显形,只认当帧 = 波进迷雾即
             # 归零,出击即顶波;与 O375-② 塔地板共用同一台账。
@@ -619,12 +628,20 @@ class CombatManager(Manager):
             # supply ≥ 我方 ×1.5 即便 zerg 也拦(zerg_departure_floor_ok)。
             # 黄金窗豁免保留:_golden_push 走 _force_push 通道不过本闸,
             # 不动的胜局打法一行不变。
+            # O376-②(o375 双 lane 尸检):盲推硬闸并入本判(不三判)——
+            # 信用 supply=0(当帧可见+remembered 峰值全空)= 对敌情
+            # 一无所知,出击即盲推(o375a g1 撞 57→85 supply 主力、
+            # o375b g2 commit 后 0.3s 敌 37 supply 显形团灭);信用
+            # supply 含 O376-③ 的 120s 粘滞峰值,真「被榨干」局末次
+            # 接触 120s 内仍认账,不误伤收割;_force_push/黄金窗通道
+            # 豁免不动。
             _army_gate_ok = (
-                _opp_is_zerg
-                and zerg_departure_floor_ok(_own_army, _enemy_vis)
-            ) or push_enemy_army_gate(
-                _own_army, _enemy_vis, _hard_aa
-            )
+                (
+                    _opp_is_zerg
+                    and zerg_departure_floor_ok(_own_army, _enemy_vis)
+                )
+                or push_enemy_army_gate(_own_army, _enemy_vis, _hard_aa)
+            ) and not blind_push_blocked(_enemy_vis)
             # O374-④b(o373a g1/g2 尸检):Terran 转型真空期(FB 落成→
             # 舰队成型)出击留守闸 —— g1 509.4s/g2 528.5s 的 O302 出击
             # 与敌 515/533s 抄家窗口重叠,舰队出门时家最空(550-700s
@@ -724,6 +741,10 @@ class CombatManager(Manager):
                     _force_push
                     or (
                         _army_gate_ok
+                        # O376-⑤(o375b 尸检):出击舰队(含在产)下限 4→6
+                        # —— g2 两次 fleet=4 出击无果+撞波;黄金窗/
+                        # _force_push 通道不走本闸,一行不变
+                        and push_fleet_floor_ok(_fleet_total)
                         and (
                             should_push_advantage(
                                 _own_army,
