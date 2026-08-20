@@ -9,6 +9,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from sc2.position import Point2  # noqa: E402
+
 from bot.production_plans import (  # noqa: E402
     assimilator_attempt_stuck,
     base_rebuild_active,
@@ -207,6 +209,12 @@ from bot.production_plans import (  # noqa: E402
     healthy_mining_base_target,
     healthy_mining_expand_needed,
     terran_economic_strike_window,
+    terran_precontact_cannon_capped,
+    terran_precontact_ground_pause,
+    pick_safest_rebuild_expansion,
+    terran_post_rebuild_recovery_active,
+    fleet_onfield_started,
+    healthy_expand_latch_active,
     desperation_push_window,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -6061,6 +6069,64 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             terran_economic_strike_window(**{**base, "fleet_count": 7})
         )
+
+    def test_terran_precontact_caps(self):
+        base = dict(
+            opp_race="terran",
+            ai_build="rush",
+            contact_seen=False,
+            now=300.0,
+        )
+        self.assertTrue(terran_precontact_cannon_capped(cannons=2, **base))
+        self.assertFalse(terran_precontact_cannon_capped(cannons=1, **base))
+        self.assertTrue(terran_precontact_ground_pause(ground_count=2, **base))
+        self.assertFalse(terran_precontact_ground_pause(ground_count=1, **base))
+        self.assertFalse(
+            terran_precontact_cannon_capped(
+                cannons=4, **{**base, "contact_seen": True}
+            )
+        )
+        self.assertFalse(
+            terran_precontact_ground_pause(
+                ground_count=6, **{**base, "now": 420.0}
+            )
+        )
+
+    def test_pick_safest_rebuild_expansion(self):
+        home = Point2((0.0, 0.0))
+        hot_enemy = Point2((10.0, 0.0))
+        hot_natural = Point2((12.0, 0.0))
+        safe_pocket = Point2((0.0, 20.0))
+        self.assertEqual(
+            pick_safest_rebuild_expansion(
+                [hot_natural, safe_pocket], [hot_enemy], home
+            ),
+            safe_pocket,
+        )
+        self.assertIsNone(
+            pick_safest_rebuild_expansion(
+                [hot_natural, safe_pocket], [], home
+            )
+        )
+        self.assertIsNone(
+            pick_safest_rebuild_expansion([], [hot_enemy], home)
+        )
+
+    def test_terran_post_rebuild_recovery_active(self):
+        self.assertTrue(terran_post_rebuild_recovery_active("terran", 600.0, 620.0))
+        self.assertFalse(terran_post_rebuild_recovery_active("terran", 620.0, 620.0))
+        self.assertFalse(terran_post_rebuild_recovery_active("zerg", 600.0, 620.0))
+
+    def test_fleet_onfield_started(self):
+        self.assertFalse(fleet_onfield_started(0, 0))
+        self.assertTrue(fleet_onfield_started(1, 0))
+        self.assertTrue(fleet_onfield_started(0, 1))
+
+    def test_healthy_expand_latch_active(self):
+        self.assertFalse(healthy_expand_latch_active(None, 3))
+        self.assertTrue(healthy_expand_latch_active(3, 3))
+        self.assertTrue(healthy_expand_latch_active(3, 2))
+        self.assertFalse(healthy_expand_latch_active(3, 4))
 
 
 if __name__ == "__main__":

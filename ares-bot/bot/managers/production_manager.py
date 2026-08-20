@@ -217,6 +217,12 @@ from bot.production_plans import (
     nexus_fund_should_cut_build_runner,
     mineral_patch_worker_slots,
     healthy_mining_expand_needed,
+    terran_precontact_cannon_capped,
+    terran_precontact_ground_pause,
+    pick_safest_rebuild_expansion,
+    terran_post_rebuild_recovery_active,
+    fleet_onfield_started,
+    healthy_expand_latch_active,
     anchor_buildable,
     pylon_ring_fallback_anchor,
     tower_sector_fallback_due,
@@ -798,6 +804,10 @@ class ProductionManager(Manager):
         # O381-③:健康矿区不足触发扩张的事件节流。
         self._o381_healthy_expand_log_ts: float = 0.0
         self._o381_healthy_expand_active: bool = False
+        # O383:Terran 零接触窗/丢矿后恢复窗台账。
+        self._o383_terran_contact_seen: bool = False
+        self._o383_post_rebuild_until: float = 0.0
+        self._o383_healthy_expand_from_bases: int | None = None
         # B4③ 停气台账:rush 期间被拉下气矿的农民 tag(role 归 _GAS_STOP_ROLE),
         # rush 解除后统一归 GATHERING 回气(ares 记账不动,见 _rush_gas_stop)。
         self._gas_stopped_tags: set[int] = set()
@@ -854,6 +864,20 @@ class ProductionManager(Manager):
         # update 头部先清零,避免 _rebuild_nexus 分支跳过导致旧值残留。
         self._o189_forced_expand = False
 
+        # O383-①:Terran Rush 实测首个作战单位 500s+ 才到；
+        # 接触前只需窄域保底，不能因一座兵营把4塔+6叉
+        # 当成早期 all-in。首次可见作战单位后 latch 永久解锁。
+        if not self._o383_terran_contact_seen and any(
+            not u.is_structure and is_combat_type(u.type_id)
+            for u in self.ai.enemy_units
+        ):
+            self._o383_terran_contact_seen = True
+            if self._opp_race == "terran" and self._ai_build == "rush":
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O383:Terran首接触,解除早期塔/地面上限",
+                })
+
         # O381-①/②:先于任何 pylon/科技/产兵注册计算 Nexus 基金，避免
         # 同帧先花钱后才发现应该攒基地。townhalls 含在建 Nexus，因此
         # Nexus 一开工基金自动成交关闭；0 基地仍交既有 Q4 路径。
@@ -882,9 +906,15 @@ class ProductionManager(Manager):
                     ),
                 })
             elif self._o381_nexus_fund_reason is not None:
+                if self._o381_nexus_fund_reason == "lost_base":
+                    self._o383_post_rebuild_until = self.ai.time + 120.0
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
-                    "msg": "O381:Nexus实体出现,基地基金成交恢复运营",
+                    "msg": (
+                        "O383:Nexus恢复成交,开启120s产能重建窗"
+                        if self._o381_nexus_fund_reason == "lost_base"
+                        else "O381:Nexus实体出现,基地基金成交恢复运营"
+                    ),
                 })
             self._o381_nexus_fund_reason = _o381_reason
 
@@ -1244,7 +1274,9 @@ class ProductionManager(Manager):
         # O377-⑥(o376b g1 尸检):塔需求登记(forge 重建保底的空转
         # 口径,就绪+在途 <2,与 new_base_defense_pins 同口径)。
         _o377_tower_demand = False
-        # O380-③:基金窗每帧重算。45s 超时只冷却 30s，不把同一基地
+        # O383-④:基金窗每帧重算。新矿验收是90s内首塔，旧 45s
+        # 会在塔仍等钱时提前释放产兵/升级，并再冷却30s，把
+        # o382c 二矿首塔拖到398s（Nexus 270s）。改为90s窗+15s冷却。
         # 永久标成完成；首塔实体/在途才是真成交。
         self._o380_cannon_fund_active = False
         if (
@@ -1252,11 +1284,11 @@ class ProductionManager(Manager):
             and self.ai.time >= self._o380_cannon_fund_until
         ):
             _expired_key = self._o380_cannon_fund_key
-            self._o380_cannon_fund_retry_after[_expired_key] = self.ai.time + 30.0
+            self._o380_cannon_fund_retry_after[_expired_key] = self.ai.time + 15.0
             self._o380_cannon_fund_key = None
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
-                "msg": f"O380:新矿首塔基金窗45s超时({_expired_key}),冷却后重试",
+                "msg": f"O383:新矿首塔基金窗90s超时({_expired_key}),15s后重试",
             })
         # O371-①a(o370b Terran Power 0/3 尸检):守卫块去 zerg 门 ——
         # o370b 三局三矿落成后裸奔 60-80s 被 ~495-510s 首波(25-30
@@ -1376,7 +1408,7 @@ class ProductionManager(Manager):
                     >= self._o380_cannon_fund_retry_after.get(_bk, -9999.0)
                 ):
                     self._o380_cannon_fund_key = _bk
-                    self._o380_cannon_fund_until = self.ai.time + 45.0
+                    self._o380_cannon_fund_until = self.ai.time + 90.0
                     self.ai._events.append({
                         "t": round(self.ai.time, 1),
                         "msg": f"O380:Nexus开工同帧开启首塔150矿基金({_bk})",
@@ -2431,6 +2463,29 @@ class ProductionManager(Manager):
             # O281:ZT 首扩定点口袋矿(避 305-320s 死窗波路径,o280 基线 0-9
             # 实证 natural 拍进波路径);定点时 max_pending 钳 1,防同点双派。
             _exp_loc = self._zt_pocket_expand_target()
+            # O383-②(o382d g1):丢矿基金只管「快」不管「哪里」，
+            # 561/668/749/834s 把 Nexus 连续拍进 Terran 死亡球路径，
+            # 400 矿反复白送。急性丢矿时从空闲矿点里选离当前
+            # 可见敌地面主力最远的点，ExpansionController 的安全网格/
+            # blocked 检查仍保留。
+            if _exp_loc is None and self._o381_nexus_fund_reason == "lost_base":
+                _free_exps = [
+                    el
+                    for el in self.ai.expansion_locations_list
+                    if not self.ai.townhalls.closer_than(5.0, el)
+                ]
+                _enemy_ground_pos = [
+                    u.position
+                    for u in self.ai.enemy_units
+                    if not u.is_structure
+                    and not u.is_flying
+                    and is_combat_type(u.type_id)
+                ]
+                _exp_loc = pick_safest_rebuild_expansion(
+                    _free_exps,
+                    _enemy_ground_pos,
+                    self.ai.start_location,
+                )
             if _exp_loc is not None:
                 _pending = 1
             macro_plan.add(
@@ -2483,6 +2538,11 @@ class ProductionManager(Manager):
             self._fb_bankrupt
             or self._o380_cannon_fund_active
             or self._o381_nexus_fund_active
+            or terran_post_rebuild_recovery_active(
+                self._opp_race,
+                self.ai.time,
+                self._o383_post_rebuild_until,
+            )
         ):
             _upgrades = []
         # O360-②(o359b 尸检):FB 基金窗内 ≥200 矿升级让位 —— 空军 2 攻/
@@ -2640,6 +2700,14 @@ class ProductionManager(Manager):
         )
         if self._o380_cannon_fund_active:
             _spawn_pause = _spawn_pause or "new_base_cannon_fund"
+        if terran_precontact_ground_pause(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            contact_seen=self._o383_terran_contact_seen,
+            now=self.ai.time,
+            ground_count=_ground_army_now,
+        ):
+            _spawn_pause = _spawn_pause or "terran_precontact_ground_cap"
         if _spawn_pause is None:
             macro_plan.add(
                 SpawnController(
@@ -9326,6 +9394,19 @@ class ProductionManager(Manager):
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
         self._zt_pocket_expand_debug()  # O283d:激活判据节流记账(排查期)
+        if self._o383_healthy_expand_from_bases is not None:
+            if not healthy_expand_latch_active(
+                self._o383_healthy_expand_from_bases,
+                self.ai.townhalls.amount,
+            ):
+                self._o383_healthy_expand_from_bases = None
+            else:
+                # O383-④(o382c g1):健康矿区不足在617s触发后，
+                # worker/tracker 使 nexus_pending 翻真，判据下帧反而翻假，
+                # O307 便在635/753/831/944s反复撤派。从触发基地数
+                # latch 到 Nexus 实体计数+1，期间恒保持扩张与持有。
+                self._o381_healthy_expand_active = True
+                return True
         self._o381_healthy_expand_active = False
         # O381-③(司令观察):名义三矿不等于健康经济。主矿采干、二矿
         # 只剩 4 个矿工位时，即使 fleet/mineral/saturation 旧门不满足，
@@ -9346,6 +9427,7 @@ class ProductionManager(Manager):
                 workers=self.ai.supply_workers,
             ):
                 self._o381_healthy_expand_active = True
+                self._o383_healthy_expand_from_bases = self.ai.townhalls.amount
                 if event_throttle_ok(
                     self.ai.time, self._o381_healthy_expand_log_ts, 30.0
                 ):
@@ -9911,6 +9993,19 @@ class ProductionManager(Manager):
             UnitID.SHIELDBATTERY,
         ):
             return "nexus_fund"
+        # O383-③(o382d g1):Nexus 成交后的120s先重建核心产能。
+        # 新矿零塔的 survival_exempt 首塔保留，第2+塔/电池与研究
+        # 让位 BY→SG→FB，防止 47 农+1000气却 0 SG/0 舰队。
+        if (
+            terran_post_rebuild_recovery_active(
+                self._opp_race,
+                self.ai.time,
+                self._o383_post_rebuild_until,
+            )
+            and sid in (UnitID.PHOTONCANNON, UnitID.SHIELDBATTERY)
+            and not survival_exempt
+        ):
+            return "post_rebuild_recovery"
         # O373-③b(o372b g3 实证):仲裁判让位期堵 FB 非 latch 通道
         # —— O370 判了让位,FB 仍经 O110 自救/O360 超时强制等非
         # latch 通道落地(全部过本函数);入口统一读仲裁旗标
@@ -9940,6 +10035,14 @@ class ProductionManager(Manager):
                     UnitID.PHOTONCANNON
                 ]
             )
+            if terran_precontact_cannon_capped(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                contact_seen=self._o383_terran_contact_seen,
+                now=self.ai.time,
+                cannons=_cannons_now,
+            ):
+                return "precontact_cap"
             # O382-⑤(o381b g1 塔峰25):慢性 threat/rush latch 不再
             # 让全局塔无上限增长。本块已由 not survival_exempt 包住，
             # 新矿零塔的首座保命塔仍可突破 18 座绝对顶。
@@ -11478,6 +11581,12 @@ class ProductionManager(Manager):
         ep = self._flow.extra_production
         if ep is None:
             return
+        if terran_post_rebuild_recovery_active(
+            self._opp_race,
+            self.ai.time,
+            self._o383_post_rebuild_until,
+        ):
+            return
         # O134-①(o133 局2 实证):非过渡地面保底的兵营产能位 —— 局2 单 GW
         # 拖到 ~350 才落地(核心链被塔/水晶/研究挤),floor 有配方无产能,
         # 525 波到脸仅 1 叉。pre_fleet 流派(现仅 carrier)非过渡期保底 2 GW;
@@ -11568,7 +11677,16 @@ class ProductionManager(Manager):
             and UnitID.FLEETBEACON in self._flow.core_structure_ids()
             and (
                 self._fb_entities_now == 0
-                or not self._first_fleet_seen()
+                or not fleet_onfield_started(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST,
+                        include_pending=False,
+                    ),
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER,
+                        include_pending=False,
+                    ),
+                )
             )
         ):
             return

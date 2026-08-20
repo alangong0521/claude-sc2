@@ -6144,6 +6144,95 @@ def terran_economic_strike_window(
     )
 
 
+def terran_precontact_cannon_capped(
+    *,
+    opp_race: str,
+    ai_build: str,
+    contact_seen: bool,
+    now: float,
+    cannons: int,
+    cap: int = 2,
+    release_at: float = 420.0,
+) -> bool:
+    """O383-①:Terran Rush 零接触窗不再提前堆4塔。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "rush"
+        and not contact_seen
+        and now < release_at
+        and cannons >= cap
+    )
+
+
+def terran_precontact_ground_pause(
+    *,
+    opp_race: str,
+    ai_build: str,
+    contact_seen: bool,
+    now: float,
+    ground_count: int,
+    cap: int = 2,
+    release_at: float = 420.0,
+) -> bool:
+    """O383-①:Terran 首接触前只保留2个地面保底兵。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "rush"
+        and not contact_seen
+        and now < release_at
+        and ground_count >= cap
+    )
+
+
+def pick_safest_rebuild_expansion(
+    free_expansions,
+    visible_enemy_ground_positions,
+    home,
+):
+    """O383-②:丢矿急性窗选离当前敌地面主力最远的扩张点。
+
+    没有实时敌地面情报时返回 None，让 ExpansionController 保留
+    原生距离+安全网格排序；有情报时先最大化与最近敌军的距离，
+    同分再选距我方主基较近的点，避免 400 矿重复拍进死亡球路径。
+    """
+    if not free_expansions or not visible_enemy_ground_positions:
+        return None
+
+    def _score(pos):
+        nearest_enemy = min(
+            pos.distance_to(enemy_pos)
+            for enemy_pos in visible_enemy_ground_positions
+        )
+        return nearest_enemy, -pos.distance_to(home)
+
+    return max(free_expansions, key=_score)
+
+
+def terran_post_rebuild_recovery_active(
+    opp_race: str,
+    now: float,
+    recovery_until: float,
+) -> bool:
+    """O383-③:Terran Nexus 恢复后120s生产资料窗。"""
+    return opp_race == "terran" and now < recovery_until
+
+
+def fleet_onfield_started(tempests: int, carriers: int) -> bool:
+    """O383-⑥:首艘真实舰队已出场（在产不算）。"""
+    return tempests + carriers > 0
+
+
+def healthy_expand_latch_active(
+    latched_from_bases: int | None,
+    current_bases: int,
+) -> bool:
+    """O383-④:健康矿区扩张 latch 持有到 Nexus 实体数增加。"""
+    return (
+        latched_from_bases is not None
+        and current_bases <= latched_from_bases
+    )
+
+
 def desperation_push_window(
     now: float,
     fleet_count: int,
