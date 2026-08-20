@@ -188,9 +188,11 @@ from bot.production_plans import (  # noqa: E402
     zerg_aa_credited,
     zerg_departure_floor_ok,
     zerg_corruptor_departure_blocked,
+    force_push_corruptor_ok,
     aa_reeval_due,
     e10_sg2_pin_needed,
     pylon_ring_fallback_anchor,
+    tower_sector_fallback_due,
     fleet_formed_release_rush,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -2720,6 +2722,29 @@ class TestO121VoidrayFill(unittest.TestCase):
         self.assertEqual(out["VOIDRAY"]["priority"], 0)
         self.assertNotIn("VOIDRAY", rebuild_window_spawn(base, False, "VOIDRAY"))
         self.assertIn("TEMPEST", out)  # 原配方保留(TEMPEST 就绪后自然挤占)
+
+    def test_rebuild_window_spawn_voidray_cap(self):
+        # O379-②(o378b g1 实证):zerg lane 虚空总量帽 2(场上含在产
+        # 口径)—— 场上 2 虚空不注入、1 虚空注入;terran lane 不传帽
+        # (None)原语义不动(无帽注入)
+        base = {"TEMPEST": {"proportion": 0.85, "priority": 0}}
+        capped = rebuild_window_spawn(
+            base, True, "VOIDRAY", voidray_field=2, voidray_cap=2
+        )
+        self.assertNotIn("VOIDRAY", capped)
+        under = rebuild_window_spawn(
+            base, True, "VOIDRAY", voidray_field=1, voidray_cap=2
+        )
+        self.assertIn("VOIDRAY", under)
+        uncapped = rebuild_window_spawn(
+            base, True, "VOIDRAY", voidray_field=9, voidray_cap=None
+        )
+        self.assertIn("VOIDRAY", uncapped)
+        # 帽只在重建窗内有意义:窗外恒不注入
+        self.assertNotIn(
+            "VOIDRAY",
+            rebuild_window_spawn(base, False, "VOIDRAY", voidray_field=0, voidray_cap=2),
+        )
 
     def test_transition_stargate_allowed(self):
         # 过渡期防御评分 ≥25 → SG 解冻;否则冻结照旧
@@ -5786,6 +5811,22 @@ class TestO378Plans(unittest.TestCase):
         self.assertFalse(zerg_corruptor_departure_blocked(3))
         self.assertFalse(zerg_corruptor_departure_blocked(0))
 
+    def test_force_push_corruptor_ok(self):
+        # O379-①(o378b g1 尸检):_force_push 通道信用腐化闸 —
+        # — fleet ≥ 信用腐化 ×1.5 才放行
+        # g1 实证档:1770s 信用 18 vs fleet 13 → 拦(13 < 27)
+        self.assertFalse(force_push_corruptor_ok(13, 18))
+        # 信用 4 vs fleet 12 → 放(12 ≥ 6)
+        self.assertTrue(force_push_corruptor_ok(12, 4))
+        # 信用 0 = 无腐化情报 → 恒放行(旧语义不动)
+        self.assertTrue(force_push_corruptor_ok(8, 0))
+        # 边界:fleet 恰等于 信用×1.5 → 放
+        self.assertTrue(force_push_corruptor_ok(9, 6))
+        self.assertFalse(force_push_corruptor_ok(8, 6))
+        # 黄金窗不受影响 = 调用方豁免(_golden_push 不过本闸,
+        # zt_golden_window_push 自带腐化 ≤4 闸一行不动),本函数
+        # 无黄金窗入参,语义上不接收该通道
+
     def test_aa_reeval_due(self):
         # O378-⑥b(o377b 三局团灭实证):30s 定期 + 新增腐化显形
         # ≥4 立即重评(28s 内舰队死在两次重评之间档)
@@ -5828,6 +5869,18 @@ class TestO378Plans(unittest.TestCase):
         self.assertIsNone(
             pylon_ring_fallback_anchor(np.zeros((20, 20), dtype="uint8"), [(10.0, 10.0)])
         )
+
+    def test_tower_sector_fallback_due(self):
+        # O379-③(o378b g2/g3 尸检):重试计数降级 —— 重试 2 次走
+        # 扇形、3 次跳扇形走水晶旁 2x2 扫描(g2/g3 第 5/6 次仍扇形
+        # 打转档)
+        self.assertFalse(tower_sector_fallback_due(0))
+        self.assertFalse(tower_sector_fallback_due(2))
+        self.assertTrue(tower_sector_fallback_due(3))
+        self.assertTrue(tower_sector_fallback_due(6))
+        # 自定义阈
+        self.assertFalse(tower_sector_fallback_due(4, threshold=5))
+        self.assertTrue(tower_sector_fallback_due(5, threshold=5))
 
 
 if __name__ == "__main__":

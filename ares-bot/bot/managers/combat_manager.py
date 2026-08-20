@@ -46,6 +46,7 @@ from bot.production_plans import (
     zerg_aa_exemption_capped,
     zerg_departure_floor_ok,
     zerg_corruptor_departure_blocked,
+    force_push_corruptor_ok,
     aa_reeval_due,
     blind_push_blocked,
     push_fleet_floor_ok,
@@ -759,14 +760,33 @@ class CombatManager(Manager):
             _zerg_cb_eff = zerg_aa_credited(
                 _zerg_cb, self._o374_aa_peak, _spire_seen
             )
+            # O379-①(o378b g1 尸检):信用腐化硬闸接到 _force_push
+            # 统一出口 —— O378-⑥a 的闸只收 _army_gate_ok 通道,zerg
+            # lane 的 O302 出击几乎全走 _force_push(fleet≥8+t>540,
+            # 设计上豁免),g1 五次在信用腐化 5-18 下出击(1442@9、
+            # 1472@5、1611@8、1770@18、1871@5),舰队 13-18 艘分批
+            # 喂腐化群全灭 —— O378-⑥ 要防的死法原样重演。同口径
+            # (max(当帧,60s 粘滞峰),O374-① 台账)fleet ≥ 信用腐化
+            # ×1.5 才放行,否则 _force_push 收 False 走下方既有蹲守/
+            # 消耗逻辑(不发明新分支);黄金窗(_golden_push,
+            # zt_golden_window_push 自带腐化 ≤4 闸)不受影响。
+            if (
+                _opp_is_zerg
+                and _force_push
+                and not _golden_push
+                and not force_push_corruptor_ok(
+                    _fleet_count, max(_zerg_cb, self._o374_aa_peak)
+                )
+            ):
+                _force_push = False
             # O378-⑥a(o377b g1 实证):信用腐化硬闸 —— g1 同一秒
             # 「塔投资冻结(腐化≥4)」舰队却在出门(塔链认账腐化
             # ≥4,出击闸不认);三局共同死因 = 舰队峰 10/14/16 拖过
             # 1200s 进腐化+大龙窗口被全歼。信用腐化(当帧可见 ∪
             # 60s 粘滞峰值,与 O374-① 台账同源)≥4 → O302 出击闸
             # 收 False;zerg 不豁免本闸(暴风被腐化完克);黄金窗
-            # (zt_golden_window_push 自带腐化 ≤4 闸)与 _force_push
-            # 通道不动。
+            # (zt_golden_window_push 自带腐化 ≤4 闸)不动;_force_push
+            # 通道由上方 O379-① 同口径闸覆盖(o378b 起,不再豁免)。
             if _opp_is_zerg and zerg_corruptor_departure_blocked(
                 max(_zerg_cb, self._o374_aa_peak)
             ):

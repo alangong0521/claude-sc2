@@ -211,6 +211,7 @@ from bot.production_plans import (
     fleet_formed_release_rush,
     anchor_buildable,
     pylon_ring_fallback_anchor,
+    tower_sector_fallback_due,
     main_defense_bank_fuse,
     zt_fast_expand_pin,
     zt_defense_at_natural,
@@ -1428,16 +1429,39 @@ class ProductionManager(Manager):
                                 )
                             ]
                             _ax = _ay = None
-                            for _k in range(8):
-                                _att = self._o364_anchor_attempts.get(_bk, 0)
-                                _cx, _cy = manual_cannon_anchor(
-                                    (_exp_th.position.x, _exp_th.position.y),
-                                    _mxy, _att,
-                                )
-                                self._o364_anchor_attempts[_bk] = _att + 1
-                                if anchor_buildable(_grid, _cx, _cy, _res_xy):
-                                    _ax, _ay = _cx, _cy
-                                    break
+                            # O379-③(o378b g2/g3 尸检):重试计数降级
+                            # —— O378-⑤ 的水晶旁兜底只在「扇形 8 候选
+                            # 全灭」触发,六局零事件;真实失败模式是
+                            # 预检过/实建败(no_placement/power_precheck
+                            # 带电余=0/等钱/no_worker)后手工锚点重试
+                            # 连败仍在扇形里打转(g2/g3 第 5/6 次仍
+                            # 扇形,新矿裸奔 130-262s)。per-base 重试
+                            # 台账(_o364_anchor_attempts,O365-⑤c 起
+                            # 持续簿记,no_placement/滞留预检/O368 强钉
+                            # 同链并账)≥3 即跳扇形,直接走下方水晶旁
+                            # 2x2 扫描(pylon_ring_fallback_anchor)。
+                            _att = self._o364_anchor_attempts.get(_bk, 0)
+                            if tower_sector_fallback_due(_att):
+                                self.ai._events.append({
+                                    "t": round(self.ai.time, 1),
+                                    "msg": (
+                                        f"O379:重试{_att}次跳扇形,"
+                                        f"水晶旁扫描({_bk})"
+                                    ),
+                                })
+                            else:
+                                for _k in range(8):
+                                    _att = self._o364_anchor_attempts.get(
+                                        _bk, 0
+                                    )
+                                    _cx, _cy = manual_cannon_anchor(
+                                        (_exp_th.position.x, _exp_th.position.y),
+                                        _mxy, _att,
+                                    )
+                                    self._o364_anchor_attempts[_bk] = _att + 1
+                                    if anchor_buildable(_grid, _cx, _cy, _res_xy):
+                                        _ax, _ay = _cx, _cy
+                                        break
                             # O378-⑤(o377b 尸检):扇形 8 候选全失败
                             # → 降级「水晶旁任意可建 2x2」—— o377b
                             # AbyssalReef (130,26)/(130,50) 矿位扇形
@@ -8564,6 +8588,19 @@ class ProductionManager(Manager):
                 self._fleet_transitioned, self._first_fleet_seen()
             ),
             UnitID.VOIDRAY,
+            # O379-②(o378b g1 实证):zerg lane 虚空总量帽 2(场上含
+            # 在产口径,与舰队计数 cy_unit_pending 同源)—— g1 重建窗
+            # = 转舰队(295s)→首风暴(892s)近 600s,VOIDRAY 全程在
+            # 配方无帽,矿穷期 Tempest(300 矿)买不起就 fall-through
+            # 产虚空,10 艘×150 气=1500 气反过来饿死风暴/航母;
+            # terran lane 不传帽(None)一行不动。
+            voidray_field=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.VOIDRAY
+                )
+                + cy_unit_pending(self.ai, UnitID.VOIDRAY)
+            ),
+            voidray_cap=2 if self._opp_race == "zerg" else None,
         )
         # O155/O156: carrier 流暴风海成型后强制补航母配额。
         # 当前 TEMPEST p0/CARRIER p1 + save_up=0 导致航母被永久截断、永不出场

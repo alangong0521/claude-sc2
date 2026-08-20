@@ -3781,7 +3781,10 @@ def transition_battery_floor(
     return batt
 
 
-def rebuild_window_spawn(spawn: dict, rebuild_window: bool, voidray_id) -> dict:
+def rebuild_window_spawn(
+    spawn: dict, rebuild_window: bool, voidray_id,
+    voidray_field: int = 0, voidray_cap: int | None = None,
+) -> dict:
     """O121-①(o120 局2/3/4 实证):重建窗(FB 未就绪)星门填窗兵种。
     纯逻辑,可单测。
 
@@ -3790,8 +3793,17 @@ def rebuild_window_spawn(spawn: dict, rebuild_window: bool, voidray_id) -> dict:
     退出后 SG 立刻有产出,exit+60s 有 1-2 虚空、exit+120s 有 3-4,
     配合塔/电池顶过空窗;FB 就绪后 TEMPEST 入队即自然挤占(p0 同档,
     dict 序 TEMPEST 在前),首舰出场窗关、配方复原。
+    O379-②(o378b g1 实证):虚空总量帽 —— O378-④ 的 cap=2 只接了
+    pre-FB/post-FB 两条填线 lane(合计仅产 3 次),真正量产源是本
+    重建窗注入无帽:g1 重建窗 = 转舰队(295s)→首风暴(892s)近
+    600s,虚空全程在配方,矿穷期 Tempest(300 矿)买不起就
+    fall-through 产虚空,10 艘×150 气=1500 气反过来饿死风暴/航母。
+    voidray_cap 非 None 且场上虚空(含在产,调用方口径)≥cap →
+    不注入;terran lane 不传帽(None)一行不动。
     """
     if not rebuild_window:
+        return dict(spawn)
+    if voidray_cap is not None and voidray_field >= voidray_cap:
         return dict(spawn)
     out = dict(spawn)
     out[voidray_id] = {"proportion": 0.7, "priority": 0}
@@ -6261,6 +6273,21 @@ def pylon_ring_fallback_anchor(
     return None
 
 
+def tower_sector_fallback_due(anchor_attempts: int, threshold: int = 3) -> bool:
+    """O379-③(o378b g2/g3 尸检):手工锚点重试计数降级判据。纯逻辑,可单测。
+
+    o378b 实证:O378-⑤ 的水晶旁兜底只在「扇形 8 候选全灭」触发,
+    六局零事件;真实失败模式是预检过/实建败(no_placement/
+    power_precheck 带电余=0/等钱/no_worker)后手工锚点重试连败仍
+    在扇形里打转(g2/g3 第 5/6 次仍扇形,新矿裸奔 130-262s,验收
+    ⑤ 合计 1/9)。per-base 重试计数(调用方台账 _o364_anchor_
+    attempts,no_placement/滞留预检/O368 强钉同链并账)≥threshold
+    → 跳扇形,直接水晶旁 2x2 扫描(pylon_ring_fallback_anchor);
+    未满照旧走 8 向扇形(manual_cannon_anchor)。
+    """
+    return anchor_attempts >= threshold
+
+
 def escort_hard_cap(
     enemy_ground_near: int,
     workers: int,
@@ -6622,6 +6649,25 @@ def zerg_corruptor_departure_blocked(
     不动。
     """
     return corruptor_broodlord_credited >= gate
+
+
+def force_push_corruptor_ok(
+    fleet_count: int, corruptor_broodlord_credited: int, ratio: float = 1.5
+) -> bool:
+    """O379-①(o378b g1 尸检):_force_push 通道信用腐化闸。纯逻辑,可单测。
+
+    o378b g1 实证:O378-⑥a 的信用腐化硬闸只收 _army_gate_ok 通道,
+    zerg lane 出击几乎全走 _force_push(fleet≥8+t>540,设计上豁免),
+    五次在信用腐化 5-18 下出击(1442@9、1472@5、1611@8、1770@18、
+    1871@5),舰队 13-18 艘分批喂腐化群全灭 —— O378-⑥ 要防的死法
+    原样重演。_force_push 放行加同口径闸(调用方喂 max(当帧, 60s
+    粘滞峰),O374-① 台账同源):fleet ≥ 信用腐化 ×ratio 才放行
+    (1770s 信用 18 vs fleet 13 = 拦;信用 4 vs fleet 12 = 放),
+    否则转蹲守消耗;黄金窗(zt_golden_window_push 自带腐化 ≤4 闸)
+    由调用方豁免,本判据只管 _force_push 本通道。信用 0 = 无腐化
+    情报,恒放行(旧语义不动)。
+    """
+    return fleet_count >= corruptor_broodlord_credited * ratio
 
 
 def push_fleet_floor_ok(fleet_total: int, floor: int = 5) -> bool:
