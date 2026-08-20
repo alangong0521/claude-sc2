@@ -6184,10 +6184,26 @@ def terran_precontact_ground_pause(
     )
 
 
+def terran_precontact_local_defense_targets(
+    main_cannons: int,
+    expansion_cannons: int,
+    batteries: int,
+    per_base_cap: int = 1,
+) -> tuple[int, int, int]:
+    """O384-①:Terran 首接触前目标层每基地最多1塔/1电池。"""
+    return (
+        min(main_cannons, per_base_cap),
+        min(expansion_cannons, per_base_cap),
+        min(batteries, per_base_cap),
+    )
+
+
 def pick_safest_rebuild_expansion(
     free_expansions,
     visible_enemy_ground_positions,
     home,
+    max_home_distance: float = 80.0,
+    home_weight: float = 0.5,
 ):
     """O383-②:丢矿急性窗选离当前敌地面主力最远的扩张点。
 
@@ -6198,14 +6214,19 @@ def pick_safest_rebuild_expansion(
     if not free_expansions or not visible_enemy_ground_positions:
         return None
 
+    defensible = [
+        pos for pos in free_expansions
+        if pos.distance_to(home) <= max_home_distance
+    ] or list(free_expansions)
+
     def _score(pos):
         nearest_enemy = min(
             pos.distance_to(enemy_pos)
             for enemy_pos in visible_enemy_ground_positions
         )
-        return nearest_enemy, -pos.distance_to(home)
+        return nearest_enemy - home_weight * pos.distance_to(home)
 
-    return max(free_expansions, key=_score)
+    return max(defensible, key=_score)
 
 
 def terran_post_rebuild_recovery_active(
@@ -6231,6 +6252,14 @@ def healthy_expand_latch_active(
         latched_from_bases is not None
         and current_bases <= latched_from_bases
     )
+
+
+def economic_strike_recall_threshold(
+    normal_threshold: int,
+    max_threshold: int = 10,
+) -> int:
+    """O384-②:斩分矿是可撤经济打击，基地10地面威胁即召回。"""
+    return min(normal_threshold, max_threshold)
 
 
 def desperation_push_window(

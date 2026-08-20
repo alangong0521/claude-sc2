@@ -53,6 +53,7 @@ from bot.production_plans import (
     recipe_push_exempt,
     desperation_push_window,
     terran_economic_strike_window,
+    economic_strike_recall_threshold,
     two_base_guard_point,
     main_defense_first,
     zt_golden_window_push,
@@ -950,8 +951,17 @@ class CombatManager(Manager):
             # O113-②(o112 局4 实证):舰队 ≥12(临界质量)阈值抬到 25 ——
             # 波次喂食局(15-20 地面/波)阈值 14 每波必触发,22-29 暴风
             # 龟缩 500s 靠耗赢;塔+电池能消化的波不召回,换家比回防快
+            _recall_threshold = fleet_no_recall_threshold(_carriers + _tempests)
+            if _economic_strike_target is not None:
+                # O384-②(o383 Terran g2):1064s 斩分矿后，1146s
+                # 10地面抄矿因正常舰队11的召回门14而被忽略，1202s
+                # 升到15才回头已连掉经济。经济打击不是决死 all-in，
+                # 基地10地面威胁即撤；普通推进的14/25门不动。
+                _recall_threshold = economic_strike_recall_threshold(
+                    _recall_threshold
+                )
             if (hot := self._hot_base_anchor(
-                min_threat=fleet_no_recall_threshold(_carriers + _tempests)
+                min_threat=_recall_threshold
             )) is not None:
                 return hot
             # O65(o64 game_01 实证):闸全开放行 → 标记推进承诺,TempestOffensive

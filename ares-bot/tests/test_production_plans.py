@@ -211,10 +211,12 @@ from bot.production_plans import (  # noqa: E402
     terran_economic_strike_window,
     terran_precontact_cannon_capped,
     terran_precontact_ground_pause,
+    terran_precontact_local_defense_targets,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
     healthy_expand_latch_active,
+    economic_strike_recall_threshold,
     desperation_push_window,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -6091,6 +6093,10 @@ class TestO381Plans(unittest.TestCase):
                 ground_count=6, **{**base, "now": 420.0}
             )
         )
+        self.assertEqual(
+            terran_precontact_local_defense_targets(3, 4, 2),
+            (1, 1, 1),
+        )
 
     def test_pick_safest_rebuild_expansion(self):
         home = Point2((0.0, 0.0))
@@ -6111,6 +6117,14 @@ class TestO381Plans(unittest.TestCase):
         self.assertIsNone(
             pick_safest_rebuild_expansion([], [hot_enemy], home)
         )
+        # 极远扩张即便更远离敌军，也因距主基>80被排除。
+        far_corner = Point2((160.0, 100.0))
+        self.assertEqual(
+            pick_safest_rebuild_expansion(
+                [safe_pocket, far_corner], [hot_enemy], home
+            ),
+            safe_pocket,
+        )
 
     def test_terran_post_rebuild_recovery_active(self):
         self.assertTrue(terran_post_rebuild_recovery_active("terran", 600.0, 620.0))
@@ -6127,6 +6141,11 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(healthy_expand_latch_active(3, 3))
         self.assertTrue(healthy_expand_latch_active(3, 2))
         self.assertFalse(healthy_expand_latch_active(3, 4))
+
+    def test_economic_strike_recall_threshold(self):
+        self.assertEqual(economic_strike_recall_threshold(14), 10)
+        self.assertEqual(economic_strike_recall_threshold(25), 10)
+        self.assertEqual(economic_strike_recall_threshold(8), 8)
 
 
 if __name__ == "__main__":

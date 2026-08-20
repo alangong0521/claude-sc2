@@ -219,6 +219,7 @@ from bot.production_plans import (
     healthy_mining_expand_needed,
     terran_precontact_cannon_capped,
     terran_precontact_ground_pause,
+    terran_precontact_local_defense_targets,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -4083,6 +4084,24 @@ class ProductionManager(Manager):
                 threat_active=(self._threat_active or self._rush_active)
                 and not _o377_hard_capped,
             )
+            # O384-①(o383 Terran g2):手动派工口的 precontact_cap
+            # 确实返回 capped，但 ProtossStaticDefence 目标层绕过，
+            # 293s 还2塔、394s已5塔。上限前移到最终目标：
+            # 首接触/420s前主基与每分矿各1塔/1电池，接触后原逻辑恢复。
+            if (
+                self._opp_race == "terran"
+                and self._ai_build == "rush"
+                and not self._o383_terran_contact_seen
+                and self.ai.time < 420.0
+            ):
+                cannons, _cannons_expansion, batt = (
+                    terran_precontact_local_defense_targets(
+                        cannons,
+                        _cannons_expansion,
+                        batt,
+                    )
+                )
+                _batt_psd = 0 if self._flow.transition is not None else batt
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
             # O207:非紧急状态下把 mor 压到 1，避免 PSD 一次派多个工人等钱
