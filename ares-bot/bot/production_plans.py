@@ -4858,6 +4858,27 @@ def new_base_f2_cannon_floor(
     return target
 
 
+def f2_survival_floor(
+    target: int,
+    cannons_ready: int,
+    cannons_in_flight: int,
+) -> int:
+    """O372-①a(o371 双 lane 尸检):F2 target=0 的保命地板。纯逻辑,可单测。
+
+    o371a g1 实证:主基整局 0 塔、首塔晚 234s —— 日志「F2 注册
+    target=0」印的正是被 O210「买不起即归零」压 0 的 cannons,主基
+    PSD target 直接归 0(分矿侧 O216j 有 min(_ec_min,2) 兜底,主基
+    没有);o371b g3 三矿/o369b g3 二矿 target=0 同谱系(④a 的
+    120s 新矿下限窗外 + O370 冻结钳可再压 0)。零塔基地(就绪+
+    在途皆 0)target 下限 1 —— 首座保命塔豁免征用(O216j 分矿
+    「保底塔不走归零」/O367-⑤a 保命塔同教义:钉点等几秒 > 基地
+    整局裸奔);已有塔(含在途)或 target >0 → 原值不动。
+    """
+    if target == 0 and (cannons_ready + cannons_in_flight) == 0:
+        return 1
+    return target
+
+
 def nexus_pin_yield_clamp(target: int) -> int:
     """O368-④b(o367 双 lane 尸检):Nexus 钉点让位钳新语义。纯逻辑,可单测。
 
@@ -4987,6 +5008,28 @@ def fb_fund_latch_needed(
     )
 
 
+def fb_rebuild_latch_needed(
+    fb_ever_completed: bool,
+    fb_entities: int,
+    sg_ready: bool,
+) -> bool:
+    """O372-②(o371b g2 尸检):FB 被拆后的重建 latch 触发分支。
+    纯逻辑,可单测。
+
+    o371b g2 实证:FB 554.5s 落成、591s 被拆,重建只剩 O110 自救
+    通道 ×3 全 no_money 空转 170s 到死 —— 常态 latch 判据
+    (fb_fund_latch_needed)要求矿 <300 或气 <200 才开攒,被拆瞬间
+    银行若 ≥300 不 latch,其它支出照跑,等矿被花到 <300 已无可攒;
+    threat 常亮期 latch 又临时解除,重建通道整段缺失。FB 曾落成
+    (调用方簿记)且实体归零(被拆)且 SG 就绪 → 被拆瞬间直接进
+    fund-first latch(同首建口径:停非保命支出+攒够 300+200
+    critical 钉+fb_safe_anchor occupied_fallback 落点,O371-④ 起
+    首建/重建同锚);解除沿用 fb_bankrupt_cleared(FB 实体出现/
+    threat 临时解除)。
+    """
+    return fb_ever_completed and fb_entities == 0 and sg_ready
+
+
 def fb_latch_stalled(
     stall_since: float | None,
     now: float,
@@ -5021,6 +5064,20 @@ def fb_latch_pin_allowed(
     钉点先行(舰队链恢复常态优先)。
     """
     return second_base_dealt and not nexus_hold_active
+
+
+def fb_latch_yields_first_cannon(new_base_cannon_missing: bool) -> bool:
+    """O372-①b(o371b g1 尸检):FB latch × 新矿首塔专款互斥判据。
+    纯逻辑,可单测。
+
+    o371b g1 实证:FB latch 431.5s 抽走 500 资源(攒够 300+200 即
+    critical 钉),正好压掉新矿首塔窗 —— 450s 全矿仅 95 矿,首塔
+    无款可钉。新矿首塔未立(任一落成新矿零塔,O367-⑤a
+    new_base_survival_cannon_ok 保命塔口径,调用方算)→ latch 不
+    触发、已激活也暂停钉 FB(150 矿首塔专款优先;首塔立起判据
+    自灭,latch 恢复常态)。
+    """
+    return new_base_cannon_missing
 
 
 def nexus_repin_loop_forced(loop_count: int, max_rounds: int = 1) -> bool:
@@ -5098,6 +5155,22 @@ def power_precheck_covered(sid_name: str, needs_power: bool) -> bool:
         "PHOTONCANNON",
         "SHIELDBATTERY",
     )
+
+
+def sg_power_reserve_needed(powered_free: int, free: int) -> bool:
+    """O372-③(o371b g2/g3 尸检):SG 钉点前主基电力预留判据。
+    纯逻辑,可单测。
+
+    o371b 实证:g2 SG 停滞 O110 自救 ×3(446s 带电余=0)卡到 490s
+    (晚 30-90s)、g3 SG 429.9s(O110×3)—— _build_core_structure
+    通道(ares BuildStructure)没有 O368-③ 的钉点前供电预检,带电
+    余=0 时 SG 落位静默 None 死等。判据与 power_precheck_needed
+    同口径(带电余=0 且仍有空闲槽可救;几何死槽归 O357 换锚,
+    簿记拿不到 (99,99,-1) 不触发),调用方在 SG 钉点前 critical
+    钉 1 根贴槽水晶(在途水晶守卫防重复钉,与既有 precheck 合并,
+    别重复钉),把「带电余=0」从 SG 停滞原因里消掉。
+    """
+    return power_precheck_needed(powered_free, free)
 
 
 def reanchor_fallback_default(
@@ -5570,6 +5643,40 @@ def carrier_hard_convert_ok(
     )
 
 
+def fleet_rebuild_watchdog_needed(
+    fleet_peak: int,
+    fleet_now: int,
+    collapsed_since: float | None,
+    now: float,
+    fb_ready: bool,
+    idle_ready_sg: int,
+    min_peak: int = 3,
+    max_now: int = 2,
+    collapse_window: float = 60.0,
+) -> bool:
+    """O372-④(o371a g2/g3 尸检):舰队重建断档 watchdog 判据。
+    纯逻辑,可单测。
+
+    o371a g2 实证:航母 803s 死后双星门+气 500 在手 200s 零补充,
+    839-952s 共 112s 军队零变化;g3 航母 2→0 后同样长断档 ——
+    O239/O260/O364 三条补产通道全挂 zerg 门,Terran lane(及任何
+    非 ZT 局)舰队死后无人补产。舰队(TEMPEST+CARRIER,就绪+在建
+    口径)曾 ≥min_peak 后掉到 <max_now 且持续 ≥collapse_window 秒,
+    且 FB 就绪(产线前置齐)+有空闲就绪星门 → 调用方强制补产
+    (critical train,航母优先,买不起航母退风暴),90s 节流+事件。
+    种族不挂门:watchdog 只在「成型舰队塌掉 ≥60s」才开火,ZT 既
+    有通道正常期先于它触发,天然不打架。
+    """
+    return (
+        fleet_peak >= min_peak
+        and fleet_now < max_now
+        and collapsed_since is not None
+        and now - collapsed_since >= collapse_window
+        and fb_ready
+        and idle_ready_sg > 0
+    )
+
+
 def manual_cannon_anchor(
     nexus_xy: tuple,
     mineral_xy: tuple | None,
@@ -5864,6 +5971,30 @@ def push_enemy_army_gate(
         enemy_visible_supply <= own_army_supply * supply_ratio
         and enemy_hard_aa < max_hard_aa
     )
+
+
+def push_commit_aa_retreat(
+    enemy_hard_aa: int,
+    starport_seen: bool,
+    max_hard_aa: int = 4,
+    starport_aa_credit: int = 2,
+) -> bool:
+    """O372-⑤(o371a g2 尸检):推进 commit 期敌硬对空重评撤蹲判据。
+    纯逻辑,可单测。
+
+    o371a g2 实证:656-765s fleet=5-7 推进 ×4,维京 695s 才露面
+    (20 架)后仍 commit,舰队团灭 —— carrier_push_safe 只认当帧
+    可见硬对空,维京出视野(或尚未露面)即放行,星港(维京产能)
+    曾见也不构成预警。重评口径:可见硬对空(维京/腐化/凤凰,
+    调用方 _HARD_AA 口径)+ remembered 星港预警
+    (+starport_aa_credit,敌星港曾见 = 维京潜在,单星港不够撤蹲
+    线,2 架可见维京+星港即越线)≥max_hard_aa → 撤蹲(调用方回
+    既有蹲守锚点,O63/O37 分支);30s 重评间隔内旗标粘滞(调用方
+    簿记),可见性抖动不反复收放。
+    """
+    return (
+        enemy_hard_aa + (starport_aa_credit if starport_seen else 0)
+    ) >= max_hard_aa
 
 
 def cyber_core_np_default_fallback(streak: int, threshold: int = 2) -> bool:

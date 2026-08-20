@@ -153,6 +153,12 @@ from bot.production_plans import (  # noqa: E402
     new_base_f2_cannon_floor,
     nexus_pin_yield_clamp,
     new_base_no_cannon_alarm,
+    f2_survival_floor,
+    fb_rebuild_latch_needed,
+    fb_latch_yields_first_cannon,
+    sg_power_reserve_needed,
+    fleet_rebuild_watchdog_needed,
+    push_commit_aa_retreat,
     fleet_formed_release_rush,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -5016,6 +5022,96 @@ class TestO365Fixes(unittest.TestCase):
         self.assertTrue(cyber_core_np_default_fallback(5))
         # 自定义阈
         self.assertTrue(cyber_core_np_default_fallback(1, threshold=1))
+
+    def test_f2_survival_floor(self):
+        # O372-①a:注册下限+主基兜底 —— 零塔(就绪+在途皆 0)且
+        # target=0 → 下限 1(o371a g1 主基整局 0 塔/o371b g3 三矿
+        # target=0 两度被拆档)
+        self.assertEqual(f2_survival_floor(0, 0, 0), 1)
+        # 有就绪塔 → 不动(回归常规纪律)
+        self.assertEqual(f2_survival_floor(0, 1, 0), 0)
+        # 有在途塔 → 不动(首塔已在路上,不重复征用)
+        self.assertEqual(f2_survival_floor(0, 0, 1), 0)
+        # target >0 → 原值不动(常态/让位语义不变)
+        self.assertEqual(f2_survival_floor(3, 0, 0), 3)
+        self.assertEqual(f2_survival_floor(2, 2, 0), 2)
+
+    def test_fb_latch_yields_first_cannon(self):
+        # O372-①b:latch 互斥 —— 新矿首塔未立(任一落成新矿零塔)
+        # → latch 让位(o371b g1 latch 431.5s 抽 500 压掉首塔窗档)
+        self.assertTrue(fb_latch_yields_first_cannon(True))
+        # 首塔已立(含在途)→ 不让位,latch 恢复常态
+        self.assertFalse(fb_latch_yields_first_cannon(False))
+
+    def test_fb_rebuild_latch_needed(self):
+        # O372-②:重建触发 —— FB 曾落成+实体归零(被拆)+SG 就绪
+        # → 直接 latch(o371b g2 重建 O110×3 no_money 空转 170s 档)
+        self.assertTrue(fb_rebuild_latch_needed(True, 0, True))
+        # 未落成过(首建)→ 走常态判据(fb_fund_latch_needed),不触发
+        self.assertFalse(fb_rebuild_latch_needed(False, 0, True))
+        # FB 实体在(含重建落成)→ 不触发;解除沿用
+        # fb_bankrupt_cleared(实体>0 → True,既有判据)
+        self.assertFalse(fb_rebuild_latch_needed(True, 1, True))
+        self.assertTrue(fb_bankrupt_cleared(1, False))
+        # SG 未就绪(FB 前置不齐)→ 不触发
+        self.assertFalse(fb_rebuild_latch_needed(True, 0, False))
+
+    def test_sg_power_reserve_needed(self):
+        # O372-③:预立判定 —— 带电余=0 且有空闲槽 → 预立贴槽水晶
+        # (o371b g2 SG 446s 带电余=0 卡到 490s/g3 429.9s 档)
+        self.assertTrue(sg_power_reserve_needed(0, 12))
+        self.assertTrue(sg_power_reserve_needed(0, 1))
+        # 有带电槽 → 不预立(正常落位)
+        self.assertFalse(sg_power_reserve_needed(1, 12))
+        # 几何死槽(空闲余=0)→ 不预立(归 O357 换锚管)
+        self.assertFalse(sg_power_reserve_needed(0, 0))
+        # 簿记拿不到槽(99,99,-1)→ 不触发
+        self.assertFalse(sg_power_reserve_needed(99, 99))
+
+    def test_fleet_rebuild_watchdog_needed(self):
+        # O372-④:断档判定 —— 曾 ≥3 掉到 <2 持续 >60s+FB 就绪+
+        # 空闲 SG → 强制补产(o371a g2 航母死后 200s 零补充档)
+        self.assertTrue(
+            fleet_rebuild_watchdog_needed(5, 1, 800.0, 861.0, True, 2)
+        )
+        # 断档 <60s → 不触发(正常战损补充期)
+        self.assertFalse(
+            fleet_rebuild_watchdog_needed(5, 1, 800.0, 859.9, True, 2)
+        )
+        # 未塌缩起点(None)→ 不触发
+        self.assertFalse(
+            fleet_rebuild_watchdog_needed(5, 1, None, 900.0, True, 2)
+        )
+        # 舰队 ≥2(重建中/未塌)→ 不触发
+        self.assertFalse(
+            fleet_rebuild_watchdog_needed(5, 2, 800.0, 900.0, True, 2)
+        )
+        # 峰值 <3(未成过型)→ 不触发(首舰前归既有产线管)
+        self.assertFalse(
+            fleet_rebuild_watchdog_needed(2, 0, 800.0, 900.0, True, 2)
+        )
+        # FB 未就绪(产线前置断)→ 不触发(FB 链优先,O372-②)
+        self.assertFalse(
+            fleet_rebuild_watchdog_needed(5, 0, 800.0, 900.0, False, 2)
+        )
+        # 无空闲就绪 SG → 不触发(产能在产即非断档)
+        self.assertFalse(
+            fleet_rebuild_watchdog_needed(5, 0, 800.0, 900.0, True, 0)
+        )
+
+    def test_push_commit_aa_retreat(self):
+        # O372-⑤:重评触发 —— 可见硬对空 ≥4 → 撤蹲(o371a g2 维京
+        # 20 架仍 commit 团灭档)
+        self.assertTrue(push_commit_aa_retreat(4, False))
+        self.assertTrue(push_commit_aa_retreat(20, False))
+        # 3 架可见 → 不撤(carrier_push_safe 常态闸管)
+        self.assertFalse(push_commit_aa_retreat(3, False))
+        # remembered 星港预警 +2:2 架可见+星港曾见 → 越线撤蹲
+        self.assertTrue(push_commit_aa_retreat(2, True))
+        # 单星港(0 架可见)→ 预警不够撤蹲线,推进继续
+        self.assertFalse(push_commit_aa_retreat(0, True))
+        # 1 架可见+星港 → 3 < 4,不撤
+        self.assertFalse(push_commit_aa_retreat(1, True))
 
     def test_fb_arrival_guard_active(self):
         # O366-①c:FB 在建 + 敌地面 >8 → 增防

@@ -10420,3 +10420,67 @@ Nexus/FB);③ SG ≤300s;④ 停气触发后 30s 内气增长压
 - O371-② 的 _force_push 豁免可能在 Terran 长局放出 fleet≥8 的莽推(闸只挡 advantage/full_pop 路径)。
 - O370-④ BY watchdog 起算点问题(名义 150s 实际 233-261s)未根治。
 - Timing 封存是战略决定,若司令有不同意见可重启(机制链全部保留在代码里)。
+
+
+## o371 结果(VH Terran Power 1/3 **首胜** + VH Zerg Rush 0/3 判纯方差)+ O371 六验收判定 + O372(F2 target=0 修复+FB 重建通道+主基电力预留+舰队重建 watchdog+推进 commit 期 AA 重评)
+
+**日期**:2026-08-20
+
+### o371 结果
+
+- o371a carrier vs VH Terran Power:**1/3**(g3 胜 1061s,Terran 首胜,分矿防御去门生效)。
+- o371b carrier vs VH Zerg Rush:0/3(回归 lane,两个独立尸检一致判决为纯方差+敌签差,非 O371 回归)。
+- **总目标盘点**:VH Zerg Power 打穿(5/6)、VH Zerg Rush 打穿(3/5)、Timing 封存;**Terran Power 破零(1/3)**;Terran Rush/Timing 未测。
+
+### O371 六验收判定(本轮验证对象)
+
+- O371-① 分矿防御去 zerg 门 → **生效**:O337/O363 从 o370b 全 0 → 9-11 次可见,O357 forge 换锚也在跑;但「事件≠塔」——60s 首塔口径只有 1/3(o371a g1 全基地 F2 target=0、主基整局 0 塔、首塔晚 234s)。
+- O371-② 推进闸 → 未证伪也未证实(o371a g2 fleet=5 推 ×4 在维京 695s 露面后仍 commit 团灭——闸只看决策瞬间;o371a g3 fleet=4 推 ×16 敌弱非撞 2×)。
+- O371-③ 强制直钉 → 六局零触发(无从误伤)。
+- O371-④ FB fallback → 零触发(FB 全走 latch 常轨)。
+- O371-⑤ BY 换锚 → 零触发(BY 140.6-144.6s 与基线逐秒一致)。
+- **验收⑤ Terran ≥1 胜:✓;验收⑥ Zerg Rush ≥1/3:✗(0/3)**。
+
+### o371a 胜局(g3)配方
+
+- 时间线:BY 140.6→SG 221→FB 377.7→二矿 357.6→三矿 470→首航母 638.8→**O302 十六连推**(586.7s fleet=4 起滚雪球)→舰队峰 20(3C+16T)。
+- 经济产出:总矿 20225、击杀 18425;敌仅 9 维京未成云。
+- 败局对照:g1=FB 被 Nexus latch 拖 120s+单星门气烂 277s→舰队峰 1;g2=二矿两建两裸(重建卡 power_precheck 100s)+航母 803s 死后 200s 不补(839-952s 共 112s 军队零变化)→被 69-supply 维京雷神波推平。
+
+### o371b 回归判决(两个独立尸检一致:非 O371 回归,纯方差+敌签差)
+
+- 逐项排除且都有硬证据:①去门布尔等价(单测锁定,zerg 行为逐帧一致);②推进闸 zerg 豁免验证有效(O337 同对象同帧正常工作;O302=0 是果不是因——舰队峰 1-5 够不到推进门槛);③④⑤六项全零触发;BY 时点与基线逐秒一致;FB 时点 433.9-554.5 只会更早。
+- 死法与 o369b 自己的败局 g3 完全同型(塔交付失败→舰队冻结→慢性死亡);基线胜局同样裸奔过,差别在敌波来得晚/敌主动撤退——n=3 下 0/3 vs 2/3 p≈3.7%,有嫌疑但无机理指纹,**五项一项都不回退**。
+- 边际差异样本:o371b g1 FB latch 431.5s 抽走 500 资源正好压掉新矿首塔窗(450s 全矿仅 95)——O369 latch 既有行为与抽签撞车。
+
+### 两 lane 共同败因收敛(塔交付链路+重建缺失)
+
+1. **F2 target=0 注册 bug**(塔交付总根):根因查明=O210「买不起即归零」,分矿侧 O216j 有 min(,2) 兜底,主基 PSD 路径没有——o371a g1 主基整局 0 塔;o371b g3 三矿 target=0 两度被拆;跨轮跨 lane 复发。
+2. **FB latch 与新矿首塔撞车**(o371b g1:431.5s latch 抽 500 压掉 450s 首塔窗)。
+3. **FB 重建通道缺失**(o371b g2:FB 591s 被拆,重建 O110×3 全 no_money 空转 170s;被拆时银行 ≥300 不 latch、支出照跑,等穷了已无可攒)。
+4. **主基电力预留缺失**(o371b g2/g3:SG 带电余=0 停滞 O110×3,晚 30-90s)。
+5. **舰队重建断档**(o371a g2:航母死后双星门+气 500 在手 200s 零补充;O239/O260/O364 三条补产通道全挂 zerg 门,Terran lane 无通道)。
+6. **推进 commit 期 AA 不重评**(o371a g2:维京 695s 露面 20 架后仍 commit)。
+
+### O372 落地(下一轮验证对象,五项,单测 795→803 绿,冒烟过)
+
+1. **F2 target=0 修复+新矿首塔兜底+latch 互斥+主基兜底**:f2_survival_floor(零塔且 target=0 → 下限 1);主基 O216j 后应用 floor;分矿注册点 _exp_cannons 同过 floor;fb_latch_yields_first_cannon(任一新矿零塔时 latch 不触发不钉 FB)。
+2. **FB 重建通道**:fb_rebuild_latch_needed(ever_completed+entities=0+sg_ready → 被拆瞬间即 latch,不等穷);_fb_ever_completed 边沿置真。
+3. **主基电力预留**:sg_power_reserve_needed(SG/FB 钉点前带电余=0 且有空闲槽 → critical 贴槽水晶,放 can_afford 门外)。
+4. **舰队重建 watchdog**:fleet_rebuild_watchdog_needed(峰值 ≥3 → 掉 <2 持续 ≥60s+FB 就绪+空闲 SG → 强制补产,航母优先;种族不挂门——Terran lane 无补产通道的实证);90s 节流。
+5. **推进 commit 期 AA 重评**:push_commit_aa_retreat(可见硬对空+星港预警(+2)≥4 → 撤蹲;30s 重评,旗标粘滞防可见性抖动;zerg 豁免同 O371-② 教义)。
+
+### 本轮 bench 验收口径
+
+① 新矿落成 60s 内 ≥1 塔(含主基);② FB 被拆后 ≤180s 重建落成;③ SG 零「带电余=0」停滞;④ 舰队断档 ≤90s 即补产;⑤ Terran 推进零「commit 期遇 4+ 对空不撤」;⑥ VH Terran Power ≥1/3 保持+Zerg Rush 回到 ≥1/3。
+
+### 下轮安排
+
+- lane1 o372a:VH Terran Power×3(巩固首胜)。
+- lane2 o372b:VH Zerg Rush×3(o371c 方差确认)。
+
+**遗留风险(记入)**:
+
+- F2 注册事件日志对分矿仍印主基 target(历史遗留),真实分矿注册值是 _exp_cannons,下轮尸检读 target=0 需注意。
+- O372-④ 的 90s 节流同时节流补产动作(与 O357-④「只节流言」规约有意偏离,注释已注明)。
+- O372-⑤ 星港预警 +2 的权值可能需要实战校准。

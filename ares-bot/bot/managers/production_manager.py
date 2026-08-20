@@ -184,6 +184,11 @@ from bot.production_plans import (
     new_base_f2_cannon_floor,
     nexus_pin_yield_clamp,
     new_base_no_cannon_alarm,
+    f2_survival_floor,
+    fb_rebuild_latch_needed,
+    fb_latch_yields_first_cannon,
+    sg_power_reserve_needed,
+    fleet_rebuild_watchdog_needed,
     fleet_formed_release_rush,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -554,6 +559,16 @@ class ProductionManager(Manager):
         self._fb_latch_m_sample_v: float = 0.0
         self._fb_latch_stall_since: float | None = None
         self._fb_latch_release_until: float = 0.0
+        # O372-②(o371b g2 尸检):FB 曾落成簿记 —— 被拆(实体归零)
+        # 时重建 latch 直接触发(fb_rebuild_latch_needed),不等
+        # no_money 连击/矿 <300;__init__ 初始化。
+        self._fb_ever_completed: bool = False
+        # O372-④(o371a g2/g3 尸检):舰队重建 watchdog 簿记 —— 舰队
+        # (TEMPEST+CARRIER,就绪+在建)峰值、塌缩(<2)起点与 90s
+        # 节流时刻;__init__ 初始化。
+        self._o372_fleet_peak: int = 0
+        self._o372_fleet_collapsed_since: float | None = None
+        self._o372_fleet_wd_ts: float = 0.0
         # O369-⑤(o368b g2 实证):塔投资总量闸旗标(F2 段每帧重算;
         # O337 分矿守卫钉点闸读上一帧值)。
         self._o369_cannon_freeze: bool = False
@@ -2299,6 +2314,9 @@ class ProductionManager(Manager):
         ):
             if self._fb_completed_at is None:
                 self._fb_completed_at = self.ai.time
+            # O372-②(o371b g2 尸检):FB 曾落成簿记 —— 被拆后重建
+            # latch 触发分支(fb_rebuild_latch_needed)的前提。
+            self._fb_ever_completed = True
         else:
             self._fb_completed_at = None
         if _fb_entities_now == 0:
@@ -2432,9 +2450,28 @@ class ProductionManager(Manager):
         # 临时解除,60s 后重评估(O367-① 健康监控同教义)。单建筑
         # 窄域暂停(O360/O368 同谱系加强),非全局资金冻结。
         _sg_ready_now = any(s.is_ready for s in _sg_all)
+        # O372-①b(o371b g1 尸检):新矿首塔未立 → FB latch 让位 ——
+        # g1 的 FB latch 431.5s 抽走 500 资源(攒够 300+200 即
+        # critical 钉),正好压掉新矿首塔窗(450s 全矿仅 95 矿,首塔
+        # 无款可钉)。任一落成新矿零塔(O367-⑤a 保命塔口径)期间:
+        # latch 不触发(下方触发闸)、已激活不钉 FB(钉点分支让位),
+        # 150 矿首塔专款优先;首塔立起判据自灭。
+        _o372_nb_cannon_missing = any(
+            th.position.distance_to(self.ai.start_location) > 5.0
+            and new_base_survival_cannon_ok(
+                True,
+                sum(
+                    1 for s in self.ai.structures.ready
+                    if s.type_id == UnitID.PHOTONCANNON
+                    and s.position.distance_to(th.position) < 12
+                ),
+                self._in_flight_near(UnitID.PHOTONCANNON, th.position),
+            )
+            for th in self.ai.townhalls.ready
+        )
         if not self._fb_bankrupt and not self._threat_active and (
             self.ai.time >= self._fb_latch_release_until
-        ):
+        ) and not fb_latch_yields_first_cannon(_o372_nb_cannon_missing):
             _latch_missing_s = (
                 self.ai.time - self._fb_missing_since
                 if (
@@ -2444,6 +2481,10 @@ class ProductionManager(Manager):
                 )
                 else None
             )
+            # O372-②(o371b g2 尸检):重建分支 —— FB 曾落成且实体
+            # 归零(被拆)即直接 latch(被拆瞬间锁资金,不等矿 <300
+            # 才开攒;g2 重建 O110 自救 ×3 全 no_money 空转 170s
+            # 到死实证)。解除沿用 fb_bankrupt_cleared。
             if fb_fund_latch_needed(
                 sg_ready=_sg_ready_now,
                 fb_entities=_fb_entities_now,
@@ -2452,6 +2493,8 @@ class ProductionManager(Manager):
                 vespene=self.ai.vespene,
             ) or fb_bankrupt_needed(
                 self._fb_nomoney_streak, fb_missing_s=_latch_missing_s
+            ) or fb_rebuild_latch_needed(
+                self._fb_ever_completed, _fb_entities_now, _sg_ready_now
             ):
                 self._fb_bankrupt = True
                 self.ai._events.append({
@@ -2460,7 +2503,8 @@ class ProductionManager(Manager):
                         f"O369:FB fund-first latch触发"
                         f"(矿{self.ai.minerals:.0f},气{self.ai.vespene:.0f},"
                         f"no_money累计{self._fb_nomoney_streak},"
-                        f"缺失{0.0 if _latch_missing_s is None else _latch_missing_s:.0f}s)"
+                        f"缺失{0.0 if _latch_missing_s is None else _latch_missing_s:.0f}s,"
+                        f"重建={self._fb_ever_completed})"
                     ),
                 })
         # O369-①a:攒够 300+200 即钉 —— latch 期买得起就 critical
@@ -2493,6 +2537,19 @@ class ProductionManager(Manager):
                         "msg": (
                             "O370:FB latch攒够300+200,钉点在途待成交"
                             "(非latch通道)"
+                        ),
+                    })
+            elif fb_latch_yields_first_cannon(_o372_nb_cannon_missing):
+                # O372-①b(o371b g1 实证):新矿首塔未立,latch 钉 FB
+                # 让位 —— 150 矿首塔专款优先(触发闸同口径互斥;
+                # 30s 节流只节流言)。
+                if event_throttle_ok(self.ai.time, self._o370_latch_inflight_ts):
+                    self._o370_latch_inflight_ts = self.ai.time
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            "O372:新矿首塔未立,latch钉FB让位"
+                            "(首塔专款优先)"
                         ),
                     })
             elif fb_latch_pin_allowed(
@@ -3244,6 +3301,21 @@ class ProductionManager(Manager):
             # 分矿保底塔不走归零 —— 外层 dispatch_viable 守卫已管钉点,
             # 工人到位等几秒 > 分矿整段裸奔;主基 PSD 路径保持 O210 不变。
             _cannons_expansion = cannons if cannons > 0 else min(_ec_min, 2)
+            # O372-①a(o371a g1 尸检):主基 target=0 变体兜底 ——
+            # O210「买不起即归零」只放过了分矿(O216j),主基 PSD
+            # target 在穷局整局归 0(g1 主基整局 0 塔、首塔晚 234s;
+            # 日志「F2 注册 target=0」印的正是被归零的 cannons)。
+            # 主基零塔(就绪+在途皆 0)时 target 下限 1 —— 首座保命
+            # 塔豁免征用(O216j「保底塔不走归零」同教义扩到主基:
+            # 钉点等几秒 > 主基整局裸奔);有塔/在途或 target >0
+            # 不动(常态/让位语义不变)。
+            cannons = f2_survival_floor(
+                cannons,
+                _ready_cannons_main,
+                self._in_flight_near(
+                    UnitID.PHOTONCANNON, self.ai.start_location
+                ),
+            )
             # O274-②(司令观察):防御集中到分矿 —— 塔/电池分铺主分矿 =
             # 两处都薄(o267a-g03:主 1 塔/分 1 塔,波到分矿即穿)。ZT 且
             # 二矿已落成:分矿塔目标抬到 ≥3(+电池,迎敌侧锚点已有 O38),
@@ -3626,6 +3698,18 @@ class ProductionManager(Manager):
                                 else None
                             ),
                             _cannons_expansion,
+                        )
+                        # O372-①a(o371 双 lane 尸检):注册下限 —— 任何
+                        # 零塔分矿(就绪+在途皆 0)注册即 ≥1,不受 ④a
+                        # 的 120s 新矿窗/O370 冻结钳影响(o371b g3 三矿
+                        # target=0 两度被拆、o369b g3 二矿同型实证);
+                        # 有塔/在途或 target >0 不动。
+                        _exp_cannons = f2_survival_floor(
+                            _exp_cannons,
+                            _cannons_near.get(th.tag, 0),
+                            self._in_flight_near(
+                                UnitID.PHOTONCANNON, th.position
+                            ),
                         )
                         # O78c(o78b 实证):分矿防御绕过 ProtossStaticDefence —— 其
                         # static_defence=True 的槽位检索在分矿静默返回 None
@@ -4703,6 +4787,52 @@ class ProductionManager(Manager):
                             ),
                         })
                     break
+        # O372-④(o371a g2/g3 尸检):舰队重建 watchdog —— g2 航母
+        # 803s 死后双星门+气 500 在手 200s 零补充(839-952s 共 112s
+        # 军队零变化)、g3 航母 2→0 后长断档实证:O239/O260/O364
+        # 三条补产通道全挂 zerg 门,非 ZT 局舰队死后无人补产。峰值
+        # 簿记(曾 ≥3)+塌缩(<2)计时,持续 >60s 且 FB 就绪+空闲
+        # 就绪星门 → critical train 强制补产(航母优先,买不起退
+        # 风暴),90s 节流+事件。种族不挂门:只在「成型舰队塌掉
+        # ≥60s」开火,ZT 既有通道正常期先于它触发,天然不打架。
+        self._o372_fleet_peak = max(self._o372_fleet_peak, _fleet_total_now)
+        if _fleet_total_now < 2:
+            if self._o372_fleet_collapsed_since is None:
+                self._o372_fleet_collapsed_since = self.ai.time
+        else:
+            self._o372_fleet_collapsed_since = None
+        _o372_idle_sg = [
+            s
+            for s in self.manager_mediator.get_own_structures_dict[
+                UnitID.STARGATE
+            ]
+            if s.is_ready and s.is_idle
+        ]
+        if fleet_rebuild_watchdog_needed(
+            fleet_peak=self._o372_fleet_peak,
+            fleet_now=_fleet_total_now,
+            collapsed_since=self._o372_fleet_collapsed_since,
+            now=self.ai.time,
+            fb_ready=self._fb_entities_now > 0,
+            idle_ready_sg=len(_o372_idle_sg),
+        ) and event_throttle_ok(self.ai.time, self._o372_fleet_wd_ts, 90.0):
+            _o372_train = (
+                UnitID.CARRIER
+                if self.ai.can_afford(UnitID.CARRIER)
+                else (UnitID.TEMPEST if self.ai.can_afford(UnitID.TEMPEST) else None)
+            )
+            if _o372_train is not None:
+                _o372_idle_sg[0].train(_o372_train)
+                self._o372_fleet_wd_ts = self.ai.time
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O372:舰队断档重建(峰值{self._o372_fleet_peak},"
+                        f"现{_fleet_total_now},断档"
+                        f"{self.ai.time - self._o372_fleet_collapsed_since:.0f}s,"
+                        f"补{_o372_train.name})"
+                    ),
+                })
         # O260-②(o259b-g02 实证):航母买不起(矿恒 <350)但暴风买得起且气
         # ≥500 → 空闲星门先点暴风。save_up 截断(航母占比落后只留航母)把
         # 星门押给永远凑不齐的 350 矿,气 1000+ 烂 300s 只产 1 暴风 1 航母;
@@ -9624,6 +9754,39 @@ class ProductionManager(Manager):
             and not self._fleet_transitioned
         ):
             return
+        # O372-③(o371b g2/g3 尸检):主基电力预留 —— 本通道(ares
+        # BuildStructure)没有 O368-③ 的钉点前供电预检:g2 SG 停滞
+        # O110 自救 ×3(446s 带电余=0)卡到 490s(晚 30-90s)、g3 SG
+        # 429.9s(O110×3)实证,带电余=0 时落位静默 None 死等。SG/FB
+        # 钉点前带电余=0 且仍有空闲槽 → 先 critical 钉 1 根贴槽水晶
+        # (判据 sg_power_reserve_needed 与 _dispatch_structure 预检
+        # 同口径合并;在途水晶守卫防重复钉,别重复钉);放在
+        # can_afford 门外 —— 没钱等钱期先把电补上,钱到即落。
+        if (
+            not self._structure_present_or_pending(structure_id)
+            and self.ai.tech_requirement_progress(structure_id) >= 1.0
+            and power_precheck_covered(structure_id.name, True)
+        ):
+            _pc_base = base or self.ai.start_location
+            _pw, _fr, _ = self._slot_counts_at(
+                _pc_base, BuildingSize.THREE_BY_THREE
+            )
+            if sg_power_reserve_needed(_pw, _fr) and (
+                self._in_flight_near(UnitID.PYLON, _pc_base) == 0
+            ):
+                _pw_anchor = pick_slot_anchor(
+                    self._free_3x3_slots_at(
+                        _pc_base, BuildingSize.THREE_BY_THREE
+                    ),
+                    (_pc_base.x, _pc_base.y),
+                )
+                self._dispatch_structure(
+                    UnitID.PYLON, _pc_base,
+                    closest_to=(
+                        Point2(_pw_anchor) if _pw_anchor is not None else None
+                    ),
+                    needs_power=False, critical=True, max_on_route=99,
+                )
         if (
             not self._structure_present_or_pending(structure_id)
             and self.ai.tech_requirement_progress(structure_id) >= 1.0

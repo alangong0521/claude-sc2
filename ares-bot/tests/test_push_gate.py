@@ -29,11 +29,28 @@ from bot.managers.combat_manager import CombatManager  # noqa: E402
 MAIN = Point2((20.0, 20.0))
 
 
+class _StructList(list):
+    """enemy_structures 假件 —— 可迭代(sc2 Units 同接口,O372-⑤
+    星港预警要遍历)且带 closest_to(默认追敌分支要调用)。"""
+
+    def __init__(self, items=(), closest=None):
+        super().__init__(items)
+        self._closest = closest
+
+    def closest_to(self, p):
+        return self._closest
+
+
 def _enemy(tag, type_id, pos=None):
     return SimpleNamespace(
         tag=tag, type_id=type_id, position=pos or Point2((150.0, 150.0)),
         is_structure=False, is_flying=True,
     )
+
+
+def _estruct(type_id, pos):
+    """敌建筑假件(默认追敌分支的目标 + O372-⑤ 星港预警遍历源)。"""
+    return SimpleNamespace(type_id=type_id, position=pos, is_structure=True)
 
 
 class TestCarrierPushGate(unittest.TestCase):
@@ -48,7 +65,7 @@ class TestCarrierPushGate(unittest.TestCase):
             ready_townhalls=[th],
             structures=SimpleNamespace(ready=[]),
             enemy_units=list(enemies),
-            enemy_structures=[],
+            enemy_structures=_StructList(),
             enemy_race=SimpleNamespace(name="Zerg"),
             supply_used=120.0,
             supply_workers=60.0,
@@ -68,6 +85,9 @@ class TestCarrierPushGate(unittest.TestCase):
             _defend_anchor=lambda: MAIN,
             _hot_base_anchor=lambda min_threat=6: None,  # O63:单基地默认无热点
             _HARD_AA=CombatManager._HARD_AA,
+            # O372-⑤:commit 期 AA 重评簿记(30s 重评时刻+撤蹲旗标)
+            _o372_aa_eval_at=0.0,
+            _o372_aa_retreat=False,
             manager_mediator=SimpleNamespace(
                 get_own_unit_count=lambda unit_type_id: counts.get(unit_type_id, 0)
             ),
@@ -78,8 +98,8 @@ class TestCarrierPushGate(unittest.TestCase):
         # 60 army supply vs 敌可见 20(优势),2 腐化 < 14×1.5(安全) → 推进(走到默认追敌)
         mgr = self._fake(14, [_enemy(1, UnitID.CORRUPTOR)], 20.0)
         enemy_base = SimpleNamespace(position=Point2((150.0, 150.0)))
-        mgr.ai.enemy_structures = SimpleNamespace(
-            closest_to=lambda p: enemy_base,
+        mgr.ai.enemy_structures = _StructList(
+            [_estruct(UnitID.HATCHERY, enemy_base.position)], closest=enemy_base
         )
         target = CombatManager.attack_target.fget(mgr)
         self.assertEqual(target, enemy_base.position)  # 推进到敌建筑
@@ -139,7 +159,9 @@ class TestCarrierPushGate(unittest.TestCase):
         mgr.ai.supply_used = 199.0
         mgr.ai.minerals = 5000
         enemy_base = SimpleNamespace(position=Point2((150.0, 150.0)))
-        mgr.ai.enemy_structures = SimpleNamespace(closest_to=lambda p: enemy_base)
+        mgr.ai.enemy_structures = _StructList(
+            [_estruct(UnitID.HATCHERY, enemy_base.position)], closest=enemy_base
+        )
         target = CombatManager.attack_target.fget(mgr)
         self.assertEqual(target, enemy_base.position)
         self.assertTrue(mgr._push_committed)
@@ -171,7 +193,9 @@ class TestCarrierPushGate(unittest.TestCase):
         mgr.ai.supply_workers = 60.0
         mgr.ai.time = 870.0  # 14:30
         enemy_base = SimpleNamespace(position=Point2((150.0, 150.0)))
-        mgr.ai.enemy_structures = SimpleNamespace(closest_to=lambda p: enemy_base)
+        mgr.ai.enemy_structures = _StructList(
+            [_estruct(UnitID.HATCHERY, enemy_base.position)], closest=enemy_base
+        )
         target = CombatManager.attack_target.fget(mgr)
         self.assertEqual(target, enemy_base.position)
         self.assertTrue(mgr._push_committed)
@@ -196,6 +220,35 @@ class TestCarrierPushGate(unittest.TestCase):
         target = CombatManager.attack_target.fget(mgr)
         self.assertEqual(target, MAIN)
         self.assertFalse(mgr._push_committed)
+
+    def test_o372_commit_aa_reeval_retreats(self):
+        # O372-⑤(o371a g2 维京 20 架仍 commit 团灭档):commit 期重评
+        # 可见硬对空 ≥4 → 撤蹲(回蹲守锚点),即便 supply 优势+安全线
+        # 内(6 架 < 14×1.5 过了 O45,但 ≥4 过不了重评)
+        enemies = [_enemy(100 + i, UnitID.VIKINGFIGHTER) for i in range(6)]
+        mgr = self._fake(14, enemies, 20.0)
+        target = CombatManager.attack_target.fget(mgr)
+        self.assertEqual(target, MAIN)  # 撤蹲锚点(单基地=主基)
+        self.assertFalse(mgr._push_committed)
+        self.assertTrue(mgr._o372_aa_retreat)
+
+    def test_o372_starport_warning_counts_toward_retreat(self):
+        # O372-⑤:remembered 星港预警 +2 —— 2 架可见维京(未越线)
+        # + 星港曾见 → 越线撤蹲;单星港(0 架可见)不撤
+        sp = _estruct(UnitID.STARPORT, Point2((150.0, 150.0)))
+        enemies = [_enemy(100 + i, UnitID.VIKINGFIGHTER) for i in range(2)]
+        mgr = self._fake(14, enemies, 20.0)
+        mgr.ai.enemy_structures = _StructList([sp])
+        target = CombatManager.attack_target.fget(mgr)
+        self.assertEqual(target, MAIN)
+        self.assertTrue(mgr._o372_aa_retreat)
+        # 单星港无可见对空 → 预警不够撤蹲线,推进照常(优势局追敌)
+        mgr2 = self._fake(14, [], 20.0)
+        enemy_base = SimpleNamespace(position=Point2((150.0, 150.0)))
+        mgr2.ai.enemy_structures = _StructList([sp], closest=enemy_base)
+        target2 = CombatManager.attack_target.fget(mgr2)
+        self.assertEqual(target2, enemy_base.position)
+        self.assertFalse(mgr2._o372_aa_retreat)
 
 
 class TestHotBaseAnchor(unittest.TestCase):

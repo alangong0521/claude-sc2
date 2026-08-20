@@ -39,6 +39,7 @@ from bot.production_plans import (
     rush_defend_base,
     should_push_advantage,
     push_enemy_army_gate,
+    push_commit_aa_retreat,
     two_base_guard_point,
     main_defense_first,
     zt_golden_window_push,
@@ -103,6 +104,11 @@ class CombatManager(Manager):
         self._fleet_recall_target: Point2 | None = None
         # O217:基地残敌清剿事件去抖(激活边沿记一条,清除后复位)
         self._intruder_cleanup_active: bool = False
+        # O372-⑤(o371a g2 尸检):推进 commit 期 AA 重评簿记 —— 30s
+        # 重评时刻与撤蹲旗标(旗标在重评间隔内粘滞,可见性抖动不
+        # 反复收放);__init__ 初始化。
+        self._o372_aa_eval_at: float = 0.0
+        self._o372_aa_retreat: bool = False
         # O226:残敌清剿 3s 收尾滞回(防 attack_target 每帧翻转 yo-yo)
         self._intruder_last_seen: float | None = None
         self._intruder_last_target: Point2 | None = None
@@ -591,6 +597,30 @@ class CombatManager(Manager):
             _army_gate_ok = _opp_is_zerg or push_enemy_army_gate(
                 _own_army, _enemy_vis, _hard_aa
             )
+            # O372-⑤(o371a g2 尸检):推进 commit 期 AA 30s 重评 ——
+            # g2 在 656-765s fleet=5-7 推进 ×4,维京 695s 才露面
+            # (20 架)后仍 commit,舰队团灭:carrier_push_safe 只认
+            # 当帧可见硬对空,维京出视野(或尚未露面)即放行,星港
+            # (维京产能)曾见也不构成预警。每 30s 重评:可见硬对空
+            # (_HARD_AA 口径)+ remembered 星港预警(+2,sc2 的
+            # enemy_structures 含迷雾快照)≥4 → 撤蹲,回既有蹲守
+            # 锚点(O63 热点/O37 静态锚,不发明新分支);重评间隔内
+            # 旗标粘滞,可见性抖动不反复收放。zerg 豁免(同 O371-②
+            # 教义:O302 黄金窗是胜局实证打法,自带腐化闸)。
+            if not _opp_is_zerg:
+                if self.ai.time - self._o372_aa_eval_at >= 30.0:
+                    self._o372_aa_eval_at = self.ai.time
+                    self._o372_aa_retreat = push_commit_aa_retreat(
+                        _hard_aa,
+                        any(
+                            s.type_id == UnitID.STARPORT
+                            for s in self.ai.enemy_structures
+                        ),
+                    )
+                if self._o372_aa_retreat:
+                    if (hot := self._hot_base_anchor()) is not None:
+                        return hot
+                    return self._defend_anchor()
             if not (
                 (
                     _force_push
