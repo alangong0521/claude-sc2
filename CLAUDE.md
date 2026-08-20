@@ -46,6 +46,8 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 > **O214 当前运行实况**：O214 Zerg Timing bench 已按本模式启动，两条 lane（AbyssalReefLE + PaladinoTerminalLE）均为 `REALTIME=0` headless 后台加速，无人工输入；SC2 窗口仅作为视频输出显示，不构成「人机共驾」。后续 O215 及所有 bench 继续强制本模式。
 >
 > 启动前必须执行 `pkill -9 -x SC2` / `bench.py` 的 `_cleanup_stale_sc2()` 清理残留 SC2 进程。O382 起 `bench.py` 用跨进程文件锁串行化每条 lane 的「启动→首个 state」握手，避免同秒拉起触发“核心：访问许可错误”；首个 state 出现即释放锁，正式对局仍双 lane 并行。单局内精确跟踪本局 SC2 PID：60s 内未出现 SC2 pid，或 pid 出现后 120s 仍无首个 state，才判启动/许可失败；运行中崩溃或 snapshot 停滞则杀进程重试。
+> 双 lane 会让游戏时间推进慢于墙钟；O382c 起 bench 单局默认墙钟超时为
+> **3600s**（原 1800s 会在游戏约 1000s 的正常长局中途误杀）。
 >
 > 若双车道反复崩溃/卡死，先杀进程再重启；仍不稳时临时降级 `REALTIME=True` 单车道观战排查，但需记录并继续修复稳定性，不能长期停留单车道。
 >
