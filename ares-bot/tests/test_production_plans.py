@@ -139,6 +139,12 @@ from bot.production_plans import (  # noqa: E402
     power_precheck_covered,
     reanchor_fallback_default,
     cannon_investment_freeze,
+    cannon_freeze_clamp,
+    fb_latch_pin_allowed,
+    nexus_repin_loop_forced,
+    fb_rescue_expansion_bypass,
+    cyber_core_build_allowed,
+    stargate_pin_retry_needed,
     sg_gap_pin_needed,
     new_base_f2_cannon_floor,
     nexus_pin_yield_clamp,
@@ -4612,10 +4618,20 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(nexus_pin_yield_gate(500.0, False, 1))  # 保命塔未齐
 
     def test_cyber_core_watchdog(self):
-        # O365-⑤a:t>180s 且无 BY 实体无在途 → watchdog 开火
-        self.assertTrue(cyber_core_watchdog(180.0, False))
-        self.assertFalse(cyber_core_watchdog(179.9, False))  # 太早
+        # O365-⑤a + O370-④a(180→150,o369a Timing BY 156.7/192.9/
+        # 245.1 全超标实证):t>150s 且无 BY 实体无在途 → watchdog 开火
+        self.assertTrue(cyber_core_watchdog(150.0, False))
+        self.assertFalse(cyber_core_watchdog(149.9, False))  # 太早
         self.assertFalse(cyber_core_watchdog(300.0, True))   # BY 已在/在途
+
+    def test_cyber_core_build_allowed(self):
+        # O370-④b:双 BY 防重(o369b g2/g3 白扔 100+ 矿档)
+        # 无实体无在途+runner 无 core 步 → 允许钉
+        self.assertTrue(cyber_core_build_allowed(False, False))
+        # 已有 BY 实体/在途 → 跳过
+        self.assertFalse(cyber_core_build_allowed(True, False))
+        # runner 后续步排着 core(runner 会自己建)→ 跳过
+        self.assertFalse(cyber_core_build_allowed(False, True))
 
     def test_evac_return_gas_stop_remark(self):
         # O365-⑤b:停气台账在册者归队即重标,不在册者归 GATHERING
@@ -4736,6 +4752,30 @@ class TestO365Fixes(unittest.TestCase):
         # 上一采样矿在涨(None)→ 健康,不解除
         self.assertFalse(fb_latch_stalled(None, 600.0))
 
+    def test_fb_latch_pin_allowed(self):
+        # O370-②a:互斥仲裁(o369b g3 latch 钉压过 Nexus 窗档)
+        # 二矿未成交 → latch 钉 FB 排队(Nexus 优先)
+        self.assertFalse(fb_latch_pin_allowed(False, False))
+        self.assertFalse(fb_latch_pin_allowed(False, True))
+        # 二矿成交但 Nexus 资金窗独占期 → 仍排队
+        self.assertFalse(fb_latch_pin_allowed(True, True))
+        # 二矿成交且窗放行 → latch 钉点先行
+        self.assertTrue(fb_latch_pin_allowed(True, False))
+
+    def test_nexus_repin_loop_forced(self):
+        # O370-②b:消失→重钉循环 >3 轮 → 强制直钉(o369a g3 的
+        # 8 次循环 9 分钟无二矿档)
+        self.assertFalse(nexus_repin_loop_forced(0))
+        self.assertFalse(nexus_repin_loop_forced(3))
+        self.assertTrue(nexus_repin_loop_forced(4))
+        self.assertTrue(nexus_repin_loop_forced(8))
+
+    def test_fb_rescue_expansion_bypass(self):
+        # O370-③a:FB 禁用「分矿试建」旁路(o369a g2 无塔分矿
+        # 被拆档),SG 保留旁路
+        self.assertFalse(fb_rescue_expansion_bypass("FLEETBEACON"))
+        self.assertTrue(fb_rescue_expansion_bypass("STARGATE"))
+
     def test_sg_idle_reset_needed(self):
         # O369-②a:起点口径 —— 无就绪 SG → 销账
         self.assertTrue(sg_idle_reset_needed(0, False))
@@ -4771,26 +4811,47 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(power_precheck_covered("NEXUS", True))
 
     def test_reanchor_fallback_default(self):
-        # O369-④:BY 黑名单 ≥2 → 回退默认槽(o368a g1 BY 拖 221s 档)
+        # O369-④ + O370-④a(阈值 ≥2→≥1,o369a g3 黑名单仅 1 就把
+        # BY 拖到 245s 实证):首次换锚失败(黑名单 ≥1)即回退默认槽
+        self.assertTrue(reanchor_fallback_default("CYBERNETICSCORE", 1))
         self.assertTrue(reanchor_fallback_default("CYBERNETICSCORE", 2))
         self.assertTrue(reanchor_fallback_default("GATEWAY", 3))
-        # 黑名单 <2 → 照常换锚
-        self.assertFalse(reanchor_fallback_default("CYBERNETICSCORE", 1))
+        # 黑名单 <1 → 照常换锚
+        self.assertFalse(reanchor_fallback_default("CYBERNETICSCORE", 0))
         # forge(O351 主基锚)/机械台(非 opener 链)→ 维持原冷却
         self.assertFalse(reanchor_fallback_default("FORGE", 5))
         self.assertFalse(reanchor_fallback_default("ROBOTICSFACILITY", 5))
 
     def test_cannon_investment_freeze(self):
-        # O369-⑤ 三象限:敌腐化 ≥4 → 冻结(o368b g2 腐化波档)
-        self.assertTrue(cannon_investment_freeze(4, 10, 700.0, False))
-        # 舰队 <8 → 冻结(25 塔/6 舰队反面教材档)
-        self.assertTrue(cannon_investment_freeze(0, 6, 956.0, False))
-        # 腐化 <4 且舰队 ≥8 → 不冻结
-        self.assertFalse(cannon_investment_freeze(3, 8, 700.0, False))
-        # 35+ 波(wave_active)→ 豁免(wave floor 照补)
-        self.assertFalse(cannon_investment_freeze(4, 6, 700.0, True))
-        # t ≤600 → 不冻结(开局防御链优先)
-        self.assertFalse(cannon_investment_freeze(4, 6, 600.0, False))
+        # O370-①a(o369 尸检):触发只认实际可见腐化 ≥4
+        # 腐化 ≥4 → 冻结(o368b g2 腐化波档)
+        self.assertTrue(cannon_investment_freeze(4, False))
+        self.assertTrue(cannon_investment_freeze(9, False))
+        # 敌 0 腐化 → 不冻结(o369 6/6 局误触发档:旧判据舰队<8
+        # 在 t>600 常开,腐化首见前 270-360s 就开火)
+        self.assertFalse(cannon_investment_freeze(0, False))
+        # 腐化 <4 → 不冻结
+        self.assertFalse(cannon_investment_freeze(3, False))
+        # 35+ 波(wave_active)→ 豁免(wave floor 照补,生死窗不管)
+        self.assertFalse(cannon_investment_freeze(4, True))
+
+    def test_cannon_freeze_clamp(self):
+        # O370-①b:断向下棘轮 —— 钳 max(现有, 快照)而非「钳现有」
+        # 快照 8、塔被拆到 5 → 目标仍可按快照 8 补回(o369a g1 的
+        # 8→5→4→2 棘轮档)
+        self.assertEqual(cannon_freeze_clamp(9, 5, 8), 8)
+        # 现有高于快照(冻结期补回中)→ 钳到现有不再增
+        self.assertEqual(cannon_freeze_clamp(9, 8, 8), 8)
+        # 快照外不新增投资(钱让给舰队)
+        self.assertEqual(cannon_freeze_clamp(12, 8, 8), 8)
+        # 快照为 0(冻结启动时无注册 target)→ 退化为「钳现有」
+        self.assertEqual(cannon_freeze_clamp(9, 5, 0), 5)
+        # O370-①c:新矿首批豁免 —— 全局 0 塔 + 1 个新矿名额 →
+        # 新矿 F2 target 保底 1(o369b g1 三矿 target=0 裸奔档)
+        self.assertEqual(cannon_freeze_clamp(2, 0, 0, new_base_exempt=1), 1)
+        self.assertEqual(
+            cannon_freeze_clamp(5, 0, 0, new_base_exempt=2), 2
+        )
 
     def test_sg_gap_pin_needed(self):
         # O369-⑥:FB 已落+就绪 SG 全忙+舰队 <8+SG <3+矿 ≥150 → 硬钉
@@ -4808,6 +4869,32 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(sg_gap_pin_needed(1, 2, True, 6, 2, 149.9))
         # 无就绪 SG → 不钉
         self.assertFalse(sg_gap_pin_needed(1, 0, True, 6, 2, 200.0))
+
+    def test_sg_gap_pin_needed_o370(self):
+        # O370-⑤a:单 SG 空转+气烂银行出口(o369b g3 气烂 579 档)
+        # SG<2+舰队<8+气 ≥300 → 硬钉(不要求全忙)
+        self.assertTrue(sg_gap_pin_needed(1, 1, False, 6, 1, 200.0, 579.0))
+        self.assertTrue(sg_gap_pin_needed(1, 0, False, 6, 1, 200.0, 300.0))
+        # 气 <300 → 不钉
+        self.assertFalse(sg_gap_pin_needed(1, 1, False, 6, 1, 200.0, 299.9))
+        # SG ≥2 且有空闲 → 不钉(空转出口只管单 SG)
+        self.assertFalse(sg_gap_pin_needed(1, 2, False, 6, 2, 200.0, 579.0))
+        # 舰队 ≥8 → 不钉(数量够了)
+        self.assertFalse(sg_gap_pin_needed(1, 1, False, 8, 1, 200.0, 579.0))
+        # FB 未落成 → 不钉
+        self.assertFalse(sg_gap_pin_needed(0, 1, False, 6, 1, 200.0, 579.0))
+        # 全忙路径不受气门影响(气 0 照钉,原语义不动)
+        self.assertTrue(sg_gap_pin_needed(1, 2, True, 6, 2, 200.0, 0.0))
+
+    def test_stargate_pin_retry_needed(self):
+        # O370-⑤b:钉点 30s 未落成 → 重钉
+        self.assertTrue(stargate_pin_retry_needed(794.0, 824.0, False))
+        # 30s 内 → 不重钉
+        self.assertFalse(stargate_pin_retry_needed(794.0, 823.9, False))
+        # 已有实体/在途 → 销账不重钉
+        self.assertFalse(stargate_pin_retry_needed(794.0, 900.0, True))
+        # 无在途钉点簿记(pin_at=0)→ 不动
+        self.assertFalse(stargate_pin_retry_needed(0.0, 900.0, False))
 
     def test_new_base_f2_cannon_floor(self):
         # O368-④a:新基地(落成 <120s)target 下限 1

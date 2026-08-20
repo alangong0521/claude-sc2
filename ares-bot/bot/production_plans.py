@@ -4911,6 +4911,20 @@ def fb_safe_anchor(
     return max(cands, key=lambda s: (s[0] - rx) ** 2 + (s[1] - ry) ** 2)
 
 
+def fb_rescue_expansion_bypass(sid_name: str) -> bool:
+    """O370-③a(o369a g2 实证):O110 自救「分矿试建」旁路收口
+    判据。纯逻辑,可单测。
+
+    o369a g2 实证:latch 攒到 345/320 后,FB 498.2s 开工走 O110
+    自救「分矿试建」旁路,绕过 critical 钉点选址,钉在全场唯一
+    无塔的分矿(落成后 333s 零塔,no_placement 死循环),534.4s
+    被 4 个地面单位 35s 拆掉。FB 禁用分矿旁路(调用方改走主基
+    critical 钉点+fb_safe_anchor 安全锚);SG 保留旁路(分矿
+    3x3 槽位全新,O110 原语义)。
+    """
+    return sid_name != "FLEETBEACON"
+
+
 def fb_arrival_guard_active(
     now: float,
     fb_building: bool,
@@ -4981,6 +4995,39 @@ def fb_latch_stalled(
     return stall_since is not None and now - stall_since >= window
 
 
+def fb_latch_pin_allowed(
+    second_base_dealt: bool,
+    nexus_hold_active: bool,
+) -> bool:
+    """O370-②a(o369b g3/o369a g3 实证):latch×Nexus 资金窗互斥
+    仲裁判据。纯逻辑,可单测。
+
+    o369b g3 实证:O364 Nexus 独占资金窗(498.1s hold 45s)被
+    latch 的 critical 钉 FB(511.2s)压过,Nexus 假成交两次
+    (528.2/558.2s),二矿推迟到 590.6s(晚 230-250s),农 49
+    vs 配方 72-74。互斥仲裁:二矿未成交(无实体无在建,
+    nexus_deal_confirmed 同口径)或 Nexus 资金窗独占期 → latch
+    的 critical 钉 FB 排队等 Nexus 成交(Nexus 优先,单矿局不
+    得出现 latch 压过 Nexus 窗);二矿成交且窗已放行 → latch
+    钉点先行(舰队链恢复常态优先)。
+    """
+    return second_base_dealt and not nexus_hold_active
+
+
+def nexus_repin_loop_forced(loop_count: int, max_rounds: int = 3) -> bool:
+    """O370-②b(o369a g3 实证):Nexus「条目消失无实体」死循环
+    计数判据。纯逻辑,可单测。
+
+    o369a g3 实证:Nexus 子系统 4 hold+3 fuse+8 次「条目消失无
+    实体」死循环,9 分钟没落下二矿,全程单矿 —— O362 保险丝
+    pop(等钱 >60s 强制释放)+30s 重钉冷却构成「钉→等→放→等
+    冷却→重钉」空转。循环 >max_rounds 轮 → 调用方强制 critical
+    直钉(EC 通道 max_on_route=99,清保险丝重钉冷却绕开 30s
+    空等),「消失→重钉」60s 内收敛;成交即清零(调用方)。
+    """
+    return loop_count > max_rounds
+
+
 def sg_idle_reset_needed(ready_sg: int, fleet_busy: bool) -> bool:
     """O369-②a(o368a g2 实证):星门空转计时器销账判据。纯逻辑,
     可单测。
@@ -5043,7 +5090,7 @@ def power_precheck_covered(sid_name: str, needs_power: bool) -> bool:
 def reanchor_fallback_default(
     sid_name: str,
     blacklist_len: int,
-    threshold: int = 2,
+    threshold: int = 1,
 ) -> bool:
     """O369-④(o368a g1 实证):opener 关键链换锚死锁的快退化判据。
     纯逻辑,可单测。
@@ -5055,6 +5102,9 @@ def reanchor_fallback_default(
     通道,不带 closest_to)。仅 CYBERNETICSCORE/GATEWAY 等
     opener 关键链生效:forge 已有 O351 主基锚,机械台非 opener
     关键链,维持原冷却。
+    O370-④a(o369a Timing 三局实证):阈值 ≥2→≥1 —— 三局黑
+    名单 ≥2 全部未触发(g3 黑名单仅 1 就把 BY 拖到 245s),首
+    次换锚失败即回退默认槽,不等二连黑。
     """
     return sid_name in ("CYBERNETICSCORE", "GATEWAY") and (
         blacklist_len >= threshold
@@ -5063,27 +5113,46 @@ def reanchor_fallback_default(
 
 def cannon_investment_freeze(
     enemy_corruptors: int,
-    fleet: int,
-    now: float,
     wave_active: bool,
-    t_min: float = 600.0,
     corruptor_min: int = 4,
-    fleet_min: int = 8,
 ) -> bool:
     """O369-⑤(o368b g2 实证):塔投资总量闸。纯逻辑,可单测。
 
     o368b g2 反面教材:956s 有 25 座塔(≈3750 矿 ≈ 9 艘航母)
     被腐化波逐波拆光,同期舰队停 6 艘 —— 塔保不住被狙的舰队,
-    腐化波需要的是舰队数量。t >t_min 且(敌腐化 ≥corruptor_min
-    或舰队(TEMPEST+CARRIER 含在产)<fleet_min)→ 冻结塔地板
-    继续上抬:调用方把 F2 塔目标钳到现有塔数(floor 不再增,
-    已注册 target 保持,被拆不补),把钱让给舰队/星门。threat
-    波(wave_active,敌 35+ supply,O367-⑤c 同口径)仍可按
-    wave floor 补 —— 冻结管常态投资,不管波到脸的生死窗。
+    腐化波需要的是舰队数量。threat 波(wave_active,敌 35+
+    supply,O367-⑤c 同口径)仍可按 wave floor 补 —— 冻结管常态
+    投资,不管波到脸的生死窗。
+    O370-①a(o369 双 lane 尸检,6/6 局误触发真回归):触发口径
+    改认**实际可见腐化 ≥corruptor_min** —— 旧判据「t>600 且
+    (腐化≥4 或舰队<8)」在舰队成型前恒真,t>600 常开,全部在
+    敌可见腐化=0(或腐化首见前 270-360s)开火,与 spec「腐化
+    ≥4」系统性不符(o369a g1 三矿钳 0 塔被 29 地面抄丢、o369b
+    g1 三矿 target=0 裸奔 44s 被拆)。腐化计数从 enemies 读,
+    与 zt_golden_window_push 的腐化口径一致(调用方同一计数)。
     """
-    if wave_active or now <= t_min:
-        return False
-    return enemy_corruptors >= corruptor_min or fleet < fleet_min
+    return (not wave_active) and enemy_corruptors >= corruptor_min
+
+
+def cannon_freeze_clamp(
+    target: int,
+    existing: int,
+    floor_snapshot: int,
+    new_base_exempt: int = 0,
+) -> int:
+    """O370-①b/①c(o369 双 lane 尸检):冻结钳制断向下棘轮+新矿
+    首批豁免。纯逻辑,可单测。
+
+    ①b 断棘轮:旧钳「min(target, 现有塔数)」是向下棘轮 —— 塔被
+    拆 → 现有更少 → 目标更低(o369a g1:8→5→4→2,871.8s 无塔)。
+    改钳 min(target, max(现有, 冻结启动时的注册 target 快照)):
+    冻结期被拆的塔按快照补回,快照外不再新增投资(钱让给舰队)。
+    ①c 新矿豁免:新矿(落成 <120s,O368-④a 同口径)首批塔
+    (注册 target 内)不计入冻结钳制 —— 旧钳把全局 0 塔的新矿
+    F2 target 钳 0(o369b g1 三矿 target=0 裸奔 44s 被拆);
+    每个新矿名额 +1,与 O368-④a 的首座保命塔下限对齐。
+    """
+    return min(target, max(existing, floor_snapshot) + new_base_exempt)
 
 
 def sg_gap_pin_needed(
@@ -5093,9 +5162,11 @@ def sg_gap_pin_needed(
     fleet: int,
     sg_total: int,
     minerals: float,
+    vespene: float = 0.0,
     fleet_min: int = 8,
     sg_max: int = 3,
     min_minerals: float = 150.0,
+    gas_min: float = 300.0,
 ) -> bool:
     """O369-⑥(o368b g2 实证):星门按舰队缺口硬钉判据。纯逻辑,可单测。
 
@@ -5106,15 +5177,41 @@ def sg_gap_pin_needed(
     <sg_max → 调用方直接 critical 钉 SG2/SG3(不等气烂银行);
     矿 <min_minerals 不钉(与 O367-⑤b 矿门兼容:穷局钉点
     no_money 事件空转,o366b 三次实证)。
+    O370-⑤a(o369b g3 实证):「就绪 SG 全忙」对「单 SG 空转+气烂
+    银行」场景永假 —— g3 单 SG 空转、气烂 579 无人转化,条件
+    永远够不到全忙。追加出口:SG 总数 <2 且气 ≥gas_min(单 SG
+    空转局直接钉 SG2,与 O218 的气烂银行同语义但不等 400);
+    全忙路径(SG2→SG3)保留不动。
     """
     return (
         fb_entities > 0
-        and ready_sg > 0
-        and ready_sg_all_busy
         and fleet < fleet_min
         and sg_total < sg_max
         and minerals >= min_minerals
+        and (
+            (ready_sg > 0 and ready_sg_all_busy)
+            or (sg_total < 2 and vespene >= gas_min)
+        )
     )
+
+
+def stargate_pin_retry_needed(
+    pin_at: float,
+    now: float,
+    sg_pending: bool,
+    window: float = 30.0,
+) -> bool:
+    """O370-⑤b(o369 尸检):O218/O369-⑥ 追加星门钉点 30s 未落成
+    重试判据。纯逻辑,可单测。
+
+    o369 实证:O218 两次追加「dispatched 后没落成」—— 钉点派工
+    后气被产线花掉,气门(≥400)回落,触发闸永久关闭;条目若被
+    O362 保险丝/O118-② 快回收 pop(工人走位中死亡/被拽)就再也
+    没人重钉。钉点时刻起 window 秒仍无 SG 实体无在途 → 调用方
+    无条件重钉一次(不依赖气门),并重计 30s;sg_pending(实体
+    含在建+tracker 在途任一)即销账。
+    """
+    return pin_at > 0.0 and now - pin_at >= window and not sg_pending
 
 
 def tempest_gas_dump_ok(
@@ -5672,17 +5769,35 @@ def nexus_pin_yield_gate(
 
 
 def cyber_core_watchdog(
-    now: float, cyber_present_or_pending: bool, min_time: float = 180.0
+    now: float, cyber_present_or_pending: bool, min_time: float = 150.0
 ) -> bool:
     """O365-⑤a(o364a g2 实证):BY 芯核兜底 watchdog 判据。纯逻辑,可单测。
 
     o364a g2 全场无 BY 芯核(build yml ~474s 跑完即无后继,Timing
-    lane 更上游断链):科技链断在第一节无人发现。t >180s 且无
+    lane 更上游断链):科技链断在第一节无人发现。t >min_time 且无
     CYBERNETICSCORE 实体无在途 → 调用方最高优先 critical 钉点
     (驻点等钱 = 资金走低时天然最优先;no_placement 走 O357
     死槽换锚)并打事件。
+    O370-④a(o369a Timing 三局实证):watchdog 180s→150s ——
+    BY 落成 156.7/192.9/245.1 全部超标(g3 落成 ~281s 直接压垮
+    500s 舰队链),180s 才兜底对 opener 关键链是死等。
     """
     return now >= min_time and not cyber_present_or_pending
+
+
+def cyber_core_build_allowed(
+    present_or_pending: bool,
+    runner_core_ahead: bool,
+) -> bool:
+    """O370-④b(o369b g2/g3 双 BY 白扔 100+ 矿实证):双 BY 防重
+    判据。纯逻辑,可单测。
+
+    BY 实体/在途已存在,或 opening runner 后续步仍排着 core
+    (runner 会自己建,bot 钉点重复 = 白扔一座 BY) → 跳过钉点。
+    runner 步卡死(O324 看门狗,bot 层接管)时调用方传
+    runner_core_ahead=False,兜底钉点恢复。
+    """
+    return not present_or_pending and not runner_core_ahead
 
 
 def evac_return_gas_stop_remark(worker_tag: int, gas_stopped_tags) -> bool:

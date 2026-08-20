@@ -171,6 +171,12 @@ from bot.production_plans import (
     power_precheck_covered,
     reanchor_fallback_default,
     cannon_investment_freeze,
+    cannon_freeze_clamp,
+    fb_latch_pin_allowed,
+    nexus_repin_loop_forced,
+    fb_rescue_expansion_bypass,
+    cyber_core_build_allowed,
+    stargate_pin_retry_needed,
     sg_gap_pin_needed,
     new_base_f2_cannon_floor,
     nexus_pin_yield_clamp,
@@ -545,6 +551,19 @@ class ProductionManager(Manager):
         # O369-⑤(o368b g2 实证):塔投资总量闸旗标(F2 段每帧重算;
         # O337 分矿守卫钉点闸读上一帧值)。
         self._o369_cannon_freeze: bool = False
+        # O370-①b(o369 尸检):冻结启动时的注册 target 快照(断「钳
+        # 现有」向下棘轮;0=未冻结,冻结解除即清零)。
+        self._o370_freeze_floor: int = 0
+        # O370-②b(o369a g3 实证):Nexus「条目消失无实体」循环计数
+        # (>3 轮强制 critical 直钉绕保险丝冷却;成交即清零)。
+        self._o370_nexus_loop: int = 0
+        # O370-③b(o369 尸检):latch 攒够但钉点在途(非 latch 通道
+        # 成交)的归属事件 30s 节流时刻(只节流言)。
+        self._o370_latch_inflight_ts: float = 0.0
+        # O370-⑤b(o369 尸检):O218/O369-⑥ 追加星门钉点时刻簿记
+        # (0=无在途钉点;30s 未落成无条件重钉)与重钉事件节流。
+        self._o370_sg_pin_at: float = 0.0
+        self._o370_sg_retry_ts: float = 0.0
         # O369-⑥(o368b g2 实证):舰队缺口硬钉星门的失败簿记 30s
         # 节流时刻(只节流言不节流钉点)。
         self._o369_sg_gap_ts: float = 0.0
@@ -880,6 +899,7 @@ class ProductionManager(Manager):
         if self._o364_nexus_hold_armed and _nx_pending == 0:
             if nexus_deal_confirmed(_nx_pending, self.ai.townhalls.amount):
                 self._o364_nexus_hold_armed = False
+                self._o370_nexus_loop = 0  # O370-②b:成交即清零循环计数
                 # O365-③b:报成交后 T+15s 校验 placement(防假成交)
                 self._o364_deal_verify_at = self.ai.time + 15.0
                 self.ai._events.append({
@@ -889,12 +909,24 @@ class ProductionManager(Manager):
             elif not self._o364_pop_rehold:
                 self._o364_pop_rehold = True
                 self._o364_nexus_fund_hold_until = self.ai.time + 45.0
-                _rc = self._o365_repin_nexus()
+                # O370-②b(o369a g3 实证):消失→重钉循环计数 —— g3
+                # 的 4 hold+3 fuse+8 次消失死循环(9 分钟无二矿,
+                # 全程单矿):条目是 O362 保险丝 pop 的(等钱 >60s
+                # 强制释放,30s 重钉冷却构成空转)。超 3 轮强制
+                # critical 直钉(EC 通道 max_on_route=99+清保险丝
+                # 重钉冷却),「消失→重钉」60s 内收敛。
+                self._o370_nexus_loop += 1
+                _o370_forced = nexus_repin_loop_forced(self._o370_nexus_loop)
+                if _o370_forced:
+                    self._o362_repin_cd.pop(UnitID.NEXUS, None)
+                    self._o363_repin_block_until.pop(UnitID.NEXUS, None)
+                _rc = self._o365_repin_nexus(force=_o370_forced)
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": (
                         f"O365:Nexus条目消失无实体(非成交),重回hold+"
-                        f"重派工(派工={_rc})"
+                        f"重派工(派工={_rc},循环{self._o370_nexus_loop}轮"
+                        f"{'强制直钉' if _o370_forced else ''})"
                     ),
                 })
             else:
@@ -902,7 +934,12 @@ class ProductionManager(Manager):
                 # 冷却(pin_fuse_cd),不补每帧重试 = o364a g3 的
                 # 「成交后 bases 全程=1」复现;冷却过后自然挂出,
                 # tracker 有条目后 _o364_pop_rehold 在上方清除。
-                self._o365_repin_nexus()
+                # O370-②b:循环 >3 轮持续走强制直钉(60s 内收敛)。
+                _o370_forced2 = nexus_repin_loop_forced(self._o370_nexus_loop)
+                if _o370_forced2:
+                    self._o362_repin_cd.pop(UnitID.NEXUS, None)
+                    self._o363_repin_block_until.pop(UnitID.NEXUS, None)
+                self._o365_repin_nexus(force=_o370_forced2)
         # O365-③b(o364a g3 实证):成交 T+15s placement 校验 ——
         # o364a g3 报成交后 bases 全程=1(358.3/418.4s O340 仍诊断
         # 首扩未开工)。校验失败 → 撤销成交、重回 hold 并重派工。
@@ -924,13 +961,31 @@ class ProductionManager(Manager):
             self._o364_deal_verify_at = 0.0  # 校验通过销账
         # O365-⑤a(o364a g2 实证):BY 芯核兜底 watchdog —— g2 全场无
         # BY(build yml ~474s 跑完即无后继,Timing lane 更上游断链,
-        # O245 建台失败 ×12 只是下游症状)。t>180s 且无实体无在途 →
-        # 最高优先 critical 钉点:驻点等钱(资金走低时天然最优先,
-        # 不发明新预留),no_placement 由 _dispatch_pin_reanchor 的
-        # O357 死槽换锚处理;30s 节流打事件。
+        # O245 建台失败 ×12 只是下游症状)。t>150s(O370-④a:180→150,
+        # o369a Timing 三局 BY 156.7/192.9/245.1 全超标实证)且无实体
+        # 无在途 → 最高优先 critical 钉点:驻点等钱(资金走低时天然
+        # 最优先,不发明新预留),no_placement 由 _dispatch_pin_reanchor
+        # 的 O357 死槽换锚处理;30s 节流打事件。
+        # O370-④b(o369b g2/g3 双 BY 白扔 100+ 矿实证):防重 ——
+        # opening runner 后续步仍排着 core(runner 会自己建,bot
+        # 钉点重复一座)时跳过;runner 步卡死(O324 看门狗,bot 层
+        # 接管)则放行兜底。
+        _o370_bor = getattr(self.ai, "build_order_runner", None)
+        _o370_runner_core_ahead = bool(
+            _o370_bor is not None
+            and not _o370_bor.build_completed
+            and not getattr(self, "_o324_runner_stalled", False)
+            and any(
+                _step.command == UnitID.CYBERNETICSCORE
+                for _step in _o370_bor.build_order[_o370_bor.build_step:]
+            )
+        )
         if cyber_core_watchdog(
             self.ai.time,
             self._structure_present_or_pending(UnitID.CYBERNETICSCORE),
+        ) and cyber_core_build_allowed(
+            self._structure_present_or_pending(UnitID.CYBERNETICSCORE),
+            _o370_runner_core_ahead,
         ):
             _cy_rc = self._dispatch_pin_reanchor(
                 UnitID.CYBERNETICSCORE, self.ai.start_location
@@ -2379,23 +2434,57 @@ class ProductionManager(Manager):
         # O369-①a:攒够 300+200 即钉 —— latch 期买得起就 critical
         # 钉 FB(tracker 在途即跳过,钉点族 pin fuse 自带 30s 重钉
         # 冷却,不刷屏;落点同 O360 超时强制派工的安全锚)。
+        # O370-②a(o369b g3/o369a g3 实证):latch×Nexus 互斥仲裁 ——
+        # 二矿未成交(无实体无在建,townhalls 含在建口径)或 Nexus
+        # 资金窗独占期,latch 钉 FB 排队等 Nexus 成交(单矿局不得
+        # 出现 latch 压过 Nexus 窗:o369b g3 的 511.2s latch 钉压过
+        # 498.1s hold,Nexus 假成交两次、二矿晚 230-250s);二矿
+        # 成交且窗放行后 latch 钉点先行。
+        # O370-③b(o369 尸检):归属埋点 —— 攒够但 tracker 已有在途
+        # (成交走其它通道)时打节流事件,Timing lane 3/3 局「攒够
+        # 300+200」埋点缺失(验收无据)的修复。
+        _o370_second_base_dealt = self.ai.townhalls.amount >= 2
+        _o370_fb_in_tracker = (
+            self.ai.not_started_but_in_building_tracker(UnitID.FLEETBEACON)
+            > 0
+        )
         if (
             self._fb_bankrupt
             and _fb_entities_now == 0
             and self.ai.can_afford(UnitID.FLEETBEACON)
-            and self.ai.not_started_but_in_building_tracker(UnitID.FLEETBEACON)
-            == 0
         ):
-            _fb_rc = self._dispatch_structure(
-                UnitID.FLEETBEACON,
-                self.ai.start_location,
-                closest_to=self._fb_safe_anchor(),
-                critical=True,
-            )
-            if _fb_rc == "dispatched":
+            if _o370_fb_in_tracker:
+                if event_throttle_ok(self.ai.time, self._o370_latch_inflight_ts):
+                    self._o370_latch_inflight_ts = self.ai.time
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            "O370:FB latch攒够300+200,钉点在途待成交"
+                            "(非latch通道)"
+                        ),
+                    })
+            elif fb_latch_pin_allowed(
+                _o370_second_base_dealt, self._o364_nexus_fund_hold()
+            ):
+                _fb_rc = self._dispatch_structure(
+                    UnitID.FLEETBEACON,
+                    self.ai.start_location,
+                    closest_to=self._fb_safe_anchor(),
+                    critical=True,
+                )
+                if _fb_rc == "dispatched":
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": "O369:FB latch攒够300+200,critical钉FB",
+                    })
+            elif event_throttle_ok(self.ai.time, self._o370_latch_inflight_ts):
+                self._o370_latch_inflight_ts = self.ai.time
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
-                    "msg": "O369:FB latch攒够300+200,critical钉FB",
+                    "msg": (
+                        "O370:FB latch攒够300+200,排队等Nexus成交"
+                        "(二矿未成交,latch让位)"
+                    ),
                 })
         # O369-①c:latch 健康监控 —— 10s 滑窗采样矿量,零积累起点
         # 累计 30s → 临时解除 60s(攒不动就别压,O367-① 同教义);
@@ -3151,22 +3240,31 @@ class ProductionManager(Manager):
             # O369-⑤(o368b g2 反面教材):塔投资总量闸 —— g2 在 956s
             # 有 25 座塔(≈3750 矿 ≈ 9 艘航母)被腐化波逐波拆光,同期
             # 舰队停 6 艘:塔保不住被狙的舰队,腐化波需要的是舰队
-            # 数量。t>600 且(敌腐化 ≥4 或舰队(TEMPEST+CARRIER 含
-            # 在产)<8)→ 冻结塔地板继续上抬:F2 目标钳到现有塔数
-            # (floor 不再增,已注册 target 保持,被拆不补),钱让给
-            # 舰队/星门;35+ 波(wave_active,O367-⑤c 同口径)仍可
-            # 按 wave floor 补 —— 冻结管常态投资,不管波到脸的
-            # 生死窗。旗标挂实例,O337 分矿守卫钉点闸读(上一帧值)。
-            self._o369_cannon_freeze = cannon_investment_freeze(
+            # 数量;35+ 波(wave_active,O367-⑤c 同口径)仍可按
+            # wave floor 补 —— 冻结管常态投资,不管波到脸的生死窗。
+            # O370-①a(o369 双 lane 尸检,6/6 局误触发真回归):触发
+            # 改认实际可见腐化 ≥4(旧判据舰队<8 在成型前恒真,t>600
+            # 常开,全部在敌 0 腐化时开火);腐化计数从 enemies 读,
+            # 与 zt_golden_window_push 同口径。
+            # O370-①b/①c:钳制断向下棘轮(钳 max(现有,冻结启动时
+            # 注册 target 快照),塔被拆按快照补回)+新矿首批豁免
+            # (落成 <120s 的新矿每座 +1 名额,O368-④a 同口径,
+            # o369b g1 三矿 target=0 裸奔 44s 被拆实证)。
+            # 旗标挂实例,O337 分矿守卫钉点闸读(上一帧值)。
+            _o370_freeze_now = cannon_investment_freeze(
                 enemy_corruptors=sum(
                     1
                     for u in self.ai.enemy_units
                     if u.type_id == UnitID.CORRUPTOR
                 ),
-                fleet=_fleet_total_now,
-                now=self.ai.time,
                 wave_active=self._visible_enemy_army_supply() > 35.0,
             )
+            if _o370_freeze_now and not self._o369_cannon_freeze:
+                # 冻结启动边沿:快照注册 target(棘轮的锚)
+                self._o370_freeze_floor = max(cannons, _cannons_expansion)
+            elif not _o370_freeze_now and self._o369_cannon_freeze:
+                self._o370_freeze_floor = 0  # 解除即清零,下轮重锚
+            self._o369_cannon_freeze = _o370_freeze_now
             if self._o369_cannon_freeze:
                 _cn_global_now = (
                     len(
@@ -3178,15 +3276,41 @@ class ProductionManager(Manager):
                         UnitID.PHOTONCANNON
                     ]
                 )
-                cannons = min(cannons, _cn_global_now)
-                _cannons_expansion = min(_cannons_expansion, _cn_global_now)
+                # 新矿(落成 <120s,O368-④a 同口径)首批塔豁免征
+                _o370_new_bases = sum(
+                    1
+                    for _th in self.ai.townhalls.ready
+                    if _th.position.distance_to(self.ai.start_location) > 5.0
+                    and (
+                        self.ai.time
+                        - self._nexus_ready_at.get(
+                            (
+                                round(_th.position.x),
+                                round(_th.position.y),
+                            ),
+                            -9999.0,
+                        )
+                    )
+                    < 120.0
+                )
+                cannons = cannon_freeze_clamp(
+                    cannons, _cn_global_now, self._o370_freeze_floor
+                )
+                _cannons_expansion = cannon_freeze_clamp(
+                    _cannons_expansion,
+                    _cn_global_now,
+                    self._o370_freeze_floor,
+                    new_base_exempt=_o370_new_bases,
+                )
                 if event_throttle_ok(self.ai.time, self._o367_wave_log_ts):
                     self._o367_wave_log_ts = self.ai.time
                     self.ai._events.append({
                         "t": round(self.ai.time, 1),
                         "msg": (
-                            f"O369:塔投资冻结,目标钳现有{_cn_global_now}"
-                            f"(舰队={_fleet_total_now})"
+                            f"O370:塔投资冻结(腐化可见≥4),目标钳"
+                            f"max(现有{_cn_global_now},快照"
+                            f"{self._o370_freeze_floor})"
+                            f"+新矿豁免{_o370_new_bases}"
                         ),
                     })
             # O365-④(o364b g1 实证):倒挂前置到钉点排队层 —— g1 在
@@ -4227,6 +4351,12 @@ class ProductionManager(Manager):
                     self._dispatch_structure(
                         UnitID.PYLON, self.ai.start_location, critical=True
                     )
+                # O370-⑤b(o369 尸检):dispatched 簿记 —— 两次追加
+                # 「dispatched 后没落成」实证(条目被 O362 保险丝/
+                # O118-② 快回收 pop 后气门已关,无人重钉),30s 未
+                # 落成走下方重钉通道。
+                if _rc == "dispatched":
+                    self._o370_sg_pin_at = self.ai.time
                 # O363-④d:rc 振荡期 rc-change 簿记每帧刷屏(dispatched↔
                 # no_placement 逐帧翻转实证)—— 加 30s 节流(只节流言、
                 # 不节流派工,O357-④ 规约)。
@@ -4280,12 +4410,14 @@ class ProductionManager(Manager):
                 fleet=_fleet_total_now,
                 sg_total=_sg_total_o218,
                 minerals=self.ai.minerals,
+                vespene=self.ai.vespene,
             )
         ):
             _rc = self._dispatch_structure(
                 UnitID.STARGATE, self.ai.start_location, critical=True
             )
             if _rc == "dispatched":
+                self._o370_sg_pin_at = self.ai.time  # O370-⑤b:同 O218 簿记
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": (
@@ -4299,6 +4431,44 @@ class ProductionManager(Manager):
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": f"O369:舰队缺口硬钉星门失败={_rc}",
+                })
+        # O370-⑤b(o369 尸检):追加星门钉点 30s 未落成重钉 ——
+        # O218/O369-⑥ 「dispatched 后没落成」归因:钉点派工后气被
+        # 产线花掉气门(≥400)关闭,触发闸永假;条目被 O362 保险丝/
+        # O118-② 快回收 pop(工人走位中死亡/被拽)即无人重钉。实体
+        # /在途任一出现即销账;30s 仍无 → 不依赖气门无条件重钉一次
+        # 并重计 30s;重钉 rc 即归因证据(taken/no_placement/
+        # pin_fuse_cd 直接可读),30s 节流打事件。
+        _o370_sg_pending = self._structure_present_or_pending(UnitID.STARGATE)
+        if _o370_sg_pending and self._o370_sg_pin_at > 0.0:
+            self._o370_sg_pin_at = 0.0  # 落成/在途销账
+        elif (
+            self._opp_race == "zerg"
+            and self._ai_build == "timing"
+            and stargate_pin_retry_needed(
+                self._o370_sg_pin_at, self.ai.time, _o370_sg_pending
+            )
+        ):
+            _o370_retry_rc = None
+            for _bloc in (
+                [th.position for th in self.ai.townhalls.ready]
+                or [self.ai.start_location]
+            ):
+                _o370_retry_rc = self._dispatch_structure(
+                    UnitID.STARGATE, _bloc, critical=True
+                )
+                if _o370_retry_rc == "dispatched":
+                    break
+            self._o370_sg_pin_at = (
+                self.ai.time if _o370_retry_rc == "dispatched" else 0.0
+            )
+            if event_throttle_ok(self.ai.time, self._o370_sg_retry_ts):
+                self._o370_sg_retry_ts = self.ai.time
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O370:追加星门30s未落成重钉(派工={_o370_retry_rc})"
+                    ),
                 })
         # O83(n5m-zerg-rush game_03 实证):舰队饥饿豁免 —— 慢性威胁/持续抄家时
         # rush 分支(上)与 E9 让位(tech_yields_to_threat)把舰队航标永久冻结:
@@ -6158,10 +6328,20 @@ class ProductionManager(Manager):
                     tracker.pop(tag)
                     purged += 1
             # ② 主基换落位池手动取证派工 + 贴槽水晶;③ 有其他就绪基地 → 分矿也试
+            # O370-③a(o369a g2 实证):FB 落点收口 —— 主基重试强制
+            # fb_safe_anchor 安全锚(原默认落位池),「分矿试建」旁路
+            # 对 FB 禁用(g2 的 FB 498.2s 走旁路钉在全场唯一无塔分矿,
+            # 534.4s 被 4 个地面单位 35s 拆掉);SG 保留旁路(分矿
+            # 3x3 槽位全新,O110 原语义)。
             _retry = "no_money"
             if self.ai.can_afford(sid):
                 _retry = self._dispatch_structure(
-                    sid, self.ai.start_location, needs_power=True
+                    sid,
+                    self.ai.start_location,
+                    needs_power=True,
+                    closest_to=(
+                        self._fb_safe_anchor() if sid == fb else None
+                    ),
                 )
                 if self.ai.can_afford(UnitID.PYLON):
                     # O113-①(o112 局2/局5 实证):贴最近的空闲 3x3 槽落水晶
@@ -6178,12 +6358,13 @@ class ProductionManager(Manager):
                             closest_to=Point2(_anchor) if _anchor else None,
                         )
                     )
-                for th in self.ai.townhalls.ready:
-                    if th.position.distance_to(self.ai.start_location) > 5.0:
-                        self.ai.register_behavior(
-                            BuildStructure(th.position, sid, production=False)
-                        )
-                        break
+                if fb_rescue_expansion_bypass(sid.name):
+                    for th in self.ai.townhalls.ready:
+                        if th.position.distance_to(self.ai.start_location) > 5.0:
+                            self.ai.register_behavior(
+                                BuildStructure(th.position, sid, production=False)
+                            )
+                            break
             # O112-③/O114-①:细粒度簿记 —— 各基地 3x3 槽(带电空闲/空闲/总),
             # 下轮尸检据此区分「槽物理占满」vs「电力不覆盖」vs「预约泄漏」
             _slot_report = []
@@ -9192,12 +9373,16 @@ class ProductionManager(Manager):
             threat_active=(self._rush_active or self._threat_active),
         )
 
-    def _o365_repin_nexus(self) -> str:
+    def _o365_repin_nexus(self, force: bool = False) -> str:
         """O365-③b/③c(o364a g3 实证):假成交/保险丝 pop 后的 Nexus
         重派工 —— 目标选取同 O251(ZT 首扩口袋矿,否则最近空闲点),
         critical 钉点驻点等钱。返回 _dispatch_structure 的 rc 供事件
         取证;pin_fuse_cd(保险丝 30s 冷却)期内返回 "pin_fuse_cd",
-        冷却过后调用方的每帧重试自然挂出。"""
+        冷却过后调用方的每帧重试自然挂出。
+        O370-②b(o369a g3 实证):force=True(消失→重钉循环 >3 轮)
+        走 EC 通道 max_on_route=99 强制直钉 —— 循环的放大器正是
+        max_on_route=1 被在途条目占满后恒 "taken" 叠加保险丝冷却;
+        调用方已先清 _o362_repin_cd/_o363_repin_block_until。"""
         _free = [
             el
             for el in self.ai.expansion_locations_list
@@ -9210,7 +9395,11 @@ class ProductionManager(Manager):
             key=lambda el: min(el.distance_to(th) for th in self.ai.townhalls),
         )
         return self._dispatch_structure(
-            UnitID.NEXUS, _target, critical=True, needs_power=False
+            UnitID.NEXUS,
+            _target,
+            critical=True,
+            needs_power=False,
+            max_on_route=99 if force else 1,
         )
 
     def _first_cannon_anchor(self):
