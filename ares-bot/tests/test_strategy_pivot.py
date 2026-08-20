@@ -33,10 +33,18 @@ def _pm(verdict, flow_name="carrier", time=200.0, tempest_count=0,
     pm._flow = SimpleNamespace(name=flow_name)
     pm._pivot_transitioned = transitioned
     pm._verdict = verdict
+    # O374-④a:坦克首现 latch(__init__ 初始化的实例属性,fake 同补)
+    pm._o374_tank_seen = False
     pm.manager_mediator = SimpleNamespace(
         get_own_unit_count=lambda unit_type_id: tempest_count
     )
-    pm.ai = SimpleNamespace(time=time, _events=[])
+    pm.ai = SimpleNamespace(
+        time=time,
+        _events=[],
+        enemy_race=None,
+        enemy_units=[],
+        calculate_supply_cost=lambda type_id: 2.0,
+    )
     return pm
 
 

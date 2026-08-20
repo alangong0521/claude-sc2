@@ -185,6 +185,9 @@ from bot.production_plans import (
     nexus_pin_yield_clamp,
     new_base_no_cannon_alarm,
     f2_survival_floor,
+    f2_target_literal,
+    nexus_repin_afford_ok,
+    wave_cannon_floor_active,
     fb_rebuild_latch_needed,
     fb_latch_yields_first_cannon,
     sg_power_reserve_needed,
@@ -605,6 +608,14 @@ class ProductionManager(Manager):
         # O370-②b(o369a g3 实证):Nexus「条目消失无实体」循环计数
         # (>3 轮强制 critical 直钉绕保险丝冷却;成交即清零)。
         self._o370_nexus_loop: int = 0
+        # O374-③b(o373b g3 实证):Nexus 重派工的上轮目标台账
+        # ((round(x),round(y));循环 ≥2 轮换矿点时排除,None=未派过);
+        # __init__ 初始化。
+        self._o374_nexus_last_target: tuple | None = None
+        # O374-④a(o373a 双负尸检):敌坦克首现 latch(SIEGETANK/
+        # SIEGETANKSIEGED 任一可见即锁存)—— E10 航母转型点与敌情
+        # 挂钩的输入;__init__ 初始化。
+        self._o374_tank_seen: bool = False
         # O370-③b(o369 尸检):latch 攒够但钉点在途(非 latch 通道
         # 成交)的归属事件 30s 节流时刻(只节流言)。
         self._o370_latch_inflight_ts: float = 0.0
@@ -997,12 +1008,24 @@ class ProductionManager(Manager):
             self._o364_deal_verify_at = 0.0
             self._o364_nexus_hold_armed = True
             self._o364_nexus_fund_hold_until = self.ai.time + 45.0
-            _rc = self._o365_repin_nexus()
+            # O374-③c(o373b g3 尸检):成交校验失败路径并入循环计数
+            # —— 成交(含在建口径)即清 _o370_nexus_loop(上方成交
+            # 分支),在建 Nexus 被拆/取消走本路径重钉,旧代码不计数
+            # 不强制,max_rounds=1 在本路径永不生效(计数被成交清零);
+            # 与「条目消失」分支同计数同强制直钉。
+            self._o370_nexus_loop += 1
+            _o370_forced3 = nexus_repin_loop_forced(self._o370_nexus_loop)
+            if _o370_forced3:
+                self._o362_repin_cd.pop(UnitID.NEXUS, None)
+                self._o363_repin_block_until.pop(UnitID.NEXUS, None)
+            _rc = self._o365_repin_nexus(force=_o370_forced3)
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
                 "msg": (
                     f"O365:成交T+15s校验失败(仍无Nexus实体),"
-                    f"撤销成交重回hold+重派工(派工={_rc})"
+                    f"撤销成交重回hold+重派工(派工={_rc},"
+                    f"循环{self._o370_nexus_loop}轮"
+                    f"{'强制直钉' if _o370_forced3 else ''})"
                 ),
             })
         elif self._o364_deal_verify_at > 0.0 and self.ai.townhalls.amount >= 2:
@@ -3379,10 +3402,11 @@ class ProductionManager(Manager):
             # 到脸是生死窗,基金让位不适用;分矿保底 _cannons_expansion
             # 在下方继承本值)。O365-④ 钉点钳制窗内仍走动态档(Nexus
             # 资金优先,窗短)。
-            if (
-                self._opp_race == "zerg"
-                and self._ai_build in ("timing", "rush")
-            ):
+            # O374-④c(o373a 三局尸检):种族门改 wave_cannon_floor_active
+            # —— 旧门只认 zerg timing/rush,Terran 三局 35+ 窗口地板
+            # 零触发(门没开,判据无恙),550-700s 塔厚度不够被 MM 波
+            # 连穿;terran 全 build 开门,protoss 无证据不开。
+            if wave_cannon_floor_active(self._opp_race, self._ai_build):
                 _wave_floored = f2_wave_cannon_floor(
                     self._visible_enemy_army_supply(), cannons
                 )
@@ -3410,12 +3434,23 @@ class ProductionManager(Manager):
             # 塔豁免征用(O216j「保底塔不走归零」同教义扩到主基:
             # 钉点等几秒 > 主基整局裸奔);有塔/在途或 target >0
             # 不动(常态/让位语义不变)。
+            _o374_if_main = self._in_flight_near(
+                UnitID.PHOTONCANNON, self.ai.start_location
+            )
             cannons = f2_survival_floor(
                 cannons,
                 _ready_cannons_main,
-                self._in_flight_near(
-                    UnitID.PHOTONCANNON, self.ai.start_location
-                ),
+                _o374_if_main,
+            )
+            # O374-⑤(o373b 尸检):F2 target 字面收口 —— o373b 仍有
+            # 4 次「F2 注册 target=0」全为在途豁免(就绪 0+在途 ≥1
+            # 时地板不动 target,字面 0 每轮尸检要人工解读)。在途/
+            # 已有塔计入注册值:target=0 且(就绪+在途)>0 → 字面
+            # 抬 1(报在途;PSD to_count 口径含在途/已有,不会多建),
+            # 「零 target=0」成字面硬口径;在途黄了仍走 O373-②b
+            # 清台账补注册(分工不变)。
+            cannons = f2_target_literal(
+                cannons, _ready_cannons_main, _o374_if_main
             )
             # O274-②(司令观察):防御集中到分矿 —— 塔/电池分铺主分矿 =
             # 两处都薄(o267a-g03:主 1 塔/分 1 塔,波到分矿即穿)。ZT 且
@@ -8271,9 +8306,34 @@ class ProductionManager(Manager):
         _er = getattr(getattr(self.ai, "enemy_race", None), "name", None)
         if not should_pivot_tempest(self._verdict, self._flow.name, _er):
             return False
+        # O374-④a(o373a 双负同谱系尸检):转型点与敌情挂钩 ——
+        # o373a 两负 550-700s 舰队 2-6 艘对 MM 27-56 supply+维京
+        # 4-8 架点名必穿,固定 600s 转型太晚、航母始终没出来;敌
+        # 可见地面 supply ≥35 或坦克首现(SIEGETANK/SIEGETANKSIEGED
+        # latch,__init__ 初始化)即转(carrier_transition_ready
+        # 敌情参数,口径 is_combat_type + 非飞行,与 strong_exit
+        # 敌情口径同源)。latch 只锁存不回落(首现 = 转型情报已
+        # 确认,坦克回迷雾不撤销)。
+        if not self._o374_tank_seen and any(
+            u.type_id in (UnitID.SIEGETANK, UnitID.SIEGETANKSIEGED)
+            for u in self.ai.enemy_units
+        ):
+            self._o374_tank_seen = True
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": "O374:敌坦克首现,航母转型点提前(E10)",
+            })
         if carrier_transition_ready(
             self.ai.time,
             self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST),
+            enemy_ground_supply=sum(
+                self.ai.calculate_supply_cost(u.type_id)
+                for u in self.ai.enemy_units
+                if not u.is_structure
+                and not u.is_flying
+                and is_combat_type(u.type_id)
+            ),
+            tank_seen=self._o374_tank_seen,
         ):
             self._pivot_transitioned = True
             self.ai._events.append(
@@ -9776,7 +9836,22 @@ class ProductionManager(Manager):
         O370-②b(o369a g3 实证):force=True(消失→重钉循环 >3 轮)
         走 EC 通道 max_on_route=99 强制直钉 —— 循环的放大器正是
         max_on_route=1 被在途条目占满后恒 "taken" 叠加保险丝冷却;
-        调用方已先清 _o362_repin_cd/_o363_repin_block_until。"""
+        调用方已先清 _o362_repin_cd/_o363_repin_block_until。
+        O374-③a(o373b g3 实证):矿 <400 不派工(返回 "no_money")
+        —— g3 循环 6 轮烧 150s,强制直钉(O371-③)第 2 轮起已
+        生效仍不收敛:发动机是等钱(银行 20-445 振荡,381.7s 唯一
+        一次够 400,20s 内被保命开销吃掉),工人到位没钱,条目
+        30-60s 后被 ares 清扫/保险丝 pop,重钉重走空转。矿不够
+        不派(O364 hold 资金窗 + O51/O54 holding 让位继续攒),
+        够了才钉,钉即开工;循环计数只在「派了工又消失」时涨,
+        no_money 期不涨(nexus_repin_afford_ok)。
+        O374-③b:force(循环 ≥2 轮)且目标同上轮 → 换矿点(排除
+        上轮目标选最近空闲点)—— 同一矿点反复消失(被堵/被压)
+        不再死磕;唯一空闲点/目标已变 → 原选取不动。"""
+        # O374-③a:矿量门(驻点等钱在本路径已证伪:等钱的条目
+        # 被 pop 构成循环,不是「钱到即开工」)
+        if not nexus_repin_afford_ok(self.ai.minerals):
+            return "no_money"
         _free = [
             el
             for el in self.ai.expansion_locations_list
@@ -9788,6 +9863,27 @@ class ProductionManager(Manager):
             _free,
             key=lambda el: min(el.distance_to(th) for th in self.ai.townhalls),
         )
+        # O374-③b:循环 ≥2 轮换矿点(排除上轮失败目标)
+        _tkey = (round(_target.x), round(_target.y))
+        if (
+            force
+            and self._o374_nexus_last_target is not None
+            and _tkey == self._o374_nexus_last_target
+            and len(_free) > 1
+        ):
+            _alt = [
+                el
+                for el in _free
+                if (round(el.x), round(el.y)) != _tkey
+            ]
+            _target = min(
+                _alt,
+                key=lambda el: min(
+                    el.distance_to(th) for th in self.ai.townhalls
+                ),
+            )
+            _tkey = (round(_target.x), round(_target.y))
+        self._o374_nexus_last_target = _tkey
         return self._dispatch_structure(
             UnitID.NEXUS,
             _target,

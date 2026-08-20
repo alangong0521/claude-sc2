@@ -88,6 +88,9 @@ class TestCarrierPushGate(unittest.TestCase):
             # O372-⑤:commit 期 AA 重评簿记(30s 重评时刻+撤蹲旗标)
             _o372_aa_eval_at=0.0,
             _o372_aa_retreat=False,
+            # O374-①:zerg AA 信用记忆簿记(60s 粘滞峰值)
+            _o374_aa_peak=0,
+            _o374_aa_peak_at=-9999.0,
             manager_mediator=SimpleNamespace(
                 get_own_unit_count=lambda unit_type_id: counts.get(unit_type_id, 0)
             ),

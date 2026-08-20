@@ -164,6 +164,13 @@ from bot.production_plans import (  # noqa: E402
     fb_yield_deadlock_fuse,
     pylon_rescue_pin_ok,
     zerg_aa_exemption_capped,
+    aa_peak_sticky,
+    f2_target_literal,
+    nexus_repin_afford_ok,
+    transition_push_hold,
+    wave_cannon_floor_active,
+    zerg_aa_credited,
+    zerg_departure_floor_ok,
     fleet_formed_release_rush,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -5140,6 +5147,101 @@ class TestO365Fixes(unittest.TestCase):
         # <8 → 豁免维持(O302 黄金窗打法不变)
         self.assertFalse(zerg_aa_exemption_capped(7))
         self.assertFalse(zerg_aa_exemption_capped(0))
+
+    def test_aa_peak_sticky(self):
+        # O374-①:新峰值吸收并刷新时刻(o373b g2 峰 22@1129 档)
+        self.assertEqual(aa_peak_sticky(1129.0, 22, 8, 1068.8), (22, 1129.0))
+        # 峰值期内可见回落 → 粘滞不归零(13s 视野洞仍认 22)
+        self.assertEqual(aa_peak_sticky(1142.0, 0, 22, 1129.0), (22, 1129.0))
+        # 期内等于峰值 → 刷新时刻(持续见于视野)
+        self.assertEqual(aa_peak_sticky(1150.0, 22, 22, 1129.0), (22, 1150.0))
+        # 超 60s 未刷新 → 回落当帧值(粘滞衰减)
+        self.assertEqual(aa_peak_sticky(1190.0, 3, 22, 1129.0), (3, 1190.0))
+        # 超窗且当帧 0 → 归零
+        self.assertEqual(aa_peak_sticky(1200.0, 0, 22, 1129.0), (0, 1200.0))
+
+    def test_zerg_aa_credited(self):
+        # O374-①:信用计入 —— 当帧 0 但粘滞峰 17 → 仍计 17
+        # (o373b g2 腐化 1098.7s 离视野档)
+        self.assertEqual(zerg_aa_credited(0, 17, False), 17)
+        # 当帧更大 → 取当帧
+        self.assertEqual(zerg_aa_credited(20, 17, False), 20)
+        # 尖塔曾见 +2(与星港 +2 同教义)
+        self.assertEqual(zerg_aa_credited(0, 17, True), 19)
+        self.assertEqual(zerg_aa_credited(6, 4, True), 8)
+        # 全无 → 0(豁免帽/撤蹲不误触发)
+        self.assertEqual(zerg_aa_credited(0, 0, False), 0)
+
+    def test_zerg_departure_floor_ok(self):
+        # O374-②:zerg 宽下限 —— 敌可见 supply ≥ 我方 ×1.5 → 拦
+        # (o373b g2 顶波出击档:我方 20 敌 46 → 不放行)
+        self.assertFalse(zerg_departure_floor_ok(20.0, 46.0))
+        self.assertFalse(zerg_departure_floor_ok(20.0, 30.0))
+        # <1.5× → 放行(zerg 原豁免区间;黄金窗走 _force_push
+        # 通道不过本闸,豁免天然保留)
+        self.assertTrue(zerg_departure_floor_ok(20.0, 29.9))
+        # 敌可见 0(被榨干/迷雾收割)→ 放行
+        self.assertTrue(zerg_departure_floor_ok(20.0, 0.0))
+
+    def test_transition_push_hold(self):
+        # O374-④b:留守条件 —— FB 落成+舰队 <8+有基地塔 <2 →
+        # 守家不跟压(o373a g1/g2 出击与抄家窗口重叠档)
+        self.assertTrue(transition_push_hold(True, 5, 1))
+        self.assertTrue(transition_push_hold(True, 0, 0))
+        # 每基地塔 ≥2 → 放行(防线够厚)
+        self.assertFalse(transition_push_hold(True, 5, 2))
+        # 舰队 ≥8(转型完成)→ 放行(原闸管)
+        self.assertFalse(transition_push_hold(True, 8, 0))
+        # FB 未落成(真空前半段)→ 原闸不动
+        self.assertFalse(transition_push_hold(False, 3, 0))
+
+    def test_nexus_repin_afford_ok(self):
+        # O374-③a:矿量门 —— 矿 <400 不派工(o373b g3 银行
+        # 20-445 振荡、381.7s 唯一够 400 被吃掉档)
+        self.assertFalse(nexus_repin_afford_ok(210.0))
+        self.assertFalse(nexus_repin_afford_ok(399.0))
+        # 够 400 → 派工(钉即开工,循环失去燃料)
+        self.assertTrue(nexus_repin_afford_ok(400.0))
+        self.assertTrue(nexus_repin_afford_ok(445.0))
+
+    def test_wave_cannon_floor_active(self):
+        # O374-④c:terran 全 build 开门(o373a 三局 35+ 窗口
+        # 地板零触发档);zerg 原口径逐项等价
+        self.assertTrue(wave_cannon_floor_active("terran", "power"))
+        self.assertTrue(wave_cannon_floor_active("terran", ""))
+        self.assertTrue(wave_cannon_floor_active("zerg", "timing"))
+        self.assertTrue(wave_cannon_floor_active("zerg", "rush"))
+        # zerg 非 timing/rush、protoss → 不开(无尸检证据)
+        self.assertFalse(wave_cannon_floor_active("zerg", "macro"))
+        self.assertFalse(wave_cannon_floor_active("protoss", "timing"))
+
+    def test_f2_target_literal(self):
+        # O374-⑤:字面收口 —— 在途豁免帧(就绪 0+在途 ≥1+
+        # target=0)→ 字面抬 1 报在途(o373b 4 次 target=0 档)
+        self.assertEqual(f2_target_literal(0, 0, 1), 1)
+        # 已有塔 target=0 → 同样抬 1(零 target=0 成字面硬口径)
+        self.assertEqual(f2_target_literal(0, 2, 0), 1)
+        # 零塔基地 target=0 → 不动(归 f2_survival_floor 抬 1)
+        self.assertEqual(f2_target_literal(0, 0, 0), 0)
+        # target >0 → 原值不动
+        self.assertEqual(f2_target_literal(3, 0, 1), 3)
+
+    def test_carrier_transition_ready_enemy_triggered(self):
+        # O374-④a:敌情挂钩 —— 敌地面 supply ≥35 提前转
+        # (o373a 550-700s 舰队 2-6 艘对 MM 27-56 supply 档)
+        self.assertTrue(
+            carrier_transition_ready(520.0, 4, enemy_ground_supply=35.0)
+        )
+        # 坦克首现即转(调用方 latch)
+        self.assertTrue(carrier_transition_ready(480.0, 3, tank_seen=True))
+        # 敌情不足且未到点/到量 → 不转(旧判据逐项等价)
+        self.assertFalse(
+            carrier_transition_ready(520.0, 4, enemy_ground_supply=34.9)
+        )
+        self.assertFalse(carrier_transition_ready(520.0, 4))
+        # 旧通道不受影响(到点/到量仍转)
+        self.assertTrue(carrier_transition_ready(600.0, 3))
+        self.assertTrue(carrier_transition_ready(450.0, 10))
 
     def test_fleet_rebuild_watchdog_needed(self):
         # O372-④:断档判定 —— 曾 ≥3 掉到 <2 持续 >60s+FB 就绪+

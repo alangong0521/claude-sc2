@@ -2189,14 +2189,27 @@ def carrier_transition_ready(
     tempest_count: int,
     at_time: float = 600.0,
     tempest_cap: int = 10,
+    enemy_ground_supply: float = 0.0,
+    tank_seen: bool = False,
 ) -> bool:
     """风暴压制 → 航母终结的转型时点。纯逻辑，可单测。
 
     简单可工作判据（阈值走参数，不硬编码死）：进入中后期（时间到 at_time）
     **或**风暴压制阵容已成型（数量到 tempest_cap）→ 转航母主 C。
     压得住时局已在 200-500s 内结束（认证赢法），到点压不住就补航母终结。
+    O374-④a(o373a 双负同谱系尸检):转型点与敌情挂钩 —— o373a
+    两负 550-700s 舰队 2-6 艘对 MM 27-56 supply+维京 4-8 架
+    点名必穿,E10 固定 600s 转型点防守厚度不够、航母始终没出来;
+    敌可见地面 supply ≥35 或坦克首现(调用方 latch)即提前转
+    (航母对 MM/坦克是质量答案,风暴耗不起)。默认参数旧调用零
+    变化(敌情 0/False 时判据与原式逐项等价)。
     """
-    return now >= at_time or tempest_count >= tempest_cap
+    return (
+        now >= at_time
+        or tempest_count >= tempest_cap
+        or enemy_ground_supply >= 35.0
+        or tank_seen
+    )
 
 
 def is_combat_type(type_id) -> bool:
@@ -4884,6 +4897,26 @@ def f2_survival_floor(
     return target
 
 
+def f2_target_literal(
+    target: int,
+    cannons_ready: int,
+    cannons_in_flight: int,
+) -> int:
+    """O374-⑤(o373b 尸检):F2 注册 target 字面收口。纯逻辑,可单测。
+
+    o373b 仍有 4 次「F2 注册 target=0」(全为在途豁免:就绪 0+
+    在途 ≥1 时 f2_survival_floor 不动 target,字面 0 每轮尸检
+    要人工解读)。在途/已有塔计入注册值:target=0 且(就绪+
+    在途)>0 → 字面抬 1(报在途;to_count 口径含在途/已有,不
+    会多建),「零 target=0」成字面硬口径 —— 再出现 target=0
+    即真异常,尸检直读。在途黄了仍走 O373-②b 清台账补注册
+    (分工不变)。
+    """
+    if target == 0 and (cannons_ready + cannons_in_flight) > 0:
+        return 1
+    return target
+
+
 def nexus_pin_yield_clamp(target: int) -> int:
     """O368-④b(o367 双 lane 尸检):Nexus 钉点让位钳新语义。纯逻辑,可单测。
 
@@ -5167,6 +5200,21 @@ def nexus_repin_loop_forced(loop_count: int, max_rounds: int = 1) -> bool:
     第 2 轮即清冷却 critical 直钉,收敛 ~60s(2 轮 ×~30s)。
     """
     return loop_count > max_rounds
+
+
+def nexus_repin_afford_ok(minerals: float, nexus_cost: float = 400.0) -> bool:
+    """O374-③a(o373b g3 实证):Nexus 重派工的矿量门。纯逻辑,可单测。
+
+    o373b g3 实证:「条目消失无实体」6 轮烧 150s,强制直钉
+    (O371-③)第 2 轮起已生效(日志「强制直钉」可见)仍不收敛
+    —— 发动机是等钱:银行在 20-445 振荡(381.7s 唯一一次够
+    400,20s 内被保命开销吃掉),工人到位没钱,条目 30-60s 后被
+    ares 清扫/保险丝 pop,重钉重走空转。矿 <400 不派工(调用方
+    返回 "no_money",O364 hold 资金窗与 O51/O54 holding 让位
+    继续攒钱),够了才钉 —— 钉即开工,循环失去燃料;循环计数
+    只在「派了工又消失」时涨,no_money 期不涨。
+    """
+    return minerals >= nexus_cost
 
 
 def sg_idle_reset_needed(ready_sg: int, fleet_busy: bool) -> bool:
@@ -5468,6 +5516,21 @@ def f2_wave_cannon_floor(
     if enemy_supply > supply_tier:
         return max(cannons, floor)
     return cannons
+
+
+def wave_cannon_floor_active(opp_race: str, ai_build: str) -> bool:
+    """O374-④c(o373a 三局尸检):F2 35+ 波塔地板的种族门。纯逻辑,可单测。
+
+    O367-⑤c 旧门只认 zerg timing/rush —— o373a Terran 三局敌
+    35+ supply 窗口地板零触发(门本身没开,f2_wave_cannon_floor
+    判据无恙),550-700s 塔厚度不够被 MM 波连穿。terran 全 build
+    开门(与 timing_defense_chain_active 的 O371-①b/c 去门同
+    教义:terran 证据充分,zerg 原口径逐项等价);protoss 无尸检
+    证据,不开。
+    """
+    return (opp_race == "zerg" and ai_build in ("timing", "rush")) or (
+        opp_race == "terran"
+    )
 
 
 def zt_expand_reserve_exempt(
@@ -6102,8 +6165,89 @@ def zerg_aa_exemption_capped(
     commit 期可见 CORRUPTOR+BROODLORD ≥cap → 豁免封顶,即便
     zerg 也走 push_commit_aa_retreat 重评撤蹲;cap 以下原豁免
     不动(黄金窗打法一行不变)。
+    O374-①:入参口径升级为信用记忆计数(zerg_aa_credited 的
+    输出),纯判据不变。
     """
     return corruptor_broodlord_visible >= cap
+
+
+def aa_peak_sticky(
+    now: float,
+    visible: int,
+    peak: int,
+    peak_at: float,
+    window: float = 60.0,
+) -> tuple[int, float]:
+    """O374-①(o373b g2 实证):AA 峰值粘滞簿记。纯逻辑,可单测。
+
+    o373b g2 实证:17 腐化 1098.7s 离视野,13s 后(1111.8s)
+    O302 出击闸全开(撤蹲/出发闸只认当帧可见 enemy_units),
+    舰队 11→1 团灭;1068.8s 起 AA≥8(峰 22@1129)但无撤蹲
+    日志。簿记规约(调用方每帧喂当帧可见数):可见 ≥峰值 →
+    吸收并刷新时刻;峰值超 window 未刷新 → 回落当帧值(粘滞
+    期内不归零,防可见性抖动反复收放)。返回 (新峰值, 峰值时刻)。
+    """
+    if visible >= peak or now - peak_at > window:
+        return visible, now
+    return peak, peak_at
+
+
+def zerg_aa_credited(
+    corruptor_broodlord_visible: int,
+    sticky_peak: int,
+    spire_seen: bool,
+    spire_aa_credit: int = 2,
+) -> int:
+    """O374-①(o373b g2 实证):zerg 硬对空信用记忆计数。纯逻辑,可单测。
+
+    口径 = max(当帧可见 CORRUPTOR+BROODLORD, 60s 粘滞峰值)
+    + SPIRE/GREATER_SPIRE 曾见 +spire_aa_credit —— 尖塔 = 腐化
+    产能预警,与星港 +2(push_commit_aa_retreat 的
+    starport_aa_credit)同教义;sc2 的 enemy_structures 含迷雾
+    快照,「曾见」天然成立。腐化出视野 60s 内撤蹲/出发闸仍认账
+    (o373b g2 的 13s 视野洞被本信用覆盖)。
+    """
+    return max(corruptor_broodlord_visible, sticky_peak) + (
+        spire_aa_credit if spire_seen else 0
+    )
+
+
+def zerg_departure_floor_ok(
+    own_army_supply: float,
+    enemy_visible_supply: float,
+    ratio: float = 1.5,
+) -> bool:
+    """O374-②(o373b g2/o373a g1 实证):zerg 出发宽下限判据。纯逻辑,可单测。
+
+    O373-⑥ 的 _army_gate_ok = _opp_is_zerg or ... 使出发闸在
+    zerg lane 形同虚设:o373b g2 顶波出击团灭实证;o373a g1
+    O302@509.4 出击 6s 后基地被抄同谱系。收窄:敌可见 supply
+    ≥ 我方 army supply ×ratio → 即便 zerg 也拦(顶波不出发);
+    黄金窗(zt_golden_window_push)走 _force_push 通道天然豁免,
+    不动的胜局打法一行不变。
+    """
+    return enemy_visible_supply < own_army_supply * ratio
+
+
+def transition_push_hold(
+    fb_done: bool,
+    fleet_count: int,
+    min_base_cannons: int,
+    fleet_need: int = 8,
+    min_cannons: int = 2,
+) -> bool:
+    """O374-④b(o373a g1/g2 实证):Terran 转型真空期出击留守判据。
+    纯逻辑,可单测。
+
+    o373a g1 509.4s/g2 528.5s 的 O302 出击与敌 515/533s 抄家
+    窗口重叠 —— FB 落成到舰队 ≥8 的转型真空期(550-700s 舰队
+    仅 2-6 艘),舰队出门时家最空,MM 波必穿。留守条件:每基地
+    就绪塔 ≥min_cannons 或舰队 ≥fleet_need(转型完成);不满足
+    → True(守家不跟压,舰队留守 = 蹲守锚点保家,调用方走既有
+    热点回防/蹲守分支,不发明新分支)。FB 未落成(真空前半段归
+    既有塔链/波次逻辑管)或非转型期 → False 原闸不动。
+    """
+    return fb_done and fleet_count < fleet_need and min_base_cannons < min_cannons
 
 
 def cyber_core_np_default_fallback(streak: int, threshold: int = 2) -> bool:

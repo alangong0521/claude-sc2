@@ -40,7 +40,11 @@ from bot.production_plans import (
     should_push_advantage,
     push_enemy_army_gate,
     push_commit_aa_retreat,
+    aa_peak_sticky,
+    transition_push_hold,
+    zerg_aa_credited,
     zerg_aa_exemption_capped,
+    zerg_departure_floor_ok,
     two_base_guard_point,
     main_defense_first,
     zt_golden_window_push,
@@ -110,6 +114,12 @@ class CombatManager(Manager):
         # 反复收放);__init__ 初始化。
         self._o372_aa_eval_at: float = 0.0
         self._o372_aa_retreat: bool = False
+        # O374-①(o373b g2 尸检):zerg AA 信用记忆簿记 —— 60s 粘滞
+        # 峰值(可见 CORRUPTOR+BROODLORD 峰值与峰值时刻,期内不归零;
+        # aa_peak_sticky 规约,腐化离视野 60s 内撤蹲/出发闸仍认账);
+        # __init__ 初始化。
+        self._o374_aa_peak: int = 0
+        self._o374_aa_peak_at: float = -9999.0
         # O226:残敌清剿 3s 收尾滞回(防 attack_target 每帧翻转 yo-yo)
         self._intruder_last_seen: float | None = None
         self._intruder_last_target: Point2 | None = None
@@ -598,9 +608,47 @@ class CombatManager(Manager):
                 _pm_o227 is not None
                 and getattr(_pm_o227, "_opp_race", "") == "zerg"
             )
-            _army_gate_ok = _opp_is_zerg or push_enemy_army_gate(
+            # O374-②(o373b g2/o373a g1 尸检):zerg 出发豁免收窄 —
+            # 旧「zerg 全局豁免」使出发闸在 zerg lane 形同虚设
+            # (o373b g2 顶波团灭、o373a g1 出击 6s 后被抄家);敌可见
+            # supply ≥ 我方 ×1.5 即便 zerg 也拦(zerg_departure_floor_ok)。
+            # 黄金窗豁免保留:_golden_push 走 _force_push 通道不过本闸,
+            # 不动的胜局打法一行不变。
+            _army_gate_ok = (
+                _opp_is_zerg
+                and zerg_departure_floor_ok(_own_army, _enemy_vis)
+            ) or push_enemy_army_gate(
                 _own_army, _enemy_vis, _hard_aa
             )
+            # O374-④b(o373a g1/g2 尸检):Terran 转型真空期(FB 落成→
+            # 舰队 ≥8)出击留守闸 —— g1 509.4s/g2 528.5s 的 O302 出击
+            # 与敌 515/533s 抄家窗口重叠,舰队出门时家最空(550-700s
+            # 舰队仅 2-6 艘对 MM 27-56 supply)。每基地就绪塔 ≥2 或
+            # 舰队 ≥8 才放行;否则 _army_gate_ok 收 False,风暴守家
+            # 不跟压(走下方既有热点回防/蹲守锚点,不发明新分支)。
+            # 塔口径与 production_manager 的 _cannons_near 同源
+            # (就绪 PHOTONCANNON 距基地 <12 格)。
+            if (
+                _pm_o227 is not None
+                and getattr(_pm_o227, "_opp_race", "") == "terran"
+            ):
+                _o374_cn = [
+                    sum(
+                        1
+                        for s in self.ai.structures.ready
+                        if s.type_id == UnitID.PHOTONCANNON
+                        and s.position.distance_to(th.position) < 12
+                    )
+                    for th in self.ai.townhalls
+                ]
+                if _o374_cn and transition_push_hold(
+                    fb_done=(
+                        getattr(_pm_o227, "_fb_completed_at", None) is not None
+                    ),
+                    fleet_count=_fleet_count,
+                    min_base_cannons=min(_o374_cn),
+                ):
+                    _army_gate_ok = False
             # O372-⑤(o371a g2 尸检):推进 commit 期 AA 30s 重评 ——
             # g2 在 656-765s fleet=5-7 推进 ×4,维京 695s 才露面
             # (20 架)后仍 commit,舰队团灭:carrier_push_safe 只认
@@ -620,11 +668,35 @@ class CombatManager(Manager):
                 for u in self.ai.enemy_units
                 if u.type_id in (UnitID.CORRUPTOR, UnitID.BROODLORD)
             )
-            if not _opp_is_zerg or zerg_aa_exemption_capped(_zerg_cb):
+            # O374-①(o373b g2 尸检):zerg AA 信用记忆 —— g2 在
+            # 1111.8s O302 出击:17 腐化 1098.7s 离视野,13s 后撤蹲
+            # 和出发闸全开(只认当帧可见),舰队 11→1 团灭;1068.8s
+            # 起 AA≥8(峰 22@1129)但无撤蹲日志。计数改信用口径:
+            # 60s 粘滞峰值(aa_peak_sticky 簿记,期内不归零)+ 尖塔
+            # 曾见 +2(SPIRE/GREATER_SPIRE = 腐化产能,与星港 +2
+            # 同教义;enemy_structures 含迷雾快照),撤蹲豁免帽与
+            # 重评输入都吃信用计数(zerg_aa_credited)。
+            _spire_seen = any(
+                s.type_id in (UnitID.SPIRE, UnitID.GREATERSPIRE)
+                for s in self.ai.enemy_structures
+            )
+            self._o374_aa_peak, self._o374_aa_peak_at = aa_peak_sticky(
+                self.ai.time,
+                _zerg_cb,
+                self._o374_aa_peak,
+                self._o374_aa_peak_at,
+            )
+            _zerg_cb_eff = zerg_aa_credited(
+                _zerg_cb, self._o374_aa_peak, _spire_seen
+            )
+            if not _opp_is_zerg or zerg_aa_exemption_capped(_zerg_cb_eff):
                 if self.ai.time - self._o372_aa_eval_at >= 30.0:
                     self._o372_aa_eval_at = self.ai.time
                     self._o372_aa_retreat = push_commit_aa_retreat(
-                        _hard_aa,
+                        # O374-①:zerg 走信用口径(腐化离视野 60s 内
+                        # 仍计入,覆盖 g2 的 13s 视野洞);terran 原
+                        # 口径(可见 _HARD_AA)一行不动。
+                        max(_hard_aa, _zerg_cb_eff) if _opp_is_zerg else _hard_aa,
                         any(
                             s.type_id == UnitID.STARPORT
                             for s in self.ai.enemy_structures
