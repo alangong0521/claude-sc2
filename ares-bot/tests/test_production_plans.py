@@ -194,6 +194,16 @@ from bot.production_plans import (  # noqa: E402
     pylon_ring_fallback_anchor,
     tower_sector_fallback_due,
     fleet_formed_release_rush,
+    rush_economy_release,
+    probe_economy_hard_floor,
+    terran_false_rush_release,
+    gas_hard_stop_required,
+    new_base_cannon_fund_needed,
+    nexus_priority_fund_active,
+    nexus_fund_probe_hard_floor,
+    healthy_mining_base_target,
+    healthy_mining_expand_needed,
+    desperation_push_window,
     anchor_buildable,
     main_defense_bank_fuse,
     zt_defense_at_natural,
@@ -5486,6 +5496,52 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(fleet_formed_release_rush(3, 14.9))   # 评分不足
         self.assertTrue(fleet_formed_release_rush(3, 15.0))
 
+    def test_o380_rush_economy_release(self):
+        self.assertTrue(rush_economy_release(15.0, 31, 260.0, 100.0))
+        self.assertFalse(rush_economy_release(14.9, 31, 279.9, 100.0))
+        self.assertTrue(rush_economy_release(14.9, 31, 280.0, 100.0))
+        self.assertFalse(rush_economy_release(14.9, 40, 400.0, 100.0))
+        self.assertFalse(rush_economy_release(14.9, 31, 400.0, None))
+
+    def test_o380_probe_economy_hard_floor(self):
+        self.assertTrue(probe_economy_hard_floor(21, 1))
+        self.assertFalse(probe_economy_hard_floor(22, 1))
+        self.assertTrue(probe_economy_hard_floor(39, 2))
+        self.assertFalse(probe_economy_hard_floor(40, 2))
+
+    def test_o380_terran_false_rush_release(self):
+        self.assertTrue(
+            terran_false_rush_release("terran", "unknown", 1, 0, 260.0)
+        )
+        self.assertFalse(
+            terran_false_rush_release("terran", "unknown", 2, 0, 260.0)
+        )
+        self.assertFalse(
+            terran_false_rush_release("terran", "rush", 1, 0, 260.0)
+        )
+        self.assertFalse(
+            terran_false_rush_release("zerg", "unknown", 1, 0, 260.0)
+        )
+
+    def test_o380_gas_hard_stop_required(self):
+        self.assertTrue(gas_hard_stop_required(True, False, False, False, False))
+        self.assertTrue(gas_hard_stop_required(False, False, False, True, False))
+        self.assertFalse(gas_hard_stop_required(True, True, True, True, True))
+        self.assertFalse(gas_hard_stop_required(False, False, False, False, False))
+
+    def test_o380_new_base_cannon_fund_needed(self):
+        self.assertTrue(new_base_cannon_fund_needed(True, 0, 0))
+        self.assertFalse(new_base_cannon_fund_needed(True, 0, 1))
+        self.assertFalse(new_base_cannon_fund_needed(False, 0, 0))
+
+    def test_o380_desperation_push_window(self):
+        self.assertTrue(desperation_push_window(900.0, 2, 15.0))
+        self.assertTrue(desperation_push_window(1200.0, 4, 20.0))
+        self.assertFalse(desperation_push_window(899.9, 4, 20.0))
+        self.assertFalse(desperation_push_window(900.0, 1, 20.0))
+        self.assertFalse(desperation_push_window(900.0, 5, 20.0))
+        self.assertFalse(desperation_push_window(900.0, 4, 14.9))
+
     def test_anchor_buildable(self):
         # O366-③c:2x2 足迹全可建 + 避让矿簇/气矿才放行
         import numpy as np
@@ -5881,6 +5937,85 @@ class TestO378Plans(unittest.TestCase):
         # 自定义阈
         self.assertFalse(tower_sector_fallback_due(4, threshold=5))
         self.assertTrue(tower_sector_fallback_due(5, threshold=5))
+
+
+class TestO381Plans(unittest.TestCase):
+    """O381:首扩硬基金、分矿恢复基金、健康矿区驱动扩张。"""
+
+    def test_nexus_priority_fund_first_expand_deadline(self):
+        self.assertIsNone(nexus_priority_fund_active(249.9, 1, 1, 6))
+        self.assertEqual(
+            nexus_priority_fund_active(250.0, 1, 1, 6), "first_expand"
+        )
+        # Nexus 实体出现（含在建）后 current_bases=2，基金成交自灭。
+        self.assertIsNone(nexus_priority_fund_active(280.0, 2, 2, 6))
+        # 未配置动态扩张/目标仅一矿不介入。
+        self.assertIsNone(nexus_priority_fund_active(999.0, 1, 1, None))
+        self.assertIsNone(nexus_priority_fund_active(999.0, 1, 1, 1))
+
+    def test_nexus_priority_fund_lost_base(self):
+        self.assertEqual(
+            nexus_priority_fund_active(500.0, 2, 3, 6), "lost_base"
+        )
+        self.assertEqual(
+            nexus_priority_fund_active(500.0, 1, 3, 6), "lost_base"
+        )
+        self.assertIsNone(nexus_priority_fund_active(500.0, 3, 3, 6))
+        # 0 基地交 Q4 数学可行性重建路径，避免双通道。
+        self.assertIsNone(nexus_priority_fund_active(500.0, 0, 3, 6))
+
+    def test_nexus_fund_probe_hard_floor(self):
+        # 首扩基金不再追 22 农；先用 16 农把 Nexus 的 400 矿攒出来。
+        self.assertTrue(nexus_fund_probe_hard_floor(15, "first_expand"))
+        self.assertFalse(nexus_fund_probe_hard_floor(16, "first_expand"))
+        self.assertFalse(nexus_fund_probe_hard_floor(21, "first_expand"))
+        # 分矿损失后更严格：31/39 农都不能继续追 40，只有濒死经济补火种。
+        self.assertTrue(nexus_fund_probe_hard_floor(11, "lost_base"))
+        self.assertFalse(nexus_fund_probe_hard_floor(12, "lost_base"))
+        self.assertFalse(nexus_fund_probe_hard_floor(39, "lost_base"))
+        self.assertFalse(nexus_fund_probe_hard_floor(0, None))
+
+    def test_healthy_mining_base_target(self):
+        self.assertEqual(healthy_mining_base_target(44), 2)
+        self.assertEqual(healthy_mining_base_target(45), 3)
+        self.assertEqual(healthy_mining_base_target(70), 3)
+
+    def test_healthy_mining_expand_needed(self):
+        base = dict(
+            bases=3,
+            max_bases=6,
+            nexus_pending=0,
+            workers=60,
+        )
+        # 3 矿名义经济但只有 1/2 片健康矿区 → 提前四矿。
+        self.assertTrue(
+            healthy_mining_expand_needed(healthy_ready_bases=1, **base)
+        )
+        self.assertTrue(
+            healthy_mining_expand_needed(healthy_ready_bases=2, **base)
+        )
+        self.assertFalse(
+            healthy_mining_expand_needed(healthy_ready_bases=3, **base)
+        )
+        # 在建基地不能叠加；到 max_bases 停；一矿由首扩基金负责。
+        self.assertFalse(
+            healthy_mining_expand_needed(
+                healthy_ready_bases=1, nexus_pending=1,
+                bases=3, max_bases=6, workers=60,
+            )
+        )
+        self.assertFalse(
+            healthy_mining_expand_needed(
+                healthy_ready_bases=0, nexus_pending=0,
+                bases=6, max_bases=6, workers=70,
+            )
+        )
+        self.assertFalse(
+            healthy_mining_expand_needed(
+                healthy_ready_bases=0, nexus_pending=0,
+                bases=1, max_bases=6, workers=22,
+            )
+        )
 
 
 if __name__ == "__main__":

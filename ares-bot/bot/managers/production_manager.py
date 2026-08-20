@@ -140,7 +140,6 @@ from bot.production_plans import (
     new_base_cannon_fb_fund_exempt,
     nexus_fund_hold_active,
     nexus_fund_hold_blocks,
-    gas_stop_leaking,
     gas_stop_release_blocked,
     carrier_hard_convert_ok,
     manual_cannon_anchor,
@@ -153,7 +152,6 @@ from bot.production_plans import (
     fb_safe_anchor,
     fb_arrival_guard_active,
     tempest_gas_dump_ok,
-    gas_stop_repull_action,
     zt_expand_reserve_exempt,
     expand_exempt_zealot_only,
     oracle_gas_yield,
@@ -208,7 +206,14 @@ from bot.production_plans import (
     fb_latch_trigger_gated,
     fb_yield_deadlock_fuse,
     pylon_rescue_pin_ok,
-    fleet_formed_release_rush,
+    rush_economy_release,
+    probe_economy_hard_floor,
+    terran_false_rush_release,
+    gas_hard_stop_required,
+    new_base_cannon_fund_needed,
+    nexus_priority_fund_active,
+    nexus_fund_probe_hard_floor,
+    healthy_mining_expand_needed,
     anchor_buildable,
     pylon_ring_fallback_anchor,
     tower_sector_fallback_due,
@@ -471,6 +476,9 @@ class ProductionManager(Manager):
         # O358-②(o357 尸检):矿气倒挂停气转矿状态(气 >800 且矿 <300
         # 触发,气 <500 滞回解除;复用 _GAS_STOP_ROLE 停气通道)。
         self._o358_gas_pull: bool = False
+        # O380-②:ares Mining 的 workers_per_gas 硬切换状态。True 时
+        # main.py 本帧注册 workers_per_gas=0 的 Mining，杜绝补气回填。
+        self._gas_hard_stop_active: bool = False
         # O359-②(o358 六局尸检):停气触发簿记的 30s 节流时刻
         # (o358b g2 零停气事件=无簿记而非未接线,补观测)。
         self._o359_gas_log_ts: float = 0.0
@@ -521,10 +529,6 @@ class ProductionManager(Manager):
         # hold,Nexus 钉点独占资金窗;成交/45s 超时/threat 豁免放行。
         self._o364_nexus_fund_hold_until: float = 0.0
         self._o364_nexus_hold_armed: bool = False
-        # O364-③b(o363 尸检):停气 30s 校验环簿记(上次校验时刻/
-        # 当时气存量;0=未建档,首帧只建档不判)。
-        self._o364_gas_check_ts: float = 0.0
-        self._o364_gas_check_vespene: float = 0.0
         # O364-④(o363b g2 实证):航母硬转化事件 30s 节流时刻
         # (O239 同款,只节流言不节流下单)。
         self._o364_carrier_log_ts: float = 0.0
@@ -532,6 +536,13 @@ class ProductionManager(Manager):
         # 台账(base key → 连续 no_placement 起点/已试外扩次数)。
         self._o364_cannon_np_since: dict = {}
         self._o364_anchor_attempts: dict = {}
+        # O380-③:新 Nexus 开工到首塔在途之间的 150 矿窄域基金窗。
+        # key=分矿坐标；完成/超时后写入 funded 集，避免同一基地反复续杯。
+        self._o380_cannon_fund_key: tuple[int, int] | None = None
+        self._o380_cannon_fund_until: float = 0.0
+        self._o380_cannon_funded_bases: set[tuple[int, int]] = set()
+        self._o380_cannon_fund_retry_after: dict[tuple[int, int], float] = {}
+        self._o380_cannon_fund_active: bool = False
         # O365-②(o364b g3 实证):气枯强制复气状态(矿>600/气<125/
         # 航母<2/FB 就绪触发,气≥300 解除恢复停气棘轮)与硬转化
         # 诊断的 30s 节流时刻。__init__ 初始化,不用 getattr 兜底。
@@ -776,6 +787,13 @@ class ProductionManager(Manager):
         self._cannon_stall_since: float | None = None
         # 基地数峰值(重建模式的"真的丢过基地"门,E6b 回归修复:开局 1<max_bases 不算丢)
         self._peak_townhalls: int = 0
+        # O381-①/②:首扩 300s 硬线与分矿损失恢复共用的 Nexus 独占基金。
+        # reason=None/first_expand/lost_base；边沿变化写事件，调用方统一
+        # 冻结非生存开销，Nexus 实体出现即自灭。
+        self._o381_nexus_fund_reason: str | None = None
+        self._o381_nexus_fund_active: bool = False
+        # O381-③:健康矿区不足触发扩张的事件节流。
+        self._o381_healthy_expand_log_ts: float = 0.0
         # B4③ 停气台账:rush 期间被拉下气矿的农民 tag(role 归 _GAS_STOP_ROLE),
         # rush 解除后统一归 GATHERING 回气(ares 记账不动,见 _rush_gas_stop)。
         self._gas_stopped_tags: set[int] = set()
@@ -832,6 +850,40 @@ class ProductionManager(Manager):
         # update 头部先清零,避免 _rebuild_nexus 分支跳过导致旧值残留。
         self._o189_forced_expand = False
 
+        # O381-①/②:先于任何 pylon/科技/产兵注册计算 Nexus 基金，避免
+        # 同帧先花钱后才发现应该攒基地。townhalls 含在建 Nexus，因此
+        # Nexus 一开工基金自动成交关闭；0 基地仍交既有 Q4 路径。
+        self._peak_townhalls = max(self._peak_townhalls, self.ai.townhalls.amount)
+        _target_bases = self._flow.auto_expand.max_bases if (
+            self._flow.auto_expand and self._flow.auto_expand.max_bases
+        ) else None
+        _o381_reason = nexus_priority_fund_active(
+            self.ai.time,
+            self.ai.townhalls.amount,
+            self._peak_townhalls,
+            _target_bases,
+        )
+        self._o381_nexus_fund_active = _o381_reason is not None
+        if _o381_reason != self._o381_nexus_fund_reason:
+            if _o381_reason is not None:
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        "O381:首扩250s硬基金启动(300s前Nexus必须落地)"
+                        if _o381_reason == "first_expand"
+                        else (
+                            f"O381:分矿损失基地恢复基金启动"
+                            f"(峰值{self._peak_townhalls},现{self.ai.townhalls.amount})"
+                        )
+                    ),
+                })
+            elif self._o381_nexus_fund_reason is not None:
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O381:Nexus实体出现,基地基金成交恢复运营",
+                })
+            self._o381_nexus_fund_reason = _o381_reason
+
         # O132-③:炮塔峰值 latch(每帧)——兵营链各闸吃峰值不吃实时值,
         # 塔被 wave 拆掉不再反锁 GW 链(见 __init__ 台账注释)
         self._cannons_peak = max(
@@ -885,6 +937,7 @@ class ProductionManager(Manager):
             and self.ai.can_afford(UnitID.PYLON)
             and not _early_core_missing
             and not _nexus_waiting
+            and not self._o381_nexus_fund_active
         ):
             self.ai.register_behavior(
                 BuildStructure(self.ai.start_location, UnitID.PYLON)
@@ -907,6 +960,10 @@ class ProductionManager(Manager):
         _want_expand = (
             self._want_dynamic_expand() if not _rebuild_nexus else False
         )
+        if self._o381_nexus_fund_active:
+            # 首扩硬截止/分矿恢复不再受 early_core、rush、fleet 或 threat
+            # 动态闸否决；生存防御仍由既有 critical 通道并行。
+            _want_expand = True
         # O51(o49/o50 连败实证):预走位等钱的 Nexus(building_tracker 里 pending)
         # 让 should_expand_dynamic 因 nexus_pending 翻 false → 预留/停塔/停科技闸
         # 全开,银行在 250-400 振荡被塔/科技/兵吃干,等钱的 Nexus 永远开不了工。
@@ -921,6 +978,7 @@ class ProductionManager(Manager):
             _want_expand
             or self.manager_mediator.get_building_counter[UnitID.NEXUS] > 0
             or self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
+            or self._o381_nexus_fund_active
         )
         # O307-③(o306c game_05 实证):holding 死锁自愈 —— Nexus 预走位等钱
         # 90s+ 未开工(game_05 持了 326s),科技链/塔/研究全冻结,气烂 1300
@@ -930,7 +988,7 @@ class ProductionManager(Manager):
             self._expand_holding_since = self._expand_holding_since or self.ai.time
         else:
             self._expand_holding_since = None
-        if expand_holding_should_abort(
+        if not self._o381_nexus_fund_active and expand_holding_should_abort(
             self.ai.time - (self._expand_holding_since or self.ai.time),
             self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
             self.ai.can_afford(UnitID.NEXUS),
@@ -1159,6 +1217,20 @@ class ProductionManager(Manager):
         # O377-⑥(o376b g1 尸检):塔需求登记(forge 重建保底的空转
         # 口径,就绪+在途 <2,与 new_base_defense_pins 同口径)。
         _o377_tower_demand = False
+        # O380-③:基金窗每帧重算。45s 超时只冷却 30s，不把同一基地
+        # 永久标成完成；首塔实体/在途才是真成交。
+        self._o380_cannon_fund_active = False
+        if (
+            self._o380_cannon_fund_key is not None
+            and self.ai.time >= self._o380_cannon_fund_until
+        ):
+            _expired_key = self._o380_cannon_fund_key
+            self._o380_cannon_fund_retry_after[_expired_key] = self.ai.time + 30.0
+            self._o380_cannon_fund_key = None
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": f"O380:新矿首塔基金窗45s超时({_expired_key}),冷却后重试",
+            })
         # O371-①a(o370b Terran Power 0/3 尸检):守卫块去 zerg 门 ——
         # o370b 三局三矿落成后裸奔 60-80s 被 ~495-510s 首波(25-30
         # supply M&M+坦克)准点收走(O337/O363 事件全 0)。terran 全
@@ -1256,6 +1328,34 @@ class ProductionManager(Manager):
                 _cn_if = self._in_flight_near(
                     UnitID.PHOTONCANNON, _exp_th.position
                 )
+                # O380-③(o379 六局尸检):首塔瓶颈是等 150 矿而非锚点。
+                # Nexus 实体一出现(含在建)即开 45s 窄域基金窗；本帧下方
+                # 仍走既有 critical 钉塔，后续探机/研究/产兵/科技/扩产
+                # 让位，直到首塔在途或窗口超时。
+                if self._o380_cannon_fund_key == _bk and (
+                    _cn_near + _cn_if > 0
+                ):
+                    self._o380_cannon_funded_bases.add(_bk)
+                    self._o380_cannon_fund_key = None
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": f"O380:新矿首塔基金成交({_bk}),塔已在途/就绪",
+                    })
+                if (
+                    new_base_cannon_fund_needed(True, _cn_near, _cn_if)
+                    and _bk not in self._o380_cannon_funded_bases
+                    and self._o380_cannon_fund_key is None
+                    and self.ai.time
+                    >= self._o380_cannon_fund_retry_after.get(_bk, -9999.0)
+                ):
+                    self._o380_cannon_fund_key = _bk
+                    self._o380_cannon_fund_until = self.ai.time + 45.0
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": f"O380:Nexus开工同帧开启首塔150矿基金({_bk})",
+                    })
+                if self._o380_cannon_fund_key == _bk:
+                    self._o380_cannon_fund_active = True
                 _pin_cn, _pin_batt = new_base_defense_pins(
                     forge_ready=any(
                         s.is_ready
@@ -1706,21 +1806,16 @@ class ProductionManager(Manager):
         # 基地被打掉重建：真的丢过基地(峰值>当前)且 < 目标基地数时进入重建模式。
         # E6b 回归实证:只看"当前<目标"会在开局(1<max_bases)就误触发,
         # 造农民/出兵整局被掐死 —— 必须带峰值门(见 production_plans.base_rebuild_active)。
-        # O84(n5m-zerg-power game_02 实证):重建模式不再冻结 SpawnController ——
-        # 原设计(_base_rebuild 时不注册出兵)在 Zerg Power 的基地拉锯下=永久停产:
-        # 3 星门+FB 就绪、矿 1000+/气 2500+/人口空闲,暴风恒 1 艘 265s 零增长;
-        # 而重建 Nexus 的钱已由 _expand_holding 门(塔/科技/研究/追加产能全让位)保护,
-        # 不需要再冻出兵 —— O56 同构:舰队 > 下一矿,舰队本来就是赢的方式。
-        self._peak_townhalls = max(self._peak_townhalls, self.ai.townhalls.amount)
-        _target_bases = self._flow.auto_expand.max_bases if (
-            self._flow.auto_expand and self._flow.auto_expand.max_bases
-        ) else None
+        # O381-②(司令观察/o380 六局):推翻 O84 的「重建时照常产兵」。
+        # o380a g3 分矿 490s 被端后，虚空/升级/FB/暮光/暴风继续花钱，
+        # Nexus 711s 才补回；o380b g2 3→2 后 221s 才恢复。生产资料
+        # 的恢复优先级必须高于新增作战单位和升级，基金期由下方统一停产。
         _base_rebuild = base_rebuild_active(
             self.ai.townhalls.amount,
             self._peak_townhalls,
             _target_bases,
             self.ai.can_afford(UnitID.NEXUS),
-            self._rush_active,
+            False,  # O381:分矿损失不再被慢性 rush latch 否决
         )
         # O97-B(o96 局5 实证):首舰已出+单矿+想开矿且买不起 → SpawnController
         # 暂停攒钱(局5:矿恒 50-250 被舰队/塔吃光,Nexus 400 攒不出,单矿
@@ -2209,6 +2304,9 @@ class ProductionManager(Manager):
         ) and not _zealot_sprint and not (
             # O124-③:首叉冲刺期水晶停;O129:冲刺总闸(supply ≤1 应急放行)
             _sprint and self.ai.supply_left > 1
+        ) and not (
+            # O381:基地基金期水晶让位；仅 supply≤1 的硬卡人口通道保留。
+            self._o381_nexus_fund_active and self.ai.supply_left > 1
         ) and (
             # O156-②:AutoSupply 被 O11 撤回后 10s 内不重复注册(非紧急人口)。
             # 原行为：水晶工被撤后 AutoSupply 每帧重派新工，造成 idle_builder
@@ -2243,6 +2341,7 @@ class ProductionManager(Manager):
             and self.ai.can_afford(UnitID.PYLON)
             and not _early_core_missing
             and not _nexus_waiting
+            and not self._o381_nexus_fund_active
             # O198:buffer 水晶直接走 BuildStructure,钱在派工后被抽干会触发 idle_builder;
             # 加收入守卫:到位时矿+走位收入能覆盖 100 矿才派,农民不钉点等钱。
             and dispatch_viable(
@@ -2316,6 +2415,7 @@ class ProductionManager(Manager):
                     # 矿窗一帧后永不派工(o340a game_01/05 在途0 实证)
                     prioritize=_preposition
                     or self._o189_forced_expand
+                    or self._o381_nexus_fund_active
                     or (
                         getattr(self, "_o329_latched", False)
                         and self._opp_race == "zerg"
@@ -2352,7 +2452,11 @@ class ProductionManager(Manager):
         # O368-①b(o367 尸检):FB 破产分支 —— no_money 自救 ≥3 连击
         # 期间升级(无论贵贱)全停,矿/气全部留给 FB 钉点;保命塔除外
         # 条款在防御侧,升级无豁免。FB 落成/threat 自动解除。
-        if self._fb_bankrupt:
+        if (
+            self._fb_bankrupt
+            or self._o380_cannon_fund_active
+            or self._o381_nexus_fund_active
+        ):
             _upgrades = []
         # O360-②(o359b 尸检):FB 基金窗内 ≥200 矿升级让位 —— 空军 2 攻/
         # 2 防级升级一笔顶大半座 FB,是 FB no_money 的帧级抽水机之一;
@@ -2418,7 +2522,11 @@ class ProductionManager(Manager):
             _o366_enemy_supply, self.ai.time, self._o366_expand_exempt
         )
         _spawn_pause = spawn_pause_reason(
-            rebuild_nexus=_rebuild_nexus,
+            rebuild_nexus=(
+                _rebuild_nexus
+                or _base_rebuild
+                or self._o381_nexus_fund_active
+            ),
             expand_holding=self._expand_holding,
             is_zerg_timing=(
                 self._opp_race == "zerg" and self._ai_build == "timing"
@@ -2503,6 +2611,8 @@ class ProductionManager(Manager):
             # 不朽者改用 spawn dict 首位优先序(_effective_spawn O245 块)。
             immortal_saving=False,
         )
+        if self._o380_cannon_fund_active:
+            _spawn_pause = _spawn_pause or "new_base_cannon_fund"
         if _spawn_pause is None:
             macro_plan.add(
                 SpawnController(
@@ -4551,7 +4661,12 @@ class ProductionManager(Manager):
             ),
             self.ai.minerals,
             self.ai.supply_workers,
-        ) or _zealot_sprint  # O124-③:首叉冲刺期农民也停(矿全留给首叉)
+        ) or _zealot_sprint or self._o380_cannon_fund_active or (
+            # O381:基金期只允许下方 16/12 农生存硬底线继续造探机，
+            # 常态 22/40 经济追赶暂停到 Nexus 成交。
+            self._o381_nexus_fund_active
+        )
+        # O124-③:首叉冲刺期农民停；O380-③:首塔基金窗也停。
         # O360-⑤(o359a 尸检):O359-③ 触发/解除边沿簿记 —— o359a g1
         # 农民 84-204s 冻在 16-18 零日志(静默触发实证);30s 节流只
         # 节流言,边沿各记一条。
@@ -4593,8 +4708,14 @@ class ProductionManager(Manager):
         )
         # O203:经济崩溃底线——农民掉到临界值以下时,无论 rush/transition/
         # 重建窗,优先补农民。没有农民就没有矿物,没有矿物舰队/塔都造不出。
-        _econ_floor = self.ai.supply_workers < min(
-            16, 22 * max(1, self.ai.townhalls.amount)
+        _econ_floor = (
+            nexus_fund_probe_hard_floor(
+                self.ai.supply_workers, self._o381_nexus_fund_reason
+            )
+            if self._o381_nexus_fund_active
+            else probe_economy_hard_floor(
+                self.ai.supply_workers, self.ai.townhalls.amount
+            )
         )
         # O311-① 已证伪回退(o311 双 lane 0-10):ZT 单矿农民上限 20 看似
         # 省 250-400 矿买防御,实测农民少 → 收入少 → 首波兵更薄(我6-10
@@ -4606,7 +4727,9 @@ class ProductionManager(Manager):
             # O130-①:农民 <8 豁免冲刺闸(经济活命优先于链纯洁)
             and not (_sprint and sprint_blocks_probes(self.ai.supply_workers))
         ):
-            self._build_probes(self.ai.ready_townhalls)
+            self._build_probes(
+                self.ai.ready_townhalls, hard_floor=_econ_floor
+            )
         # O145-①(o144 局3 实证):农民 402-643 恒 12-13(240s 零增长,矿 280
         # 躺着)—— 各闸静态读都假,取证事件直接读(30s 节流,有农民在产/
         # 无基地/开局序列期不报)
@@ -4666,6 +4789,7 @@ class ProductionManager(Manager):
         if (
             (not self._rush_active or _rush_hold_tech)
             and not _rebuild_nexus
+            and not self._o381_nexus_fund_active
             and not _sprint_freeze_tech
         ):
             # O43(o42 bench 实证):开矿攒钱预留期间科技链(星门/舰队航标 ~450 矿)
@@ -4692,7 +4816,9 @@ class ProductionManager(Manager):
                     core_tech_allowed(_expand_holding, self._fleet_transitioned)
                     or _early_core_missing
                     or _zerg_timing_sprint_core
-                ) and not _fleet_reserve,
+                ) and not _fleet_reserve
+                and not self._o380_cannon_fund_active
+                and not self._o381_nexus_fund_active,
             )
             # O13:每个就绪基地双气满采,优先级高于一切矿物开销(气矿买上再谈产能/滚雪球)
             # O124-②:过渡期缓气(叉海不吃气),退出后恢复满采
@@ -4747,13 +4873,15 @@ class ProductionManager(Manager):
                 })
             if (
                 not _expand_holding
+                and not self._o380_cannon_fund_active
                 and not _fleet_starved_capacity
                 and not tech_yields_to_threat(
                     self._threat_active, self._rush_active
                 )
             ):
                 self._build_extra_production(structures_dict)
-            self._spend_bank()  # Q3:存款淤积时换成开矿/追加产能,经济优势→战场优势
+            if not self._o380_cannon_fund_active:
+                self._spend_bank()  # Q3:存款淤积时换成开矿/追加产能
             self._build_forward_pylon()  # F1: 前线水晶塔(投送),各流派共用
         # O98-③c(o97 局2 实证):过渡期 CYBERNETICSCORE 豁免 E3d rush 全停 ——
         # 追猎是气出口 + 对蟑螂/刺蛇波的关键 DPS(局2:气烂 2000,二波
@@ -4839,6 +4967,7 @@ class ProductionManager(Manager):
                 self.ai.vespene,
             )
             and self._fb_entities_now > 0
+            and not self._o380_cannon_fund_active
         ):
             await self._build_core_structure(UnitID.STARGATE)
         # O218(o217 lane1/lane2 game_01 双实证):转舰队后星门恒 1 ——
@@ -4887,6 +5016,7 @@ class ProductionManager(Manager):
                 self._o364_nexus_fund_hold()
                 and nexus_fund_hold_blocks("STARGATE", _sg_total_o218)
             )
+            and not self._o380_cannon_fund_active
         ):
             # O229(o227-lane2 game_01 实证):O218 事件连发 58+ 次但 SG2 至死
             # 未落成 —— can_afford 帧判后矿被 zealot/探机/塔同帧抢走,与 FB
@@ -5165,6 +5295,7 @@ class ProductionManager(Manager):
         _ms_order_ready = (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
+            and not self._o381_nexus_fund_active
             and self._fb_entities_now > 0
             and self.ai.vespene >= 400.0
             and (
@@ -5345,7 +5476,7 @@ class ProductionManager(Manager):
             ]
             if s.is_ready and s.is_idle
         ]
-        if fleet_rebuild_watchdog_needed(
+        if not self._o381_nexus_fund_active and fleet_rebuild_watchdog_needed(
             fleet_peak=self._o372_fleet_peak,
             fleet_now=_fleet_total_now,
             collapsed_since=self._o372_fleet_collapsed_since,
@@ -5410,6 +5541,7 @@ class ProductionManager(Manager):
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
+            and not self._o381_nexus_fund_active
             and self._fb_entities_now > 0
             and self.ai.can_afford(UnitID.TEMPEST)
             and (
@@ -5488,6 +5620,7 @@ class ProductionManager(Manager):
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
+            and not self._o381_nexus_fund_active
             and self._fb_entities_now == 0
             and not self._structure_present_or_pending(UnitID.FLEETBEACON)
             and not fb_saving_window(
@@ -5570,6 +5703,7 @@ class ProductionManager(Manager):
             self._sg_idle_since = self.ai.time
         if (
             zerg_sg_pin_lane_active(self._opp_race, self._ai_build)  # O376-①
+            and not self._o381_nexus_fund_active
             and sg_prefb_voidray_fill(
                 ready_sg=len(_sg_ready_all),
                 fb_entities=self._fb_entities_now,
@@ -5614,6 +5748,7 @@ class ProductionManager(Manager):
         # @751;负资产兵种不再无上限填。
         if (
             zerg_sg_pin_lane_active(self._opp_race, self._ai_build)  # O376-①
+            and not self._o381_nexus_fund_active
             and sg_post_fb_fill(
                 self._sg_idle_since,
                 self.ai.time,
@@ -6096,6 +6231,7 @@ class ProductionManager(Manager):
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
+            and not self._o381_nexus_fund_active
             and self._visible_enemy_army_count() >= 6
             and not self._zt_fleet_infra_live()
             and self.ai.can_afford(UnitID.IMMORTAL)
@@ -6114,16 +6250,21 @@ class ProductionManager(Manager):
                         "msg": "O245e:机械台直产不朽",
                     })
                     break
-        self._rush_gateway_boost()  # E3d: rush 敌兵>叉子时追加 gateway(单兵营是瓶颈)
+        if not self._o381_nexus_fund_active:
+            self._rush_gateway_boost()  # E3d:rush 敌兵>叉子时追加 gateway
         self._morph_gateways()
-        if not _rebuild_nexus:
+        if not _rebuild_nexus and not self._o381_nexus_fund_active:
             self._auto_expand(macro_plan)
             self._chrono_structures()
         # 升级前置科技建筑补建(O1/O10):core_structures 没覆盖的(如 FORGE,
         # 以及盾 L2/L3 需要的 TWILIGHTCOUNCIL)由带 can_afford 守卫的
         # _build_core_structure 补建;已覆盖的走 _build_flow_structures(保留
         # FLEETBEACON 需就绪星门的特判)。研究本身在上方 MacroPlan 里(O8)。
-        if _upgrades and not _rebuild_nexus:
+        if (
+            _upgrades
+            and not _rebuild_nexus
+            and not self._o381_nexus_fund_active
+        ):
             _covered = set(self._flow.core_structure_ids())
             for _tech_building in upgrade_tech_buildings(
                 _upgrades, done=self.ai.state.upgrades
@@ -6147,7 +6288,11 @@ class ProductionManager(Manager):
         # 是首艘风暴晚 50-70s 的另一半原因);非 pivot 行为零变化
         # O96:转舰队后(fleet_transitioned)同闸 —— o95 局3/局4 先知在舰队
         # 零产出窗口抢 150/150,首暴风拖到 t=791
-        if not self._built_single_oracle and UnitID.ORACLE in self._flow.one_off_ids():
+        if (
+            not self._o381_nexus_fund_active
+            and not self._built_single_oracle
+            and UnitID.ORACLE in self._flow.one_off_ids()
+        ):
             if (
                 self.ai.can_afford(UnitID.ORACLE)
                 and oracle_before_fleet_allowed(
@@ -6184,6 +6329,7 @@ class ProductionManager(Manager):
         if (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
+            and not self._o381_nexus_fund_active
             and self.ai.time >= 700.0
             and any(s.is_ready for s in structures_dict[UnitID.FLEETBEACON])
             and self.manager_mediator.get_own_unit_count(
@@ -6962,6 +7108,27 @@ class ProductionManager(Manager):
                 f"(开矿={has_expo},兵营={military},兵={army})",
             }
         )
+        # O380-④(o379b 三局实证):Terran Rush 在 78.8s 仅凭一座
+        # BARRACKS 被早评为 rush，但 260s 二判仍是 1 兵营/0 兵；真实
+        # 首波 502-538s 才到。撤销 O92 地面应急形态与 full rush-lock，
+        # 把 260-500s 的零接触窗还给探机、二矿和舰队科技。后续真波
+        # 由 E9 threat response 接管；>360s 的接触不会重进 O92。
+        if terran_false_rush_release(
+            self._opp_race, verdict, military, army, self.ai.time
+        ):
+            self._verdict = "unknown"
+            self._rush_active = False
+            self._rush_clear_since = None
+            self._rush_confirmed = False
+            self._rush_confirmed_at = None
+            self._transition_active = False
+            self._transition_clear_since = None
+            self._rush_hard_cleared = True
+            self._rush_hard_cleared_at = self.ai.time
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": "O380:Terran二判零兵,撤销rush/O92应急形态恢复运营",
+            })
         # O279(A 方向):首波预警 —— 二判读到敌兵 ≥6(蟑螂群成型)且非 greedy
         # → 置 _wave_incoming:扩张钉点暂停(不往波路径送 Nexus 工人),
         # 死窗叉 cap 3→5(墙缝多两条命)。E9 接触(只剩 ~25s)不再等于
@@ -7014,6 +7181,11 @@ class ProductionManager(Manager):
     def rush_active(self) -> bool:
         """rush 检测是否成立。combat 守家、O4 侦查农民撤回都读它。"""
         return self._rush_active
+
+    @property
+    def workers_per_gas_target(self) -> int:
+        """O380-②:交给 main.py/ares Mining 的硬气矿目标。"""
+        return 0 if self._gas_hard_stop_active else 3
 
     def _fleet_stall_watchdog(self, structures_dict: dict[UnitID, list[Unit]]) -> None:
         """O93-B3 + O110-①(o109 局2/局4 实证):舰队科技(SG/FB)建造停滞自救。
@@ -7701,6 +7873,33 @@ class ProductionManager(Manager):
             and sum(1 for u in self.ai.enemy_units
                     if not u.is_structure and is_combat_type(u.type_id)) >= 6
         )
+        # O380-①(o379a 经济死锁):full rush-lock 不再等「实际舰队≥3」
+        # 才解除。塔/地面防御评分达标即把经济交还正常运营；评分口径
+        # 若失效，低于 40 农且确认窗已持续 180s 走硬时间盒。先于接触
+        # 分支求值，敌仍在家门口时也能把守家职责交给 E9 threat，而非
+        # 继续冻结探机/扩张/舰队链。60s deadzone 防下一帧立刻重锁。
+        if (
+            self._rush_active
+            and rush_economy_release(
+                defense_score=self._defense_score(),
+                workers=self.ai.supply_workers,
+                now=self.ai.time,
+                confirmed_at=self._rush_confirmed_at,
+            )
+        ):
+            _score = self._defense_score()
+            self._rush_active = False
+            self._rush_clear_since = None
+            self._rush_hold_until = None
+            self._rush_hard_cleared = True
+            self._rush_hard_cleared_at = self.ai.time
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    "O380:防御站稳/时间盒解除rush经济锁"
+                    f"(评分{_score:.0f},农{self.ai.supply_workers})"
+                ),
+            })
         # O154-②:greedy 判决(侦查确认运营)后接触不置 rush latch ——
         # 小股骚扰/中期推进波由 E9 威胁包处理(塔+守家,不动科技链);
         # greedy 局置 latch = 过渡误入 + 农民/科技被接触语义反复掐(o153 局1)
@@ -7719,52 +7918,6 @@ class ProductionManager(Manager):
                 self._rush_confirmed_at = self.ai.time  # O150-②:首次证实时刻
             return
         if self._rush_active:
-            # O203:舰队已转型成功且防御达标 → 强制解除 rush 经济锁,
-            # 恢复 probe 生产、扩张、fleet spawn。若敌后续压家,_update_rush_state
-            # 下帧会重新置位,不影响守家响应。
-            # O366-④b(o365b g2 实证):「舰队成型」改判实际舰队数 ——
-            # 旧判据拿 _fleet_transitioned 旗标+防御评分当舰队,o365b
-            # g2 在舰队=0 时虚报解除 5 次;TEMPEST+CARRIER ≥3 才算成型。
-            if self._fleet_transitioned and fleet_formed_release_rush(
-                fleet_count=(
-                    self.manager_mediator.get_own_unit_count(
-                        unit_type_id=UnitID.TEMPEST
-                    )
-                    + self.manager_mediator.get_own_unit_count(
-                        unit_type_id=UnitID.CARRIER
-                    )
-                ),
-                defense_score=self._defense_score(),
-            ):
-                self._rush_active = False
-                self._rush_clear_since = None
-                self.ai._events.append({
-                    "t": round(self.ai.time, 1),
-                    "msg": (
-                        "O203:舰队成型且防御评分达标,解除rush恢复经济"
-                        f"(评分{self._defense_score():.0f})"
-                    ),
-                })
-                return
-            # O204:舰队成型后再触发 rush 往往解不开,经济二次锁死。
-            # 硬解冻:time>480s、已转舰队、SG+FB 就绪 → 强制解除,只执行一次。
-            # 若敌真压家,上面接触检测会下帧重新置位,不影响守家。
-            if (
-                not self._rush_hard_cleared
-                and self._fleet_transitioned
-                and self.ai.time > 480.0
-                and self._structure_present_or_pending(UnitID.STARGATE)
-                and self._structure_present_or_pending(UnitID.FLEETBEACON)
-            ):
-                self._rush_active = False
-                self._rush_clear_since = None
-                self._rush_hard_cleared = True
-                self._rush_hard_cleared_at = self.ai.time
-                self.ai._events.append({
-                    "t": round(self.ai.time, 1),
-                    "msg": "O204:舰队成型后硬解rush锁,恢复运营",
-                })
-                return
             # O72(n5 三连败实证):O71 情报确认的 rush 预警,敌未出门前
             # (持有上限内)不做 60s 自动解除 —— 否则 t=330 判 rush、t≈390
             # 旗标过期,防御包只建一半(接触时 2-3 塔被 15-18 枪兵淹没)。
@@ -8247,20 +8400,28 @@ class ProductionManager(Manager):
                     "恢复停气棘轮+硬转化"
                 ),
             })
-        if not self._o365_gas_restore and (
-            rush_gas_stop_window(
-                self._rush_active,
-                _stop_age,
-                window=45.0 if self._flow.transition is not None else float("inf"),
-            )
-            or self._mineral_crisis_gas_stop
-            or self._early_gas_pull
-            or self._o358_gas_pull
-        ):
+        _rush_stop_now = rush_gas_stop_window(
+            self._rush_active,
+            _stop_age,
+            window=45.0 if self._flow.transition is not None else float("inf"),
+        )
+        self._gas_hard_stop_active = gas_hard_stop_required(
+            rush_window=_rush_stop_now,
+            mineral_crisis=self._mineral_crisis_gas_stop,
+            early_pull=self._early_gas_pull,
+            imbalance_pull=self._o358_gas_pull,
+            gas_restore=self._o365_gas_restore,
+        )
+        # O380-②:与 ares Mining 共用同一目标；main.py 本帧也会用
+        # workers_per_gas_target 注册 Mining，避免它在行为执行尾部写回 3。
+        self.manager_mediator.set_workers_per_gas(
+            amount=0 if self._gas_hard_stop_active else 3
+        )
+        if self._gas_hard_stop_active:
             gas_workers = self.manager_mediator.get_worker_to_vespene_dict
             # O359-②:拉动豁免集 —— 建造台账(BuildingManager 的责任,
             # O1/O2 教训)/侦查/E6 撤离/司令接管各有属主,不抢;其余
-            # 角色(GATHERING 或任何漂移角色)只要在 gas 簿记就拉。
+            # 角色只要在 gas 簿记就一次性抽干。
             _pull_exempt = set(
                 self.manager_mediator.get_building_tracker_dict
             )
@@ -8268,117 +8429,42 @@ class ProductionManager(Manager):
             for _r in (
                 UnitRole.SCOUTING,
                 UnitRole.PERSISTENT_BUILDER,
-                UnitRole.CONTROL_GROUP_ONE,  # main.py E6 撤离专属
+                UnitRole.CONTROL_GROUP_ONE,
             ):
                 _pull_exempt |= _role_dict.get(_r, set())
             player_ctrl = getattr(self.ai, "_player_ctrl", {})
-            # O363-④a(o362a g3 实证):停气要落到实处 —— 旧实现只改
-            # role+下一帧 gather,不清 ares 气矿簿记:协防/E6 归队把
-            # role 漂回 GATHERING 后,ares Mining(每 4 帧)按残留簿记
-            # 或补气逻辑把农民拽回气矿 —— 「只记账不执行」,触发后气
-            # 照涨 +220。改为簿记同步摘除(O288 补气同教义:簿记一致,
-            # Mining 下帧不会把人拽回),漂移回采者立即重标停气。
             _rm = self.ai.manager_hub.resource_manager
             for w in self.ai.workers:
                 if w.tag in player_ctrl or w.tag in _pull_exempt:
                     continue
-                if w.tag in self._gas_stopped_tags:
-                    # 协防/E6 归队 → role 漂回 GATHERING:抢在 ares
-                    # Mining 补气前重标停气,并再清一次气矿簿记(幂等)
-                    if w.tag in _role_dict.get(UnitRole.GATHERING, set()):
+                if w.tag in gas_workers:
+                    if w.tag not in self._gas_stopped_tags:
                         self.manager_mediator.assign_role(
                             tag=w.tag, role=self._GAS_STOP_ROLE
                         )
-                        _rm._remove_worker_from_vespene(w.tag)
-                    # O366-②c(o365 双 lane 尸检):停气中农民被 ares
-                    # Mining 补气重挂气矿簿记(role 未漂、簿记重挂)
-                    # —— 只摘簿记不下命令 = 农民保持 gather(气矿)
-                    # 指令照采气(校验环复拽 3-8 次/局、增速越拖越大
-                    # 的根因);摘簿记 + 立即下离气矿命令(与首次拉动
-                    # 同口径,gas_stop_repull_action)。
-                    _act = gas_stop_repull_action(
-                        w.tag in gas_workers, w.is_carrying_vespene
-                    )
-                    if _act != "none":
-                        _rm._remove_worker_from_vespene(w.tag)
-                        if _act == "return_resource":
-                            w.return_resource()
-                        elif self.ai.mineral_field:
-                            w.smart(self.ai.mineral_field.closest_to(w))
-                    if w.is_idle and self.ai.mineral_field:
-                        w.gather(self.ai.mineral_field.closest_to(w))
-                elif w.tag in gas_workers:
-                    self.manager_mediator.assign_role(
-                        tag=w.tag, role=self._GAS_STOP_ROLE
-                    )
-                    self._gas_stopped_tags.add(w.tag)
+                        self._gas_stopped_tags.add(w.tag)
                     _rm._remove_worker_from_vespene(w.tag)
                     if w.is_carrying_vespene:
                         w.return_resource()
                     elif self.ai.mineral_field:
-                        # O364-③a(o363 尸检):直接下 smart 到矿簇 ——
-                        # 触发后气照涨 +120~+184(斜率与触发前一致),
-                        # gather 下一帧才被 ares 流水线覆盖;smart 即
-                        # 帧生效的移动/采集命令,人先离气矿。
                         w.smart(self.ai.mineral_field.closest_to(w))
-            # O364-③b(o363 尸检):30s 校验环 —— 每 ~2s 核气增速,
-            # >15/10s 视为被拽回(ares Mining 补气/角色漂移漏网),
-            # 对 gas 簿记残留者重复拉拽+清簿记(幂等);首帧建档不判。
-            if self.ai.time - self._o364_gas_check_ts >= 2.0:
-                _leak = (
-                    self._o364_gas_check_ts > 0.0
-                    and gas_stop_leaking(
-                        self.ai.vespene - self._o364_gas_check_vespene,
-                        self.ai.time - self._o364_gas_check_ts,
-                    )
-                )
-                if _leak:
-                    for w in self.ai.workers:
-                        if w.tag in player_ctrl or w.tag in _pull_exempt:
-                            continue
-                        if (
-                            w.tag in gas_workers
-                            and w.tag not in self._gas_stopped_tags
-                        ):
-                            self.manager_mediator.assign_role(
-                                tag=w.tag, role=self._GAS_STOP_ROLE
-                            )
-                            self._gas_stopped_tags.add(w.tag)
-                            # O366-②c(o365 双 lane 尸检):复拽必须下
-                            # 离气矿命令 —— 旧版只改 role+台账,农民
-                            # 保持原 gather(气矿) 指令照采气,气增速
-                            # 压不下去 → 下次校验再判泄漏再复拽(空转
-                            # 循环,3-8 次/局、增速越拖越大)。
-                            _act = gas_stop_repull_action(
-                                True, w.is_carrying_vespene
-                            )
-                            if _act == "return_resource":
-                                w.return_resource()
-                            elif self.ai.mineral_field:
-                                w.smart(self.ai.mineral_field.closest_to(w))
-                        if w.tag in self._gas_stopped_tags:
-                            _rm._remove_worker_from_vespene(w.tag)
-                            if self.ai.mineral_field:
-                                w.smart(self.ai.mineral_field.closest_to(w))
-                    if event_throttle_ok(self.ai.time, self._o359_gas_log_ts):
-                        self._o359_gas_log_ts = self.ai.time
-                        self.ai._events.append({
-                            "t": round(self.ai.time, 1),
-                            "msg": (
-                                f"O364:停气校验环泄漏复拽"
-                                f"(10s增速={(self.ai.vespene - self._o364_gas_check_vespene) / (self.ai.time - self._o364_gas_check_ts) * 10.0:.0f})"
-                            ),
-                        })
-                self._o364_gas_check_ts = self.ai.time
-                self._o364_gas_check_vespene = self.ai.vespene
+                elif w.tag in self._gas_stopped_tags:
+                    # 已抽干的农民只需保持在矿侧；workers_per_gas=0 后
+                    # Mining 不会再补新气工，不再需要 2s 增速校验/复拽环。
+                    if w.tag in _role_dict.get(UnitRole.GATHERING, set()):
+                        self.manager_mediator.assign_role(
+                            tag=w.tag, role=self._GAS_STOP_ROLE
+                        )
+                    if w.is_idle and self.ai.mineral_field:
+                        w.gather(self.ai.mineral_field.closest_to(w))
         elif self._gas_stopped_tags:
-            self._o364_gas_check_ts = 0.0  # O364-③b:停气结束销校验环基线
             alive = {w.tag for w in self.ai.workers}
             for tag in list(self._gas_stopped_tags):
                 if tag in alive:
-                    self.manager_mediator.assign_role(tag=tag, role=UnitRole.GATHERING)
+                    self.manager_mediator.assign_role(
+                        tag=tag, role=UnitRole.GATHERING
+                    )
                 self._gas_stopped_tags.discard(tag)
-
     def _effective_spawn(self) -> dict:
         """当前实际 spawn 配方 = 流派配方 + pivot 动态修正:
         rush 中 → 只出叉子顶到 rush_zealots 个;对面爆空军 → 混入 anti_air_units;
@@ -9192,10 +9278,58 @@ class ProductionManager(Manager):
             ),
         })
 
+    def _healthy_ready_mining_bases(self, min_slots: int = 15) -> int:
+        """O381-③:就绪 Nexus 周围剩余矿工位 >=min_slots 的矿区数。
+
+        只数 ready townhall；在建 Nexus 不提前冒充收入。矿点消失时
+        python-sc2 会从 mineral_field 移除，按每片 ideal_harvesters
+        （普通矿默认为 2）求剩余实时采矿位。
+        """
+        healthy = 0
+        for th in self.ai.townhalls.ready:
+            slots = sum(
+                max(0, int(getattr(mf, "ideal_harvesters", 2)))
+                for mf in self.ai.mineral_field.closer_than(10.0, th.position)
+            )
+            if slots >= min_slots:
+                healthy += 1
+        return healthy
+
     def _want_dynamic_expand(self) -> bool:
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
         self._zt_pocket_expand_debug()  # O283d:激活判据节流记账(排查期)
+        # O381-③(司令观察):名义三矿不等于健康经济。主矿采干、二矿
+        # 只剩 4 个矿工位时，即使 fleet/mineral/saturation 旧门不满足，
+        # 也必须提前开四/五矿，维持 2-3 片各 >=15 矿位的就绪矿区。
+        _ae_health = self._flow.auto_expand
+        if _ae_health is not None and _ae_health.max_bases:
+            _nx_in_flight = (
+                self.manager_mediator.get_building_counter[UnitID.NEXUS]
+                + self.ai.not_started_but_in_building_tracker(UnitID.NEXUS)
+                + sum(1 for th in self.ai.townhalls if not th.is_ready)
+            )
+            _healthy = self._healthy_ready_mining_bases()
+            if healthy_mining_expand_needed(
+                bases=self.ai.townhalls.amount,
+                max_bases=_ae_health.max_bases,
+                nexus_pending=_nx_in_flight,
+                healthy_ready_bases=_healthy,
+                workers=self.ai.supply_workers,
+            ):
+                if event_throttle_ok(
+                    self.ai.time, self._o381_healthy_expand_log_ts, 30.0
+                ):
+                    self._o381_healthy_expand_log_ts = self.ai.time
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            f"O381:健康矿区不足提前开矿"
+                            f"(健康={_healthy},基地={self.ai.townhalls.amount},"
+                            f"农={self.ai.supply_workers})"
+                        ),
+                    })
+                return True
         # O369-①a(o368a g2 实证):FB fund-first latch 期三矿+让位 ——
         # g2 矿 5-756 反复被 Nexus/塔/电池/虚空抢走,FB 连钉 12 次
         # 落成 0 次。二矿未成交豁免(Timing 经济命脉,o368a g3 二矿
@@ -10221,6 +10355,8 @@ class ProductionManager(Manager):
         时(O336 分支武装 45s)luxury 钉点族 hold:SG 第 2+ 座/
         FB/风暴/航母(O239/O260/O364-④)/Robo 各钉点调用方读
         本闸;成交(Nexus 开工)/超时/threat 豁免放行。"""
+        if self._o381_nexus_fund_active:
+            return True
         return nexus_fund_hold_active(
             now=self.ai.time,
             hold_until=self._o364_nexus_fund_hold_until,
@@ -10527,7 +10663,9 @@ class ProductionManager(Manager):
                 BuildStructure(base or self.ai.start_location, structure_id)
             )
 
-    def _build_probes(self, ready_townhalls: Units) -> None:
+    def _build_probes(
+        self, ready_townhalls: Units, hard_floor: bool = False
+    ) -> None:
         """Add probes.
 
         Parameters
@@ -10535,6 +10673,19 @@ class ProductionManager(Manager):
         ready_townhalls : Units
             Current ready nexuses we can train from.
         """
+        # O380-①:经济硬底线必须在所有历史 yield/hold 之前直接成交。
+        # 单矿目标 22；Nexus 开工后基地数≥2，目标抬到 40。这里只
+        # 绕过策略刹车，钱/人口/空闲 Nexus 三个物理条件仍必须满足。
+        if hard_floor:
+            _target = min(40, 22 * max(1, self.ai.townhalls.amount))
+            if (
+                self.ai.supply_workers < _target
+                and self.ai.can_afford(UnitID.PROBE)
+                and self.ai.supply_left > 0
+            ):
+                for nexus in ready_townhalls.idle:
+                    nexus.train(UnitID.PROBE)
+            return
         # O236(o229 胜局 vs o234 败局对照):二矿时点 ≤400s=胜、≥500s=负。
         # Nexus 钉点期间探机(50 矿/个)是最大抽血源之一,暂停探机把 400 矿
         # 资金窗让给 Nexus;18+ 农民已够当前矿线, pinning 解除自动恢复。

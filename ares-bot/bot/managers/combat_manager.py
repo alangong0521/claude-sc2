@@ -51,6 +51,7 @@ from bot.production_plans import (
     blind_push_blocked,
     push_fleet_floor_ok,
     recipe_push_exempt,
+    desperation_push_window,
     two_base_guard_point,
     main_defense_first,
     zt_golden_window_push,
@@ -130,6 +131,9 @@ class CombatManager(Manager):
         # 「新增腐化显形 ≥4 立即重评」判据(aa_reeval_due)要比较
         # 上次重评时的计数;__init__ 初始化。
         self._o378_aa_last_credited: int = 0
+        # O380-⑤:舰队长期未成型时的一次 60s 豁命推进窗。
+        self._o380_desperation_used: bool = False
+        self._o380_desperation_until: float = 0.0
         # O226:残敌清剿 3s 收尾滞回(防 attack_target 每帧翻转 yo-yo)
         self._intruder_last_seen: float | None = None
         self._intruder_last_target: Point2 | None = None
@@ -567,6 +571,29 @@ class CombatManager(Manager):
             _force_push: bool = (
                 _fleet_count >= _push_fleet_need
                 and getattr(self.ai, "time", 0.0) > 540.0
+            )
+            # O380-⑤(o379 六局出击 0-1 次):t>=900 仍只有 2-4 艘
+            # 舰队、但家中防御达标时，开一次 60s 豁命推进/换家窗。
+            # 对空安全、腐化信用硬闸与 commit 重评全部仍在下方统一执行。
+            _now = getattr(self.ai, "time", 0.0)
+            if (
+                not getattr(self, "_o380_desperation_used", False)
+                and _now >= 900.0
+                and desperation_push_window(
+                    _now,
+                    _fleet_count,
+                    self.ai.production_manager._defense_score(),
+                )
+            ):
+                self._o380_desperation_used = True
+                self._o380_desperation_until = _now + 60.0
+                if (_evs := getattr(self.ai, "_events", None)) is not None:
+                    _evs.append({
+                        "t": round(_now, 1),
+                        "msg": f"O380:舰队未成型豁命推进窗(fleet={_fleet_count},60s)",
+                    })
+            _force_push = _force_push or _now < getattr(
+                self, "_o380_desperation_until", 0.0
             )
             # O302(司令 2026-08-17 拍板·先手压制专项):O241 强推闸实证整局
             # 不触发(舰队卡 4-6 艘)。跨 40 局敌编成取证:850s+ 敌必转腐化+

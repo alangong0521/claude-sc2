@@ -5918,6 +5918,200 @@ def fleet_formed_release_rush(
     return fleet_count >= min_fleet and defense_score >= min_score
 
 
+def rush_economy_release(
+    defense_score: float,
+    workers: int,
+    now: float,
+    confirmed_at: float | None,
+    min_score: float = 15.0,
+    worker_floor: int = 40,
+    hard_window: float = 180.0,
+) -> bool:
+    """O380-①:防御站稳或经济锁超时后解除 full rush-lock。纯逻辑。
+
+    o379 三局的死锁链是 ``rush_active`` 要等舰队成型才解，而舰队又要
+    依赖被 rush-lock 冻住的农民/扩张经济。解除条件改为两条并联：
+
+    - 防御评分达到 O203 已验证的 15 分，说明塔/地面包已能接管守家；
+    - 农民仍低于 40 且确认 rush 已持续 180 秒，硬时间盒防评分口径失效。
+
+    这里只解除经济级 full rush-lock；E9 threat response 仍负责敌军压境时
+    的守家、铺塔与暂停扩张。
+    """
+    if defense_score >= min_score:
+        return True
+    return (
+        workers < worker_floor
+        and confirmed_at is not None
+        and now - confirmed_at >= hard_window
+    )
+
+
+def probe_economy_hard_floor(
+    workers: int,
+    bases: int,
+    floor: int = 40,
+    workers_per_base: int = 22,
+) -> bool:
+    """O380-①:探机不可被 hold/yield 压过的经济硬底线。纯逻辑。
+
+    单矿仍按 22 农容量，避免开局为了追 40 农反而拖死二矿；Nexus 开工后
+    基地数达到 2，目标立即抬到 40，覆盖 o379 的 31-45 农停滞区。
+    """
+    target = min(floor, workers_per_base * max(1, bases))
+    return workers < target
+
+
+def terran_false_rush_release(
+    opp_race: str,
+    verdict: str,
+    military_structs: int,
+    combat_units: int,
+    now: float,
+    release_at: float = 260.0,
+) -> bool:
+    """O380-④:Terran 二次侦查零兵时撤销早期 rush 误判。纯逻辑。
+
+    o379b 在 78.8 秒仅凭一座兵营进入 O92 应急形态，但 260 秒复查仍是
+    一兵营、零作战单位；真实首波直到 502-538 秒才出现。该形态不是早期
+    all-in，继续冻结经济/舰队链只会白烧 300 秒运营窗。
+    """
+    return (
+        opp_race == "terran"
+        and now >= release_at
+        and verdict == "unknown"
+        and military_structs <= 1
+        and combat_units == 0
+    )
+
+
+def gas_hard_stop_required(
+    rush_window: bool,
+    mineral_crisis: bool,
+    early_pull: bool,
+    imbalance_pull: bool,
+    gas_restore: bool,
+) -> bool:
+    """O380-②:停气硬切换总闸。纯逻辑。
+
+    返回 True 时调用方把 ares ``workers_per_gas`` 直接切到 0，并一次性
+    抽干现有采气农；不再靠气增速校验环发现泄漏后反复复拽。
+    """
+    return (not gas_restore) and (
+        rush_window or mineral_crisis or early_pull or imbalance_pull
+    )
+
+
+def new_base_cannon_fund_needed(
+    is_expansion: bool,
+    cannons_near: int,
+    cannons_in_flight: int,
+) -> bool:
+    """O380-③:Nexus 开工即为首座分矿塔开启 150 矿窄域基金窗。"""
+    return is_expansion and cannons_near + cannons_in_flight == 0
+
+
+def nexus_priority_fund_active(
+    now: float,
+    current_bases: int,
+    peak_bases: int,
+    target_bases: int | None,
+    first_expand_arm_at: float = 250.0,
+) -> str | None:
+    """O381-①/②:首扩硬截止与分矿损失恢复共用的 Nexus 独占基金。
+
+    第一性原理:基地是矿物收入的生产资料。单矿在 300s 后仍未开始扩张，
+    或已拥有的分矿被摧毁后仍拿钱造兵/升级，都会让后续每一分钟收入永久
+    低于对手，资源差按时间积分滚雪球。调用方在基金期暂停非生存开销并
+    强制注册 ExpansionController，直到 Nexus 实体出现（townhalls 会计入
+    在建 Nexus）自动解除。
+
+    返回 ``first_expand`` / ``lost_base`` 供事件簿记，None 表示不启用。
+    0 基地由既有 Q4 重建路径处理；未配置扩张目标的流派不介入。
+    """
+    if target_bases is None or target_bases < 2 or current_bases <= 0:
+        return None
+    if peak_bases > current_bases and current_bases < target_bases:
+        return "lost_base"
+    if (
+        current_bases == 1
+        and peak_bases <= 1
+        and now >= first_expand_arm_at
+    ):
+        return "first_expand"
+    return None
+
+
+def nexus_fund_probe_hard_floor(
+    workers: int,
+    reason: str | None,
+    first_expand_floor: int = 16,
+    lost_base_floor: int = 12,
+) -> bool:
+    """O381-②:基地基金期只补维持收入火种所需的探机。
+
+    常态 O380 经济底线会在两矿后追到 40 农；若分矿刚被摧毁时仍沿用，
+    最多会先花 450 矿补 9 个探机，反而把 400 矿 Nexus 排到后面。
+    基金期降为生存线：首扩迟到时保 16 农，丢矿恢复时只保 12 农；
+    Nexus 成交后立即恢复常态 22/40 底线。
+    """
+    if reason == "first_expand":
+        return workers < first_expand_floor
+    if reason == "lost_base":
+        return workers < lost_base_floor
+    return False
+
+
+def healthy_mining_base_target(
+    workers: int,
+    high_worker_threshold: int = 45,
+) -> int:
+    """O381-③:实时健康矿区目标——中盘 2 片，45+ 农后 3 片。"""
+    return 3 if workers >= high_worker_threshold else 2
+
+
+def healthy_mining_expand_needed(
+    *,
+    bases: int,
+    max_bases: int,
+    nexus_pending: int,
+    healthy_ready_bases: int,
+    workers: int,
+) -> bool:
+    """O381-③:按剩余采矿位而非名义 Nexus 数触发四矿/五矿。
+
+    调用方只把「就绪 Nexus 周围仍有 >=15 个矿工位」计为健康矿区；
+    在建基地不能提前冒充收入。两矿以后若健康矿区低于目标(2/3)，立即
+    开下一矿，绕过旧 fleet/mineral/saturation 门，防止 3 矿名义经济下
+    主矿已干、二矿只剩 4 个采矿位却仍不扩张。
+    """
+    if bases < 2 or bases >= max_bases or nexus_pending:
+        return False
+    return healthy_ready_bases < healthy_mining_base_target(workers)
+
+
+def desperation_push_window(
+    now: float,
+    fleet_count: int,
+    defense_score: float,
+    min_time: float = 900.0,
+    min_fleet: int = 2,
+    normal_fleet_floor: int = 5,
+    min_defense: float = 15.0,
+) -> bool:
+    """O380-⑤:长期未成型局的一次豁命推进窗。纯逻辑。
+
+    只覆盖 t>=900、仍有 2-4 艘舰队且家中防御评分达标的慢性败局；正常
+    5+ 舰队继续走 O302 既有闸，0-1 艘不做无意义白送。对空安全闸仍由
+    combat_manager 的既有逻辑统一判定。
+    """
+    return (
+        now >= min_time
+        and min_fleet <= fleet_count < normal_fleet_floor
+        and defense_score >= min_defense
+    )
+
+
 def cannon_global_capped(
     cannons: int, threat_active: bool, cap: int = 12
 ) -> bool:

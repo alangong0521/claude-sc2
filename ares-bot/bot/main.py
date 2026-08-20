@@ -639,6 +639,8 @@ def update_gas_topup(ai) -> None:
     pm = ai.production_manager
     if pm.rush_active or getattr(pm, "_threat_active", False):
         return
+    if getattr(pm, "_gas_hard_stop_active", False):
+        return
     if getattr(pm, "_gas_stopped_tags", None):
         return
     if ai.vespene >= 600:
@@ -816,14 +818,19 @@ class MyBot(AresBot):
             steer.reset()  # 清上一局残留命令/战况（STEER_NO_RESET=1 保留预设命令，测试用）
 
         self._handle_player_control()  # 人机共驾：先处理让权，Mining/production 随后自动跳过被接管单位
-        # O7: mineral_boost=False 关掉 ares 加速采矿微操 —— 它每个往返给每个农民下
-        # move+SMART 两条命令(speed_mining.py:91-94),主矿区满屏点击、还可能顶司令手操。
-        # 关掉后走 _do_standard_mining:只在农民闲置/挂错矿时补一条 gather,采集零打扰。
-        self.register_behavior(Mining(mineral_boost=False))
         self._handle_scout()
         self._handle_idle_workers()
 
         await self.production_manager.update(iteration)
+        # O7: mineral_boost=False 关掉加速采矿微操。O380-②:Mining 必须
+        # 在 production_manager 本帧算完停气状态后注册，否则它执行尾部会
+        # 把 workers_per_gas 重置回 3，制造 O364 校验环反复复拽。
+        self.register_behavior(
+            Mining(
+                mineral_boost=False,
+                workers_per_gas=self.production_manager.workers_per_gas_target,
+            )
+        )
         # E6:农民被抄转移/协防(塔覆盖不撤/无塔撤向有塔基地/敌退回采)。
         # 放在 production 之后:rush_active 是本帧最新;role 改动先于 _after_step
         # 的 Mining 执行生效,不会与 Mining 抢命令。

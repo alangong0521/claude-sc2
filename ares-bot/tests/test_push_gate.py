@@ -91,6 +91,7 @@ class TestCarrierPushGate(unittest.TestCase):
                 # O375-④:出发闸改信用口径(max(当帧可见, 60s 粘滞
                 # 峰值));夹具无迷雾,信用值=当帧可见
                 _enemy_army_supply_credited=lambda: enemy_supply,
+                _defense_score=lambda: 20.0,
             ),
         )
         counts = {UnitID.CARRIER: own_carriers}
@@ -111,6 +112,8 @@ class TestCarrierPushGate(unittest.TestCase):
             _o374_aa_peak_at=-9999.0,
             # O378-⑥b:AA 重评信用计数快照(显形即重评的比较基准)
             _o378_aa_last_credited=0,
+            _o380_desperation_used=False,
+            _o380_desperation_until=0.0,
             manager_mediator=SimpleNamespace(
                 get_own_unit_count=lambda unit_type_id, include_pending=True: (
                     counts.get(unit_type_id, 0)
@@ -119,6 +122,26 @@ class TestCarrierPushGate(unittest.TestCase):
             ),
         )
         return mgr
+
+    def test_o380_desperation_push_window(self):
+        # t>=900、家防达标、仅 2-4 艘舰队时开一次 60s 豁命推进窗。
+        mgr = self._fake(3, [], 150.0)
+        mgr.ai.time = 900.0
+        enemy_base = SimpleNamespace(position=Point2((150.0, 150.0)))
+        mgr.ai.enemy_structures = _StructList(
+            [_estruct(UnitID.HATCHERY, enemy_base.position)], closest=enemy_base
+        )
+        target = CombatManager.attack_target.fget(mgr)
+        self.assertEqual(target, enemy_base.position)
+        self.assertTrue(mgr._push_committed)
+        self.assertTrue(mgr._o380_desperation_used)
+        self.assertEqual(mgr._o380_desperation_until, 960.0)
+
+        # 窗结束后不续杯第二次。
+        mgr.ai.time = 961.0
+        target2 = CombatManager.attack_target.fget(mgr)
+        self.assertEqual(target2, MAIN)
+        self.assertFalse(mgr._push_committed)
 
     def test_advantage_and_safe_pushes(self):
         # 60 army supply vs 敌可见 20(优势),2 腐化 < 14×1.5(安全) → 推进(走到默认追敌)

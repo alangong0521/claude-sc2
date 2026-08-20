@@ -60,6 +60,11 @@ _BASE_TYPES = {
     "Nexus", "CommandCenter", "OrbitalCommand", "PlanetaryFortress",
 }
 
+# SC2 ladder/Faster 游戏速度的逻辑帧率。旧脚本用 16.0（Normal 速度
+# 近似值），会把 bench 录像时间整体放大 1.4 倍：例如 state 的 Nexus
+# @425.9s 被报成 replay @593.1s。正式 bench 的 state.time 与 22.4 对齐。
+_GAME_LOOPS_PER_SECOND = 22.4
+
 
 def main(path: str) -> None:
     archive = mpyq.MPQArchive(path)
@@ -94,7 +99,7 @@ def main(path: str) -> None:
             continue
         seen.add(tag)
         pid = ev.get("m_controlPlayerId")
-        t = ev["_gameloop"] / 16.0
+        t = ev["_gameloop"] / _GAME_LOOPS_PER_SECOND
         name = players[pid - 1][0] if 0 < pid <= len(players) else "?"
         race = players[pid - 1][1] if 0 < pid <= len(players) else "?"
         print(f"  {t:7.1f}s  player{pid}({name}/{race}) {utype}")
