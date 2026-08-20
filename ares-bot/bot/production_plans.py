@@ -4609,6 +4609,7 @@ def fb_fund_window(
     minerals: float = 150.0,
     window_open: bool = False,
     sg_started: bool = False,
+    open_minerals: float = 300.0,
 ) -> bool:
     """O360-②(o359b 尸检):FB 专项基金窗判据。纯逻辑,可单测。
 
@@ -4637,6 +4638,12 @@ def fb_fund_window(
     经济封顶;窗判据矿≥150 与 FB 造价 300 不匹配,o366a g2 连开
     3 次纯抑制窗(457/491/714s,矿 165/260/359 全买不起)零成交。
     sg_started 参数保留签名但不再入判据(向后兼容)。
+    O368-①a(o367 双 lane 尸检):开窗矿判据 150→300(对齐 FB 造价)
+    —— o367a 三局窗 452/599/627s 才开,开窗时矿净积累已 ≤0;o367b
+    g1 四次开窗(768/835/1038/1181)两次零积累关窗空转:矿 150-299
+    开窗,FB(300 矿)仍买不起,窗纯压经济。「矿≥150 且 10s 预期净
+    收入 ≥150」的备选方案要多一条收入采样链,选实现简单的直接对齐
+    造价;窗内矿波动不关窗的滞回保留(攒矿正是窗的职责)。
     """
     return (
         fb_in_core
@@ -4645,7 +4652,7 @@ def fb_fund_window(
         and not threat_active
         and not timed_out
         and vespene >= 400.0
-        and (minerals >= 150.0 or window_open)
+        and (minerals >= open_minerals or window_open)  # O368-①a:150→300
     )
 
 
@@ -4737,6 +4744,132 @@ def fb_fund_probe_brake(
     if window_open_s is None or window_open_s < timeout:
         return False
     return minerals < fb_minerals and workers >= min_workers
+
+
+def fb_bankrupt_needed(no_money_streak: int, threshold: int = 3) -> bool:
+    """O368-①b(o367 双 lane 尸检):FB 破产分支触发判据。纯逻辑,可单测。
+
+    o367a 实证:O110「FB 建造停滞>45s 自救=no_money」从 330-362s 起
+    每 45s 循环到死(g1/g3 各 6-8 次)—— 基金窗+健康监控都救不回
+    「塔+农+二矿吸干、开窗即穷」的局。O110 FB no_money 自救连续
+    ≥threshold 次 → 调用方暂停一切非必要支出(O337 分矿塔/O363
+    电池钉点/第 2+ 星门/升级,保命塔除外),直到 FB 钉下去或 threat
+    激活。对单建筑的窄域暂停(O360 单建筑基金窗先例),不是全局
+    资金冻结(O106 证伪边界不动)。
+    """
+    return no_money_streak >= threshold
+
+
+def fb_bankrupt_cleared(fb_entities: int, threat_active: bool) -> bool:
+    """O368-①b:FB 破产分支解除判据。纯逻辑,可单测。
+
+    FB 实体出现(钉下去了,含在建)或 threat/rush 激活(被骑脸时
+    防御链恢复优先)→ 解除暂停;无 latch,解除后 O110 连击计数
+    重新积累,再破产再进。
+    """
+    return fb_entities > 0 or threat_active
+
+
+def fb_fund_gas_gate(
+    fund_window: bool,
+    vespene: float,
+    unit_gas: float,
+    fb_gas: float = 200.0,
+) -> bool:
+    """O368-①c(o367b g3 实证):FB 基金窗内 SG 气耗闸。纯逻辑,可单测。
+
+    o367b g3 实证:虚空 514s 产于 FB 窗 427-558 内(150 气),窗
+    558s 零积累关窗 —— 窗内 SG 气耗单位把 FB 的 200 气预留吃掉。
+    窗开期间气耗单位(虚空/风暴)只在 气 ≥ FB 气耗预留 + 单位气耗
+    时才放行(造完仍够 FB 的 200 气);窗外恒放行。「SG 只许产不
+    耗气单位」的备选要动配方层,选 diff 小的气线预留。
+    """
+    return (not fund_window) or vespene >= fb_gas + unit_gas
+
+
+def stargate_deadlock_voidray(
+    sg_idle_since: float | None,
+    now: float,
+    fb_entities: int,
+    idle_threshold: float = 60.0,
+) -> bool:
+    """O368-②(o367 双 lane 尸检):星门死锁自救判据。纯逻辑,可单测。
+
+    o367a 实证:g1 SG 277s 落成→699s 死零产出(空转 422s)、g3
+    空转 388s —— 产线绑 fb_entities,FB pending(派工挂出但落不了)
+    期 O261 虚空兜底被 O353-③ 攒钱窗抑制,SG 恒闲。就绪 SG 全闲
+    连续 ≥idle_threshold 秒且 FB 未落成 → 调用方解绑转产虚空
+    (VOIDRAY 只需 SG,不耗 FB 前置;o367b 胜局 VOIDRAY@418 证明
+    虚空能撑中段);FB 落成(实体 >0)判据自灭,正常产线接管。
+    """
+    return (
+        sg_idle_since is not None
+        and fb_entities == 0
+        and now - sg_idle_since >= idle_threshold
+    )
+
+
+def power_precheck_needed(powered_free: int, free: int) -> bool:
+    """O368-③(o367a g1 (162,22) 尸检):SG/FB 钉点前供电预检判据。
+    纯逻辑,可单测。
+
+    o367a g1 实证:主基槽位(带电余=0, 空闲余=12, 总=25)—— 12 个
+    空槽全部无电,FB no_placement 死等整局;贴槽水晶自救(O110)
+    挂在 can_afford(FB) 分支内,no_money 循环里永不执行。带电
+    空闲 3x3 槽 =0 且仍有空闲槽(补电能救,区别于 O357 的几何死槽)
+    → 钉点前先在空闲槽旁 critical 钉一根水晶,水晶落地前建筑钉点
+    挂起(「失败后补救」改成「钉点前预检」)。
+    """
+    return powered_free == 0 and free > 0
+
+
+def new_base_f2_cannon_floor(
+    age_s: float | None,
+    target: int,
+    window: float = 120.0,
+) -> int:
+    """O368-④a(o367 双 lane 尸检):新基地 F2 塔目标下限。纯逻辑,可单测。
+
+    o367 实证:F2 注册 target=0(fb_missing 让位 FB)—— o367b g2
+    二矿 450s 无塔掉落、g3 三矿全程无塔(两负直接死因),o367a g3
+    二矿落成 28s 被拆;f2_wave_cannon_floor 触发 5 次但稳态
+    target=0(35+ 波瞬时地板抬不解稳态裸奔)。落成 <window 秒的
+    新基地 target 下限抬 1(首座保命塔不依赖敌 supply 瞬时地板);
+    老基地/未知落成时刻 → 原值不动。
+    """
+    if age_s is not None and age_s < window:
+        return max(target, 1)
+    return target
+
+
+def nexus_pin_yield_clamp(target: int) -> int:
+    """O368-④b(o367 双 lane 尸检):Nexus 钉点让位钳新语义。纯逻辑,可单测。
+
+    O365-④ 旧钳 min(target, cap) 整钳到固定档,把保命塔一并让位
+    (o367b g2 二矿 450s 无塔掉落、g3 三矿全程无塔实证);改钳
+    max(1, target-1) —— 让位只减 1 座,保底 1 座保命塔豁免于让位。
+    """
+    return max(1, target - 1)
+
+
+def new_base_no_cannon_alarm(
+    age_s: float | None,
+    cannons_near: int,
+    cannons_in_flight: int,
+    window: float = 60.0,
+) -> bool:
+    """O368-④c(o367 双 lane 尸检):新基地 60s 无塔健康告警判据。
+    纯逻辑,可单测。
+
+    Nexus 落成 ≥window 秒仍零塔(就绪+在途皆为 0)→ 调用方打健康
+    事件(30s 节流,只节流言)并走 critical 强钉通道(survival
+    豁免基金/钳制闸)。落成时刻未知(台账外基地)→ 不告警。
+    """
+    return (
+        age_s is not None
+        and age_s >= window
+        and (cannons_near + cannons_in_flight) == 0
+    )
 
 
 def fb_safe_anchor(

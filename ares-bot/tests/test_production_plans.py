@@ -127,6 +127,14 @@ from bot.production_plans import (  # noqa: E402
     new_base_survival_cannon_ok,
     extra_stargate_minerals_ok,
     fb_fund_window_stalled,
+    fb_bankrupt_needed,
+    fb_bankrupt_cleared,
+    fb_fund_gas_gate,
+    stargate_deadlock_voidray,
+    power_precheck_needed,
+    new_base_f2_cannon_floor,
+    nexus_pin_yield_clamp,
+    new_base_no_cannon_alarm,
     fleet_formed_release_rush,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -4223,18 +4231,19 @@ class TestO360MidGameEconomy(unittest.TestCase):
         self.assertFalse(townhall_skips_placement("PYLON"))
 
     def test_fb_fund_window(self):
-        # SG 就绪 + FB 无实体 + 在 core 链 + 无威胁 + 未超时 → 开窗
-        self.assertTrue(fb_fund_window(True, 0, True, False, False))
+        # SG 就绪 + FB 无实体 + 在 core 链 + 无威胁 + 未超时 + 矿够
+        # (O368-①a:开窗矿判据 150→300,对齐 FB 造价)→ 开窗
+        self.assertTrue(fb_fund_window(True, 0, True, False, False, minerals=300.0))
         # SG 未就绪 → 不开(FB 链还未到)
-        self.assertFalse(fb_fund_window(False, 0, True, False, False))
+        self.assertFalse(fb_fund_window(False, 0, True, False, False, minerals=300.0))
         # FB 实体已落(含在建)→ 关窗(攒钱目的达成)
-        self.assertFalse(fb_fund_window(True, 1, True, False, False))
+        self.assertFalse(fb_fund_window(True, 1, True, False, False, minerals=300.0))
         # FB 不在 core 链 → 不开(非舰队流派)
-        self.assertFalse(fb_fund_window(True, 0, False, False, False))
+        self.assertFalse(fb_fund_window(True, 0, False, False, False, minerals=300.0))
         # threat/rush 豁免 → 被骑脸时塔链优先,关窗
-        self.assertFalse(fb_fund_window(True, 0, True, True, False))
+        self.assertFalse(fb_fund_window(True, 0, True, True, False, minerals=300.0))
         # 90s 超时 → 关窗(O106 死锁教训:不钉死)
-        self.assertFalse(fb_fund_window(True, 0, True, False, True))
+        self.assertFalse(fb_fund_window(True, 0, True, False, True, minerals=300.0))
 
     def test_fb_fund_probe_yield(self):
         # 窗内 + 农 ≥28 → 探机让位
@@ -4363,19 +4372,20 @@ class TestO362TimingVacuumWindow(unittest.TestCase):
         self.assertFalse(
             fb_fund_window(True, 0, True, False, False, vespene=399.9)
         )
-        # 气 ≥400 + 矿 ≥150 → 开(成交只差攒矿)
+        # O368-①a:气 ≥400 + 矿 ≥300(对齐 FB 造价)→ 开
         self.assertTrue(
             fb_fund_window(
-                True, 0, True, False, False, vespene=400.0, minerals=150.0
+                True, 0, True, False, False, vespene=400.0, minerals=300.0
             )
         )
-        # 矿 <150 且窗未开 → 不开(o361b 零成交档:矿 <200 买不起)
+        # O368-①a:矿 150-299 且窗未开 → 不开(o367b g1 四窗两关空转
+        # 档:矿 150 开窗 FB 仍买不起,纯压经济)
         self.assertFalse(
             fb_fund_window(
-                True, 0, True, False, False, vespene=1500.0, minerals=149.9
+                True, 0, True, False, False, vespene=1500.0, minerals=299.9
             )
         )
-        # 矿 <150 但窗已开 → 滞回保持(抑制攒矿正是窗的职责)
+        # 矿 <300 但窗已开 → 滞回保持(抑制攒矿正是窗的职责)
         self.assertTrue(
             fb_fund_window(
                 True, 0, True, False, False,
@@ -4619,13 +4629,15 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(
             fb_fund_window(False, 0, True, False, False, sg_started=True)
         )
-        # SG 就绪 → 照常开窗
+        # SG 就绪 → 照常开窗(O368-①a:矿判据 300,显式传矿)
         self.assertTrue(
-            fb_fund_window(True, 0, True, False, False, sg_started=True)
+            fb_fund_window(
+                True, 0, True, False, False, sg_started=True, minerals=300.0
+            )
         )
         # 默认参数(不传 sg_started)维持旧口径:SG 就绪才开
         self.assertFalse(fb_fund_window(False, 0, True, False, False))
-        self.assertTrue(fb_fund_window(True, 0, True, False, False))
+        self.assertTrue(fb_fund_window(True, 0, True, False, False, minerals=300.0))
 
     def test_fb_fund_window_stalled(self):
         # O367-①:窗开 10s+ 矿净积累 ≤0 → 关窗放行(o366a g2 三窗
@@ -4636,6 +4648,81 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(fb_fund_window_stalled(50.0, 10.0))
         # 滑窗未满 10s 不判
         self.assertFalse(fb_fund_window_stalled(-30.0, 9.9))
+
+    def test_fb_bankrupt_needed(self):
+        # O368-①b:O110 FB no_money 自救连续 ≥3 次 → 破产分支触发
+        self.assertFalse(fb_bankrupt_needed(0))
+        self.assertFalse(fb_bankrupt_needed(2))
+        self.assertTrue(fb_bankrupt_needed(3))
+        self.assertTrue(fb_bankrupt_needed(8))  # o367a g1/g3 各 6-8 次档
+
+    def test_fb_bankrupt_cleared(self):
+        # O368-①b:FB 实体出现(钉下去了)→ 解除
+        self.assertTrue(fb_bankrupt_cleared(1, False))
+        # threat/rush 激活 → 解除(被骑脸时防御链恢复优先)
+        self.assertTrue(fb_bankrupt_cleared(0, True))
+        # FB 未落且无威胁 → 维持暂停
+        self.assertFalse(fb_bankrupt_cleared(0, False))
+
+    def test_fb_fund_gas_gate(self):
+        # O368-①c:窗外恒放行
+        self.assertTrue(fb_fund_gas_gate(False, 150.0, 150.0))
+        # 窗内 气 ≥ 200(FB 预留)+150(虚空气耗) → 放行
+        self.assertTrue(fb_fund_gas_gate(True, 350.0, 150.0))
+        # 窗内气不够保 FB 预留 → 拦(o367b g3 虚空 514s 产于窗内档)
+        self.assertFalse(fb_fund_gas_gate(True, 349.9, 150.0))
+        self.assertFalse(fb_fund_gas_gate(True, 200.0, 150.0))
+
+    def test_stargate_deadlock_voidray(self):
+        # O368-②:就绪 SG 全闲 ≥60s 且 FB 未落成 → 解绑转产虚空
+        self.assertTrue(stargate_deadlock_voidray(100.0, 160.0, 0))
+        # 空转 <60s → 不触发
+        self.assertFalse(stargate_deadlock_voidray(100.0, 159.9, 0))
+        # FB 已落成 → 不触发(正常产线接管)
+        self.assertFalse(stargate_deadlock_voidray(100.0, 600.0, 1))
+        # 无计时(有 SG 在产/无就绪 SG)→ 不触发
+        self.assertFalse(stargate_deadlock_voidray(None, 600.0, 0))
+
+    def test_power_precheck_needed(self):
+        # O368-③:带电余=0 且空闲余>0 → 预检补电((162,22) 实证档)
+        self.assertTrue(power_precheck_needed(0, 12))
+        # 有带电空闲槽 → 不需要
+        self.assertFalse(power_precheck_needed(1, 12))
+        # 空闲余=0 → 几何死槽,归 O357 换锚管,本预检不触发
+        self.assertFalse(power_precheck_needed(0, 0))
+        # 簿记拿不到槽(99,99,-1)→ 不挡任何闸
+        self.assertFalse(power_precheck_needed(99, 99))
+
+    def test_new_base_f2_cannon_floor(self):
+        # O368-④a:新基地(落成 <120s)target 下限 1
+        self.assertEqual(new_base_f2_cannon_floor(59.9, 0), 1)
+        self.assertEqual(new_base_f2_cannon_floor(0.0, 0), 1)
+        # target 已 ≥1 → 原值
+        self.assertEqual(new_base_f2_cannon_floor(30.0, 3), 3)
+        # 老基地(≥120s)→ 不动(o367b g3 稳态 target=0 外的常态)
+        self.assertEqual(new_base_f2_cannon_floor(120.0, 0), 0)
+        # 落成时刻未知 → 不动
+        self.assertEqual(new_base_f2_cannon_floor(None, 0), 0)
+
+    def test_nexus_pin_yield_clamp(self):
+        # O368-④b:让位钳 max(1, target-1) —— 让位只减 1 座
+        self.assertEqual(nexus_pin_yield_clamp(3), 2)
+        self.assertEqual(nexus_pin_yield_clamp(5), 4)
+        # 保底 1 座保命塔豁免于让位
+        self.assertEqual(nexus_pin_yield_clamp(1), 1)
+        self.assertEqual(nexus_pin_yield_clamp(0), 1)
+
+    def test_new_base_no_cannon_alarm(self):
+        # O368-④c:落成 ≥60s 零塔(就绪+在途皆 0)→ 告警
+        self.assertTrue(new_base_no_cannon_alarm(60.0, 0, 0))
+        self.assertTrue(new_base_no_cannon_alarm(450.0, 0, 0))  # o367b g2 档
+        # 落成 <60s → 不告警(建造窗内)
+        self.assertFalse(new_base_no_cannon_alarm(59.9, 0, 0))
+        # 有就绪塔/在途塔 → 不告警
+        self.assertFalse(new_base_no_cannon_alarm(60.0, 1, 0))
+        self.assertFalse(new_base_no_cannon_alarm(60.0, 0, 1))
+        # 落成时刻未知 → 不告警
+        self.assertFalse(new_base_no_cannon_alarm(None, 0, 0))
 
     def test_fb_safe_anchor(self):
         # O366-①b:离斜坡口最远的带电空闲槽
