@@ -426,10 +426,16 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
                 return None
             # 仅有 SC2 pid 还不够：许可错误实例同样能短暂出现进程，
             # 但永远连不上 websocket。首个 state 才证明已真正进入对局。
+            # O382-②b 实机：冷启动 25s + create_game/init_game 32s +
+            # MapAnalyzer 会超过「从 Popen 起算 60s」，正常 Status.in_game
+            # 也被误杀。SC2 pid 出现后单独给 120s 入局窗；许可/
+            # websocket 真失败仍会在该窗内被杀并进入一次自动重试。
+            state_deadline = time.time() + 120.0
             while proc.poll() is None and not list(game_dir.glob("state_*.json")):
-                if time.time() > startup_deadline:
+                if time.time() > state_deadline:
                     print(
-                        f"[bench] game {i:02d} SC2 60s 内未进入对局(许可/websocket失败)",
+                        f"[bench] game {i:02d} SC2 pid出现120s内未进入对局"
+                        "(许可/websocket失败)",
                         flush=True,
                     )
                     proc.kill()
