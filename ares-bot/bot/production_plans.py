@@ -5395,6 +5395,8 @@ def sg_post_fb_fill(
     minerals: float,
     idle_threshold: float = 60.0,
     tempest_minerals: float = 300.0,
+    voidrays: int = 0,
+    voidray_cap: int = 2,
 ) -> bool:
     """O369-②b(o368a g3 实证):post-FB 矿穷填线判据。纯逻辑,可单测。
 
@@ -5405,12 +5407,18 @@ def sg_post_fb_fill(
     (矿 <tempest_minerals)→ 调用方允许产虚空填线(与 ① 的
     latch 兼容:latch 只活在 FB 未落时,本分支 FB 已落,天然
     不打架;矿够 300 正常产线接管,判据自灭)。
+    O378-④(o377b g2 实证):虚空总量帽入判据(voidrays ≥cap 不
+    填)—— g2 pre/post-FB 矿穷填线共产 9 虚空(1350 气),
+    932-952s 在腐化+刺蛇环境全灭,FB 被饿到 @751(配方
+    530-546),虚空在该环境是负资产;cap 默认 2,与 pre-FB
+    填充帽(sg_prefb_voidray_fill 调用方 cap=2)同口径。
     """
     return (
         sg_idle_since is not None
         and fb_entities > 0
         and minerals < tempest_minerals
         and now - sg_idle_since >= idle_threshold
+        and voidrays < voidray_cap
     )
 
 
@@ -5578,6 +5586,25 @@ def sg2_pre_fb_pin_needed(
     return sg1_ready and sg_total < 2 and fb_entities == 0
 
 
+def e10_sg2_pin_needed(e10_transitioned: bool, sg_total: int, sg_max: int = 2) -> bool:
+    """O378-②(o377a 三局尸检):E10 航母转型点即钉 SG2 判据。
+    纯逻辑,可单测。
+
+    o377a 实证:E10 时间盒(O377-②)480s 准点触发,但单 SG+风暴
+    排队,首航母落地还要 +130-155s(608-638s,验收 ≤480s 永远
+    FAIL),三局 SG2 全在 743s+ —— fleet≥5@[500,570] 数学上不可
+    达,recipe_push_exempt(O377-①b)的 [500,570] 窗成死代码。
+    转型点/时间盒触发(调用方 latch)即 critical 钉 SG2:豁免
+    FB 基金窗预扣(fb_fund_sg2_blocked 不入闸,与 O375-③a 的
+    「豁免疫 FB latch/基金窗」同教义;FB 已落成或时间盒硬转时
+    基金窗已关,语义不冲突);SG 总数(含在途)≥sg_max 判据自灭,
+    回归常态通道。二矿让位(sg2_pin_economy_ok)与 Nexus 资金窗
+    独占(nexus_fund_hold_blocks)两道既有闸在调用方保留 ——
+    SG2 不抢扩张全款。
+    """
+    return e10_transitioned and sg_total < sg_max
+
+
 def sg_prefb_voidray_fill(
     ready_sg: int,
     fb_entities: int,
@@ -5595,6 +5622,11 @@ def sg_prefb_voidray_fill(
     给 ②b post-FB 矿穷填线),cap 4→8(验收口径虚空峰 ≥6,胜局
     12 含常态产线;填充通道留气给舰队接力)。latch 期不产
     (攒钱给 FB+SG2,调用方闸),latch 解除自动恢复。
+    O378-④(o377b g2 实证):zerg lane 调用方 cap 8→2 —— 腐化+
+    刺蛇环境虚空是负资产(g2 pre/post-FB 矿穷填线共产 9 虚空
+    1350 气,932-952s 全灭,FB 被饿到 @751);cap 参数化不动
+    函数本体,terran lane 不经本通道(zerg_sg_pin_lane_active
+    门),行为一行不变。
     """
     return ready_sg > 0 and fb_entities == 0 and voidrays < cap
 
@@ -6194,6 +6226,41 @@ def anchor_buildable(
     )
 
 
+def pylon_ring_fallback_anchor(
+    grid,
+    pylon_xys,
+    resource_xys=(),
+    radius: int = 6,
+):
+    """O378-⑤(o377b 尸检):扇形锚连败降级 —— 水晶旁任意可建 2x2。
+    纯逻辑,可单测。
+
+    o377b 实证:AbyssalReef (130,26)/(130,50) 矿位手工锚点扇形
+    4-7 向全失败(8 向候选无一过 anchor_buildable:撞矿簇/不可建
+    地形),重试链空转 200s,6 次开矿仅 2 次 90s 内达标。扇形几何
+    (Nexus±矿线方向)穷举失败 → 降级放宽锚点几何:按 pylon_xys
+    顺序(调用方按离基地距离排序)在每根水晶 ±radius 环带内扫描
+    placement grid,第一个过 anchor_buildable 的 2x2 即锚点(塔
+    必须带电,水晶旁扫描天然满足供电;资源避让沿用 anchor_
+    buildable 的 min_res_dist 口径)。全无可建 → None(调用方
+    维持原重试簿记,下帧再来)。
+    """
+    offsets = sorted(
+        (
+            (dx, dy)
+            for dx in range(-radius, radius + 1)
+            for dy in range(-radius, radius + 1)
+        ),
+        key=lambda d: d[0] * d[0] + d[1] * d[1],
+    )
+    for px, py in pylon_xys:
+        for dx, dy in offsets:
+            cx, cy = px + dx, py + dy
+            if anchor_buildable(grid, cx, cy, resource_xys):
+                return (cx, cy)
+    return None
+
+
 def escort_hard_cap(
     enemy_ground_near: int,
     workers: int,
@@ -6437,6 +6504,30 @@ def push_commit_aa_retreat(
     ) >= max_hard_aa
 
 
+def aa_reeval_due(
+    now: float,
+    last_eval_at: float,
+    credited_now: int,
+    credited_at_last: int,
+    interval: float = 30.0,
+    immediate_at: int = 4,
+) -> bool:
+    """O378-⑥b(o377b 三局团灭尸检):AA 重评时机判据。纯逻辑,可单测。
+
+    o377b 实证:30s 定期重评对暴风太短 —— 腐化群显形后 28s 内
+    舰队死在两次重评之间(g1 舰队峰 16 拖过 1200s 进腐化+大龙
+    窗口被全歼,同一秒「塔投资冻结(腐化≥4)」舰队却在出门)。
+    重评时机:① 距上次 ≥interval(原 30s 定期,不动);② 信用
+    对空计数(腐化+大龙,zerg 走 zerg_aa_credited;terran 走可见
+    _HARD_AA)≥immediate_at 且较上次重评上升(新增腐化显形)→
+    立即重评,不等 30s。下降/持平不立即重评(防可见性抖动反复
+    收放,旗标粘滞语义不变)。
+    """
+    return (now - last_eval_at >= interval) or (
+        credited_now >= immediate_at and credited_now > credited_at_last
+    )
+
+
 def zerg_aa_exemption_capped(
     corruptor_broodlord_visible: int,
     cap: int = 8,
@@ -6511,6 +6602,26 @@ def zerg_departure_floor_ok(
     不动的胜局打法一行不变。
     """
     return enemy_visible_supply < own_army_supply * ratio
+
+
+def zerg_corruptor_departure_blocked(
+    corruptor_broodlord_credited: int, gate: int = 4
+) -> bool:
+    """O378-⑥a(o377b g1 实证):zerg 信用腐化硬闸 —— 不出击判据。
+    纯逻辑,可单测。
+
+    o377b g1 实证:同一秒「塔投资冻结(腐化≥4)」(cannon_
+    investment_freeze 已认账)舰队却在出门 —— 塔链知道腐化
+    ≥4 是舰队杀手,出击闸不知道;三局共同死因即舰队峰
+    10/14/16 拖过 1200s 进腐化+大龙窗口被全歼。信用腐化
+    (当帧可见 CORRUPTOR+BROODLORD ∪ 60s 粘滞峰值,调用方
+    max(_zerg_cb, _o374_aa_peak)口径,与 O374-① 台账同源)
+    ≥gate → O302 出击闸(_army_gate_ok)收 False。zerg 不豁免
+    本闸(暴风被腐化完克,o377b 三局团灭实证);黄金窗
+    (zt_golden_window_push 自带腐化 ≤4 闸)与 _force_push 通道
+    不动。
+    """
+    return corruptor_broodlord_credited >= gate
 
 
 def push_fleet_floor_ok(fleet_total: int, floor: int = 5) -> bool:

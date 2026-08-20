@@ -67,7 +67,7 @@ def _estruct(type_id, pos):
 class TestCarrierPushGate(unittest.TestCase):
     """O44/O45:attack_target 推进闸 —— 优势+对空安全 → 推进;否则蹲锚点。"""
 
-    def _fake(self, own_carriers, enemies, enemy_supply):
+    def _fake(self, own_carriers, enemies, enemy_supply, pending_carriers=0):
         th = SimpleNamespace(position=MAIN, tag=1)
         ai = SimpleNamespace(
             steer_order={},
@@ -94,6 +94,9 @@ class TestCarrierPushGate(unittest.TestCase):
             ),
         )
         counts = {UnitID.CARRIER: own_carriers}
+        # O378-①:在产/队列挂独立口径 —— include_pending=True(默认)
+        # 才加算;False(出击口径)只数在场
+        pending = {UnitID.CARRIER: pending_carriers}
         mgr = SimpleNamespace(
             ai=ai,
             _flow=SimpleNamespace(name="carrier", pre_fleet=None),
@@ -106,8 +109,13 @@ class TestCarrierPushGate(unittest.TestCase):
             # O374-①:zerg AA 信用记忆簿记(60s 粘滞峰值)
             _o374_aa_peak=0,
             _o374_aa_peak_at=-9999.0,
+            # O378-⑥b:AA 重评信用计数快照(显形即重评的比较基准)
+            _o378_aa_last_credited=0,
             manager_mediator=SimpleNamespace(
-                get_own_unit_count=lambda unit_type_id: counts.get(unit_type_id, 0)
+                get_own_unit_count=lambda unit_type_id, include_pending=True: (
+                    counts.get(unit_type_id, 0)
+                    + (pending.get(unit_type_id, 0) if include_pending else 0)
+                )
             ),
         )
         return mgr
@@ -279,12 +287,80 @@ class TestCarrierPushGate(unittest.TestCase):
         self.assertEqual(target2, enemy_base.position)
         self.assertFalse(mgr2._o372_aa_retreat)
 
+    def test_o378_corruptor_hard_gate_blocks_departure(self):
+        # O378-⑥a(o377b g1「塔冻结腐化≥4 舰队却出门」实证):zerg
+        # lane 信用腐化(当帧 ∪ 粘滞)≥4 → O302 不出击,即便
+        # supply 优势+安全线内(4 < 14×1.5 过 O45、20<60×1.5 过
+        # 出发宽下限);3 腐化不触发,原闸不动
+        pm_zerg = lambda mgr: setattr(  # noqa: E731
+            mgr.ai.production_manager, "_opp_race", "zerg"
+        )
+        enemy_base = SimpleNamespace(position=Point2((150.0, 150.0)))
+        # 4 腐化可见 → 硬闸拦(无本闸时上面各闸全放行 = 推进)
+        mgr = self._fake(
+            14, [_enemy(100 + i, UnitID.CORRUPTOR) for i in range(4)], 20.0
+        )
+        pm_zerg(mgr)
+        mgr.ai.enemy_structures = _StructList(
+            [_estruct(UnitID.HATCHERY, enemy_base.position)], closest=enemy_base
+        )
+        target = CombatManager.attack_target.fget(mgr)
+        self.assertEqual(target, MAIN)
+        self.assertFalse(mgr._push_committed)
+        # 3 腐化 → 不触发,推进照常
+        mgr2 = self._fake(
+            14, [_enemy(100 + i, UnitID.CORRUPTOR) for i in range(3)], 20.0
+        )
+        pm_zerg(mgr2)
+        mgr2.ai.enemy_structures = _StructList(
+            [_estruct(UnitID.HATCHERY, enemy_base.position)], closest=enemy_base
+        )
+        target2 = CombatManager.attack_target.fget(mgr2)
+        self.assertEqual(target2, enemy_base.position)
+        self.assertTrue(mgr2._push_committed)
+
+    def test_o378_corruptor_hard_gate_uses_sticky_peak(self):
+        # O378-⑥a:腐化离视野但 60s 粘滞峰仍 ≥4 → 同样拦(o377b
+        # 「波在途中闸是瞎子」同谱系,信用口径与 O374-① 台账同源)
+        mgr = self._fake(14, [], 20.0)
+        mgr.ai.production_manager._opp_race = "zerg"
+        mgr._o374_aa_peak = 5           # 5 腐化刚离视野
+        mgr._o374_aa_peak_at = 480.0    # 峰值时刻=当帧(粘滞期内)
+        enemy_base = SimpleNamespace(position=Point2((150.0, 150.0)))
+        mgr.ai.enemy_structures = _StructList(
+            [_estruct(UnitID.HATCHERY, enemy_base.position)], closest=enemy_base
+        )
+        target = CombatManager.attack_target.fget(mgr)
+        self.assertEqual(target, MAIN)
+        self.assertFalse(mgr._push_committed)
+
+    def test_o378_new_corruptors_trigger_immediate_reeval(self):
+        # O378-⑥b(o377b「28s 内舰队死在两次重评之间」实证):新增
+        # 腐化/硬对空显形 ≥4 → 不等 30s 立即重评撤蹲;计数未上升
+        # 且 30s 未到 → 不重评(旗标粘滞不反复收放)
+        enemies = [_enemy(100 + i, UnitID.VIKINGFIGHTER) for i in range(6)]
+        # 距上次重评仅 0s(30s 定期未到)但 6 维京新显形 → 立即重评
+        mgr = self._fake(14, enemies, 20.0)
+        mgr._o372_aa_eval_at = 480.0
+        mgr._o378_aa_last_credited = 0
+        target = CombatManager.attack_target.fget(mgr)
+        self.assertEqual(target, MAIN)
+        self.assertTrue(mgr._o372_aa_retreat)
+        self.assertEqual(mgr._o378_aa_last_credited, 6)  # 重评已快照
+        # 对照:计数未上升(上次已 6)且 30s 未到 → 不重评不撤蹲
+        mgr2 = self._fake(14, enemies, 20.0)
+        mgr2._o372_aa_eval_at = 480.0
+        mgr2._o378_aa_last_credited = 6
+        CombatManager.attack_target.fget(mgr2)
+        self.assertFalse(mgr2._o372_aa_retreat)
+        self.assertEqual(mgr2._o372_aa_eval_at, 480.0)  # 重评未发生
+
 
 class TestRecipePushGate(unittest.TestCase):
     """O377-①a/①b/④(o376a 三局 0/3 尸检):首推窗解锁的闸级线束 —
     — 在场口径舰队下限 5 + terran 配方推盲推闸豁免。"""
 
-    def _fake_terran(self, own_carriers, main_cannons, t=528.5):
+    def _fake_terran(self, own_carriers, main_cannons, t=528.5, pending_carriers=0):
         th = SimpleNamespace(position=MAIN, tag=1)
         cannons = [
             SimpleNamespace(
@@ -322,6 +398,8 @@ class TestRecipePushGate(unittest.TestCase):
             ),
         )
         counts = {UnitID.CARRIER: own_carriers}
+        # O378-①:在产/队列挂独立口径(在场/含在产两种读法)
+        pending = {UnitID.CARRIER: pending_carriers}
         return SimpleNamespace(
             ai=ai,
             _flow=SimpleNamespace(name="carrier", pre_fleet=None),
@@ -332,8 +410,12 @@ class TestRecipePushGate(unittest.TestCase):
             _o372_aa_retreat=False,
             _o374_aa_peak=0,
             _o374_aa_peak_at=-9999.0,
+            _o378_aa_last_credited=0,
             manager_mediator=SimpleNamespace(
-                get_own_unit_count=lambda unit_type_id: counts.get(unit_type_id, 0)
+                get_own_unit_count=lambda unit_type_id, include_pending=True: (
+                    counts.get(unit_type_id, 0)
+                    + (pending.get(unit_type_id, 0) if include_pending else 0)
+                )
             ),
         )
 
@@ -371,6 +453,21 @@ class TestRecipePushGate(unittest.TestCase):
         target2, _ = self._push_target(mgr2)
         self.assertEqual(target2, MAIN)
         self.assertFalse(mgr2._push_committed)
+
+    def test_o378_pending_not_counted_in_departure_caliber(self):
+        # O378-①(o377b g2 @890 报 5 实 2 实证):O377-④ 假修复真
+        #  bug —— get_own_unit_count 默认 include_pending=True,在
+        # 产/队列虚高计入出击口径。在场 3+在产 2:含在产口径会报
+        # 5(过下限豁免盲推闸 = 纸面舰队出门),修后按在场 3 拦;
+        # 在场 5+在产 2 仍放行(不是一刀切欠数)
+        mgr = self._fake_terran(3, 2, pending_carriers=2)
+        target, _ = self._push_target(mgr)
+        self.assertEqual(target, MAIN)
+        self.assertFalse(mgr._push_committed)
+        mgr2 = self._fake_terran(5, 2, pending_carriers=2)
+        target2, enemy_pos = self._push_target(mgr2)
+        self.assertEqual(target2, enemy_pos)
+        self.assertTrue(mgr2._push_committed)
 
 
 class TestHotBaseAnchor(unittest.TestCase):

@@ -74,6 +74,18 @@ class TestPivotTempestModeWiring(unittest.TestCase):
         self.assertTrue(any("E10" in e["msg"] for e in pm.ai._events))
         self.assertFalse(pm._pivot_tempest_mode())  # 数量回落也不横跳
 
+    def test_o378_transition_arms_sg2_pin_latch(self):
+        # O378-②(o377a 三局尸检):E10 转型点/时间盒触发即武装 SG2
+        # 钉点 latch(e10_sg2_pin_needed 的入参);未转型不武装
+        pm = _pm("greedy", time=650.0)
+        pm._o378_e10_sg2_needed = False
+        pm._pivot_tempest_mode()
+        self.assertTrue(pm._o378_e10_sg2_needed)
+        pm2 = _pm("greedy", time=200.0)
+        pm2._o378_e10_sg2_needed = False
+        pm2._pivot_tempest_mode()
+        self.assertFalse(pm2._o378_e10_sg2_needed)
+
     def test_transition_by_fleet_count(self):
         pm = _pm("greedy", time=450.0, tempest_count=10)
         self.assertFalse(pm._pivot_tempest_mode())

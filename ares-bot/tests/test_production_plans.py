@@ -187,6 +187,10 @@ from bot.production_plans import (  # noqa: E402
     sg_rebuild_cooldown_ok,
     zerg_aa_credited,
     zerg_departure_floor_ok,
+    zerg_corruptor_departure_blocked,
+    aa_reeval_due,
+    e10_sg2_pin_needed,
+    pylon_ring_fallback_anchor,
     fleet_formed_release_rush,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -5730,6 +5734,100 @@ class TestO376Plans(unittest.TestCase):
         self.assertFalse(sg_rebuild_cooldown_ok(1260.0, 1230.1))
         self.assertTrue(sg_rebuild_cooldown_ok(1260.0, 1230.0))
         self.assertTrue(sg_rebuild_cooldown_ok(1260.0, 0.0))
+
+
+class TestO378Plans(unittest.TestCase):
+    """O378(o377a Terran 1/3 + o377b Zerg Rush 0/3 尸检)六项修复的
+    纯函数判据。"""
+
+    def test_e10_sg2_pin_needed(self):
+        # O378-②(o377a 三局尸检):E10 转型 latch 置位且 SG 总数 <2
+        # → 钉点;SG≥2 判据自灭;latch 未置位(未转型)不钉
+        self.assertTrue(e10_sg2_pin_needed(True, 0))
+        self.assertTrue(e10_sg2_pin_needed(True, 1))
+        self.assertFalse(e10_sg2_pin_needed(True, 2))
+        self.assertFalse(e10_sg2_pin_needed(True, 3))
+        self.assertFalse(e10_sg2_pin_needed(False, 1))
+
+    def test_sg_prefb_voidray_fill_o378_cap(self):
+        # O378-④(o377b g2 实证):zerg lane 调用方 cap=2 —— 1 艘还
+        # 可填,2 艘即封顶(g2 填线 9 虚空 1350 气全灭档);默认
+        # cap=8 的函数本体不动(O375-③b 旧断言不受影响)
+        self.assertTrue(sg_prefb_voidray_fill(1, 0, 1, cap=2))
+        self.assertFalse(sg_prefb_voidray_fill(1, 0, 2, cap=2))
+        self.assertFalse(sg_prefb_voidray_fill(2, 0, 9, cap=2))
+
+    def test_sg_post_fb_fill_voidray_cap(self):
+        # O378-④:post-FB 填线虚空帽入判据 —— voidrays 0/1 可填,
+        # 2 艘封顶(默认 voidray_cap=2);显式 cap 参数可调
+        self.assertTrue(sg_post_fb_fill(481.0, 541.0, 1, 200.0, voidrays=0))
+        self.assertTrue(sg_post_fb_fill(481.0, 541.0, 1, 200.0, voidrays=1))
+        self.assertFalse(sg_post_fb_fill(481.0, 541.0, 1, 200.0, voidrays=2))
+        self.assertTrue(
+            sg_post_fb_fill(481.0, 541.0, 1, 200.0, voidrays=3, voidray_cap=4)
+        )
+
+    def test_departure_gate_credited_caliber(self):
+        # O378-③(o377b g1 @870 实证):出击闸统一信用口径回归 —
+        # — zerg_departure_floor_ok 吃 credited supply(当帧可见 ∪
+        # 120s 粘滞峰值,enemy_supply_credited),与盲推闸/E9 同
+        # 口径:当帧 10 但粘滞峰 76 → 信用 76,我方 40 supply 按
+        # 当帧会放行(10<60),按信用拦(76≥60)
+        credited = enemy_supply_credited(10.0, 76.0)
+        self.assertEqual(credited, 76.0)
+        self.assertTrue(zerg_departure_floor_ok(40.0, 10.0))   # 旧当帧口径会放行
+        self.assertFalse(zerg_departure_floor_ok(40.0, credited))  # 信用口径拦
+
+    def test_zerg_corruptor_departure_blocked(self):
+        # O378-⑥a(o377b g1 实证):信用腐化 ≥4 → O302 不出击
+        # (g1「塔冻结腐化≥4 舰队却出门」档);3 及以下原闸不动
+        self.assertTrue(zerg_corruptor_departure_blocked(4))
+        self.assertTrue(zerg_corruptor_departure_blocked(16))
+        self.assertFalse(zerg_corruptor_departure_blocked(3))
+        self.assertFalse(zerg_corruptor_departure_blocked(0))
+
+    def test_aa_reeval_due(self):
+        # O378-⑥b(o377b 三局团灭实证):30s 定期 + 新增腐化显形
+        # ≥4 立即重评(28s 内舰队死在两次重评之间档)
+        # ① 定期:距上次 ≥30s 即重评(原语义不动)
+        self.assertTrue(aa_reeval_due(480.0, 449.9, 0, 0))
+        self.assertFalse(aa_reeval_due(480.0, 470.0, 0, 0))
+        # ② 立即:信用计数 ≥4 且较上次上升 → 不等 30s
+        self.assertTrue(aa_reeval_due(480.0, 479.0, 4, 0))
+        self.assertTrue(aa_reeval_due(480.0, 479.0, 9, 4))
+        # 持平/下降/低于阈值不立即重评(粘滞不反复收放)
+        self.assertFalse(aa_reeval_due(480.0, 479.0, 4, 4))
+        self.assertFalse(aa_reeval_due(480.0, 479.0, 3, 4))
+        self.assertFalse(aa_reeval_due(480.0, 479.0, 3, 0))
+
+    def test_pylon_ring_fallback_anchor(self):
+        # O378-⑤(o377b (130,26)/(130,50) 扇形全失败实证):扇形
+        # 连败降级 —— 水晶旁扫描第一个可建 2x2;资源避让与全图
+        # 不可建(→None)语义
+        import numpy as np
+
+        grid = np.ones((20, 20), dtype="uint8")
+        # 水晶 (10,10) 旁最近可建点 = 水晶本体偏移 (0,0)
+        ax, ay = pylon_ring_fallback_anchor(grid, [(10.0, 10.0)])
+        self.assertEqual((ax, ay), (10.0, 10.0))
+        # 水晶本体不可建(压资源)→ 跳到环带次近点
+        ax2, ay2 = pylon_ring_fallback_anchor(
+            grid, [(10.0, 10.0)], resource_xys=[(10.0, 10.0)]
+        )
+        self.assertIsNotNone((ax2, ay2))
+        self.assertGreater(abs(ax2 - 10.0) + abs(ay2 - 10.0), 0)
+        # 多水晶:近水晶 2x2 足迹不可建 → 退到次近可建点/下一根
+        grid2 = np.ones((20, 20), dtype="uint8")
+        grid2[9, 9] = 0
+        grid2[10, 10] = 0
+        grid2[9, 10] = 0
+        grid2[10, 9] = 0
+        ax3, ay3 = pylon_ring_fallback_anchor(grid2, [(10.0, 10.0), (4.0, 4.0)])
+        self.assertIsNotNone((ax3, ay3))
+        # 全图不可建 → None(调用方维持重试簿记)
+        self.assertIsNone(
+            pylon_ring_fallback_anchor(np.zeros((20, 20), dtype="uint8"), [(10.0, 10.0)])
+        )
 
 
 if __name__ == "__main__":

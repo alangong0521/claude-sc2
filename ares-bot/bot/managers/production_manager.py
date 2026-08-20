@@ -196,6 +196,7 @@ from bot.production_plans import (
     aa_peak_sticky,
     fb_latch_pin_afford_ok,
     sg2_pre_fb_pin_needed,
+    e10_sg2_pin_needed,
     sg_prefb_voidray_fill,
     zerg_sg_pin_lane_active,
     fb_rebuild_latch_needed,
@@ -209,6 +210,7 @@ from bot.production_plans import (
     pylon_rescue_pin_ok,
     fleet_formed_release_rush,
     anchor_buildable,
+    pylon_ring_fallback_anchor,
     main_defense_bank_fuse,
     zt_fast_expand_pin,
     zt_defense_at_natural,
@@ -414,6 +416,11 @@ class ProductionManager(Manager):
         self._rush_hold_until: float | None = None
         # E10 策略 pivot:风暴压制 → 航母终结的一次性转型 latch
         self._pivot_transitioned: bool = False
+        # O378-②(o377a 三局尸检):E10 转型点/时间盒触发即 critical
+        # 钉 SG2 的 latch(转型帧置位,SG 总数 ≥2 判据自灭;不修则
+        # fleet≥5@[500,570] 永不可达,recipe_push_exempt 死代码);
+        # __init__ 初始化。
+        self._o378_e10_sg2_needed: bool = False
         self._rush_active: bool = False
         # O204:舰队成型后硬解 rush_active 只执行一次的 latch,避免中后期
         # rush 再触发后经济被永久锁死。
@@ -1431,6 +1438,45 @@ class ProductionManager(Manager):
                                 if anchor_buildable(_grid, _cx, _cy, _res_xy):
                                     _ax, _ay = _cx, _cy
                                     break
+                            # O378-⑤(o377b 尸检):扇形 8 候选全失败
+                            # → 降级「水晶旁任意可建 2x2」—— o377b
+                            # AbyssalReef (130,26)/(130,50) 矿位扇形
+                            # 4-7 向全失败(撞矿簇/不可建地形),重试
+                            # 链空转 200s,6 次开矿仅 2 次 90s 内
+                            # 达标。放宽锚点几何:按离基地距离排序
+                            # 的水晶 ±6 环带内 placement grid 扫描,
+                            # 第一个过 anchor_buildable 的 2x2 即锚
+                            # (塔必须带电,水晶旁天然满足供电;资源
+                            # 避让沿用 _res_xy 口径)。选本方案而非
+                            # 「塔锚先行、水晶贴塔」反转顺序 —— 只加
+                            # 一个纯函数+本降级分支,不动既有钉电链。
+                            if _ax is None:
+                                _pylon_xy = sorted(
+                                    (
+                                        (p.position.x, p.position.y)
+                                        for p in self.ai.structures.ready
+                                        if p.type_id == UnitID.PYLON
+                                        and p.position.distance_to(
+                                            _exp_th.position
+                                        ) < 20
+                                    ),
+                                    key=lambda q: (
+                                        (q[0] - _exp_th.position.x) ** 2
+                                        + (q[1] - _exp_th.position.y) ** 2
+                                    ),
+                                )
+                                _fb_anchor = pylon_ring_fallback_anchor(
+                                    _grid, _pylon_xy, _res_xy
+                                )
+                                if _fb_anchor is not None:
+                                    _ax, _ay = _fb_anchor
+                                    self.ai._events.append({
+                                        "t": round(self.ai.time, 1),
+                                        "msg": (
+                                            f"O378:扇形连败降级水晶旁扫描"
+                                            f"({_bk},锚=({_ax:.0f},{_ay:.0f}))"
+                                        ),
+                                    })
                             _worker = (
                                 self.ai.mediator.select_worker(
                                     target_position=Point2((_ax, _ay)),
@@ -4963,6 +5009,47 @@ class ProductionManager(Manager):
                     "t": round(self.ai.time, 1),
                     "msg": f"O375:SG2预扣钉点失败={_rc}",
                 })
+        # O378-②(o377a 三局尸检):E10 航母转型点/时间盒(O377-②)
+        # 触发即 critical 钉 SG2 —— o377a 实证 E10 时间盒 480s 准点
+        # 触发但单 SG+风暴排队,首航母落地 +130-155s(608-638s,
+        # 验收 ≤480s 永远 FAIL),三局 SG2 全在 743s+:fleet≥5@
+        # [500,570] 数学上不可达,recipe_push_exempt(O377-①b)的
+        # 窗成死代码。转型 latch(_pivot_tempest_mode 置位)即钉:
+        # 豁免 FB 基金窗预扣(fb_fund_sg2_blocked 不入闸,与
+        # O375-③a「豁免疫 FB latch/基金窗」同教义 —— 时间盒硬转
+        # 时 FB 多半已落,窗已关;即便窗开,SG2 的 150/150 是舰队
+        # 成型关键链,不让位);二矿让位(sg2_pin_economy_ok)与
+        # Nexus 资金窗独占(nexus_fund_hold_blocks)两道既有闸
+        # 保留,SG2 不抢扩张全款;30s 节流与 O370-⑤b 重钉簿记
+        # 走既有通道(与已有 SG2 通道对齐)。SG 总数 ≥2 判据自灭。
+        if (
+            e10_sg2_pin_needed(self._o378_e10_sg2_needed, _sg_total_o218)
+            and sg2_pin_economy_ok(self.ai.townhalls.amount, self.ai.minerals)
+            and self.ai.can_afford(UnitID.STARGATE)
+            and self.ai.time - self._o375_sg2_last > 30.0
+            and not (
+                self._o364_nexus_fund_hold()
+                and nexus_fund_hold_blocks("STARGATE", _sg_total_o218)
+            )
+        ):
+            self._o375_sg2_last = self.ai.time
+            _rc = self._dispatch_structure(
+                UnitID.STARGATE, self.ai.start_location, critical=True
+            )
+            if _rc == "dispatched":
+                self._o370_sg_pin_at = self.ai.time  # O370-⑤b:同 O218 簿记
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O378:E10转型即钉SG2(豁免FB基金窗预扣,"
+                        f"SG={_sg_total_o218})"
+                    ),
+                })
+            else:
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": f"O378:E10 SG2钉点失败={_rc}",
+                })
         # O370-⑤b(o369 尸检):追加星门钉点 30s 未落成重钉 ——
         # O218/O369-⑥ 「dispatched 后没落成」归因:钉点派工后气被
         # 产线花掉气门(≥400)关闭,触发闸永假;条目被 O362 保险丝/
@@ -5466,6 +5553,12 @@ class ProductionManager(Manager):
                     self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.VOIDRAY)
                     + cy_unit_pending(self.ai, UnitID.VOIDRAY)
                 ),
+                # O378-④(o377b g2 实证):zerg lane cap 8→2 —— 腐化+
+                # 刺蛇环境虚空是负资产(g2 填线 9 虚空 1350 气,
+                # 932-952s 全灭,FB 被饿到 @751,航母链 +230s);
+                # terran lane 不经本通道(zerg_sg_pin_lane_active
+                # 门),一行不动。
+                cap=2,
             )
             and self.ai.can_afford(UnitID.VOIDRAY)
             # O369-①a/O375-③b:latch 期不产(攒钱给 FB+SG2 预扣,
@@ -5491,6 +5584,10 @@ class ProductionManager(Manager):
         # 空转 ≥60s 且买不起风暴 → 产虚空填线(与 ① latch 兼容:
         # latch 只活在 FB 未落时,本分支 FB 已落,天然不打架;
         # 矿够 300 正常产线接管,判据自灭)。
+        # O378-④(o377b g2 实证):虚空帽 4→2 并入判据(sg_post_fb_fill
+        # 的 voidrays/voidray_cap 参数)—— g2 pre/post-FB 填线共产
+        # 9 虚空(1350 气)在腐化+刺蛇环境 932-952s 全灭,FB 被饿到
+        # @751;负资产兵种不再无上限填。
         if (
             zerg_sg_pin_lane_active(self._opp_race, self._ai_build)  # O376-①
             and sg_post_fb_fill(
@@ -5498,11 +5595,11 @@ class ProductionManager(Manager):
                 self.ai.time,
                 self._fb_entities_now,
                 self.ai.minerals,
+                voidrays=(
+                    self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.VOIDRAY)
+                    + cy_unit_pending(self.ai, UnitID.VOIDRAY)
+                ),
             )
-            and (
-                self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.VOIDRAY)
-                + cy_unit_pending(self.ai, UnitID.VOIDRAY)
-            ) < 4
             and self.ai.can_afford(UnitID.VOIDRAY)
         ):
             for _sg in _sg_ready_all:
@@ -8574,6 +8671,12 @@ class ProductionManager(Manager):
             self._opp_race,
         ):
             self._pivot_transitioned = True
+            # O378-②(o377a 三局尸检):转型点/时间盒触发即钉 SG2 —
+            # — 不修则单 SG+风暴排队,首航母 +130-155s(608-638s,
+            # 验收 ≤480s 永远 FAIL),fleet≥5@[500,570] 永不可达,
+            # recipe_push_exempt 的 [500,570] 窗成死代码;钉点分支
+            # 见 SG 钉点段(e10_sg2_pin_needed)。
+            self._o378_e10_sg2_needed = True
             self.ai._events.append(
                 {
                     "t": round(self.ai.time, 1),

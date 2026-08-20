@@ -45,6 +45,8 @@ from bot.production_plans import (
     zerg_aa_credited,
     zerg_aa_exemption_capped,
     zerg_departure_floor_ok,
+    zerg_corruptor_departure_blocked,
+    aa_reeval_due,
     blind_push_blocked,
     push_fleet_floor_ok,
     recipe_push_exempt,
@@ -123,6 +125,10 @@ class CombatManager(Manager):
         # __init__ 初始化。
         self._o374_aa_peak: int = 0
         self._o374_aa_peak_at: float = -9999.0
+        # O378-⑥b(o377b 三局团灭尸检):AA 重评的信用计数快照 ——
+        # 「新增腐化显形 ≥4 立即重评」判据(aa_reeval_due)要比较
+        # 上次重评时的计数;__init__ 初始化。
+        self._o378_aa_last_credited: int = 0
         # O226:残敌清剿 3s 收尾滞回(防 attack_target 每帧翻转 yo-yo)
         self._intruder_last_seen: float | None = None
         self._intruder_last_target: Point2 | None = None
@@ -513,12 +519,20 @@ class CombatManager(Manager):
         # 腐化+飞蛇群 = 团灭;硬对空(CORRUPTOR/VIKING/PHOENIX/VIPER)够厚就继续蹲。
         if self._flow.name == "carrier":
             _carriers = self.manager_mediator.get_own_unit_count(
-                unit_type_id=UnitID.CARRIER
+                unit_type_id=UnitID.CARRIER,
+                # O378-①(o377b 尸检):O377-④ 是假修复 —— 注释写了在场
+                # 口径但没传 include_pending=False(get_own_unit_count
+                # 默认 include_pending=True 加算 cy_unit_pending),
+                # 在产/队列仍虚高:o377b g2 @890 报 fleet=5 在场仅 2、
+                # g1 @870.6 报 5 在场 3、o377a g2 @812.6 报 9 在场 6,
+                # 真实出击舰队降到 2-4 出门捐给 76-96 supply 波。
+                include_pending=False,
             )
             # O60:暴风主 C 配比 —— 推进判据的「舰队」按航母+暴风合计
             # (暴风射程 10 压腐化 6,本身就是对空答案,不能只数航母)
             _tempests = self.manager_mediator.get_own_unit_count(
-                unit_type_id=UnitID.TEMPEST
+                unit_type_id=UnitID.TEMPEST,
+                include_pending=False,  # O378-①:同上,在产不计入出击口径
             )
             _hard_aa = sum(
                 1 for e in self.ai.enemy_units
@@ -745,14 +759,40 @@ class CombatManager(Manager):
             _zerg_cb_eff = zerg_aa_credited(
                 _zerg_cb, self._o374_aa_peak, _spire_seen
             )
+            # O378-⑥a(o377b g1 实证):信用腐化硬闸 —— g1 同一秒
+            # 「塔投资冻结(腐化≥4)」舰队却在出门(塔链认账腐化
+            # ≥4,出击闸不认);三局共同死因 = 舰队峰 10/14/16 拖过
+            # 1200s 进腐化+大龙窗口被全歼。信用腐化(当帧可见 ∪
+            # 60s 粘滞峰值,与 O374-① 台账同源)≥4 → O302 出击闸
+            # 收 False;zerg 不豁免本闸(暴风被腐化完克);黄金窗
+            # (zt_golden_window_push 自带腐化 ≤4 闸)与 _force_push
+            # 通道不动。
+            if _opp_is_zerg and zerg_corruptor_departure_blocked(
+                max(_zerg_cb, self._o374_aa_peak)
+            ):
+                _army_gate_ok = False
             if not _opp_is_zerg or zerg_aa_exemption_capped(_zerg_cb_eff):
-                if self.ai.time - self._o372_aa_eval_at >= 30.0:
+                # O378-⑥b(o377b 三局团灭尸检):重评时机改
+                # aa_reeval_due —— 30s 定期对暴风太短(28s 内舰队
+                # 死在两次重评之间);信用对空计数 ≥4 且较上次重评
+                # 上升(新增腐化显形)立即重评,下降/持平稳粘滞
+                # 不反复收放。
+                _aa_credited = (
+                    # O374-①:zerg 走信用口径(腐化离视野 60s 内
+                    # 仍计入,覆盖 g2 的 13s 视野洞);terran 原
+                    # 口径(可见 _HARD_AA)一行不动。
+                    max(_hard_aa, _zerg_cb_eff) if _opp_is_zerg else _hard_aa
+                )
+                if aa_reeval_due(
+                    self.ai.time,
+                    self._o372_aa_eval_at,
+                    _aa_credited,
+                    self._o378_aa_last_credited,
+                ):
                     self._o372_aa_eval_at = self.ai.time
+                    self._o378_aa_last_credited = _aa_credited
                     self._o372_aa_retreat = push_commit_aa_retreat(
-                        # O374-①:zerg 走信用口径(腐化离视野 60s 内
-                        # 仍计入,覆盖 g2 的 13s 视野洞);terran 原
-                        # 口径(可见 _HARD_AA)一行不动。
-                        max(_hard_aa, _zerg_cb_eff) if _opp_is_zerg else _hard_aa,
+                        _aa_credited,
                         any(
                             s.type_id == UnitID.STARPORT
                             for s in self.ai.enemy_structures
