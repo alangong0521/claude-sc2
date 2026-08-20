@@ -731,8 +731,8 @@ def main() -> int:
     ap.add_argument(
         "--timeout",
         type=int,
-        default=3600,
-        help="单局墙钟超时秒数(双 lane 默认 3600，避免长局误杀)",
+        default=7200,
+        help="单局墙钟超时秒数(双 lane 默认 7200，避免长局误杀)",
     )
     ap.add_argument("--carrier-combat", default=None,
                     choices=["default", "carrier_offensive"],

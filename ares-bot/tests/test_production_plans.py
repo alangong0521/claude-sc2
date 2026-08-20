@@ -202,6 +202,7 @@ from bot.production_plans import (  # noqa: E402
     terran_false_rush_release,
     gas_hard_stop_required,
     new_base_cannon_fund_needed,
+    cannon_fund_nonmoney_release_due,
     nexus_priority_fund_active,
     nexus_fund_probe_hard_floor,
     nexus_fund_should_cut_build_runner,
@@ -6009,6 +6010,12 @@ class TestO381Plans(unittest.TestCase):
         self.assertEqual(mineral_patch_worker_slots(7), 14)
         self.assertEqual(mineral_patch_worker_slots(0), 0)
         self.assertEqual(mineral_patch_worker_slots(-2), 0)
+
+    def test_cannon_fund_nonmoney_release_due(self):
+        self.assertFalse(cannon_fund_nonmoney_release_due(14.9, True, False))
+        self.assertTrue(cannon_fund_nonmoney_release_due(15.0, True, False))
+        self.assertFalse(cannon_fund_nonmoney_release_due(30.0, False, False))
+        self.assertFalse(cannon_fund_nonmoney_release_due(30.0, True, True))
 
     def test_healthy_mining_expand_needed(self):
         base = dict(

@@ -212,6 +212,7 @@ from bot.production_plans import (
     terran_false_rush_release,
     gas_hard_stop_required,
     new_base_cannon_fund_needed,
+    cannon_fund_nonmoney_release_due,
     nexus_priority_fund_active,
     nexus_fund_probe_hard_floor,
     nexus_fund_should_cut_build_runner,
@@ -550,6 +551,7 @@ class ProductionManager(Manager):
         # key=分矿坐标；完成/超时后写入 funded 集，避免同一基地反复续杯。
         self._o380_cannon_fund_key: tuple[int, int] | None = None
         self._o380_cannon_fund_until: float = 0.0
+        self._o380_cannon_fund_since: float = 0.0
         self._o380_cannon_funded_bases: set[tuple[int, int]] = set()
         self._o380_cannon_fund_retry_after: dict[tuple[int, int], float] = {}
         self._o380_cannon_fund_active: bool = False
@@ -1282,11 +1284,35 @@ class ProductionManager(Manager):
         self._o380_cannon_fund_active = False
         if (
             self._o380_cannon_fund_key is not None
+            and cannon_fund_nonmoney_release_due(
+                self.ai.time - self._o380_cannon_fund_since,
+                self.ai.can_afford(UnitID.PHOTONCANNON),
+                (
+                    self.ai.not_started_but_in_building_tracker(UnitID.PHOTONCANNON)
+                    + self.manager_mediator.get_building_counter[UnitID.PHOTONCANNON]
+                )
+                > 0,
+            )
+        ):
+            _nonmoney_key = self._o380_cannon_fund_key
+            self._o380_cannon_fund_retry_after[_nonmoney_key] = self.ai.time + 15.0
+            self._o380_cannon_fund_key = None
+            self._o380_cannon_fund_since = 0.0
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O384:新矿首塔非资金失败({_nonmoney_key}),"
+                    "释放全局基金并15s后重试"
+                ),
+            })
+        if (
+            self._o380_cannon_fund_key is not None
             and self.ai.time >= self._o380_cannon_fund_until
         ):
             _expired_key = self._o380_cannon_fund_key
             self._o380_cannon_fund_retry_after[_expired_key] = self.ai.time + 15.0
             self._o380_cannon_fund_key = None
+            self._o380_cannon_fund_since = 0.0
             self.ai._events.append({
                 "t": round(self.ai.time, 1),
                 "msg": f"O383:新矿首塔基金窗90s超时({_expired_key}),15s后重试",
@@ -1397,6 +1423,7 @@ class ProductionManager(Manager):
                 ):
                     self._o380_cannon_funded_bases.add(_bk)
                     self._o380_cannon_fund_key = None
+                    self._o380_cannon_fund_since = 0.0
                     self.ai._events.append({
                         "t": round(self.ai.time, 1),
                         "msg": f"O380:新矿首塔基金成交({_bk}),塔已在途/就绪",
@@ -1409,6 +1436,7 @@ class ProductionManager(Manager):
                     >= self._o380_cannon_fund_retry_after.get(_bk, -9999.0)
                 ):
                     self._o380_cannon_fund_key = _bk
+                    self._o380_cannon_fund_since = self.ai.time
                     self._o380_cannon_fund_until = self.ai.time + 90.0
                     self.ai._events.append({
                         "t": round(self.ai.time, 1),

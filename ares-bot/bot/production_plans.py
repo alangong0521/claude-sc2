@@ -6011,6 +6011,20 @@ def new_base_cannon_fund_needed(
     return is_expansion and cannons_near + cannons_in_flight == 0
 
 
+def cannon_fund_nonmoney_release_due(
+    window_age: float,
+    can_afford_cannon: bool,
+    cannon_tracked_or_in_flight: bool,
+    min_age: float = 15.0,
+) -> bool:
+    """O384-③:首塔基金只解决缺钱，placement/无工不冻结90s。"""
+    return (
+        window_age >= min_age
+        and can_afford_cannon
+        and not cannon_tracked_or_in_flight
+    )
+
+
 def nexus_priority_fund_active(
     now: float,
     current_bases: int,
