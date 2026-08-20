@@ -2227,6 +2227,31 @@ def carrier_transition_ready(
     )
 
 
+def carrier_transition_time_box(
+    now: float,
+    fb_completed_at: float | None,
+    opp_race: str,
+    fb_delay: float = 150.0,
+    hard_at: float = 480.0,
+) -> bool:
+    """O377-②(o376a 三局 0/3 尸检):vs Terran E10 航母转型时间盒。
+    纯逻辑,可单测。
+
+    o376a 实证:航母转型挂「敌坦克首现」被动扳机,坦克 514/585s
+    才露面 → 首航母 498-671 vs o373a 胜局配方 454,等坦克 = 等死。
+    vs Terran 改时间盒:FB 落成 +fb_delay 秒(舰队产能/资金窗,
+    对齐配方 FB~300s+150≈454s 首航母)即转,硬顶 hard_at(480s)
+    兜底(FB 迟落也不等坦克);坦克首现扳机(carrier_transition_
+    ready 的 tank_seen)保留为更早的提前条件,不再是必要条件。
+    非 terran 恒 False(zerg/protoss 原判据一行不动)。
+    """
+    if opp_race != "terran":
+        return False
+    if fb_completed_at is not None and now >= fb_completed_at + fb_delay:
+        return True
+    return now >= hard_at
+
+
 def is_combat_type(type_id) -> bool:
     """P1 作战单位口径：排除工人与侦查/运输单位，QUEEN 保留。纯逻辑，可单测。
 
@@ -4962,6 +4987,24 @@ def f2_global_cannon_cap(
     return main, min(cannons_expansion, exp_cap)
 
 
+def cannon_hard_cap_active(cannons_ready_total: int, hard_cap: int = 18) -> bool:
+    """O377-③(o376b 尸检):全通道塔硬顶判据(就绪塔总数硬账)。
+    纯逻辑,可单测。
+
+    o376b 实证:O376-④ 的总帽被两处架空 —— ① main_siege 通道
+    (carrier 流 6 塔/前线基地,flows.yml:130)不过
+    f2_global_cannon_cap;② threat/rush 豁免 + O375 预警 30s 一
+    循环,FB 落成后 threat 几乎常开,帽生效窗趋近零 —— 两胜局
+    塔峰 17/21 全发生在台账外。判据:就绪塔总数(全图,与通道
+    无关)≥hard_cap → 调用方对一切量产通道收口:threat 豁免在
+    硬顶处截止(f2_global_cannon_cap 恢复钳制),main_siege 加强
+    通道整体关闭(回退已钳制的常态目标)。豁免保留语义不变:
+    <hard_cap 时 threat/rush 生死窗塔仍不设顶。17 在顶内(胜局
+    配方不动),21 超顶被钳(o376b 实证口径)。
+    """
+    return cannons_ready_total >= hard_cap
+
+
 def nexus_pin_yield_clamp(target: int) -> int:
     """O368-④b(o367 双 lane 尸检):Nexus 钉点让位钳新语义。纯逻辑,可单测。
 
@@ -5141,6 +5184,34 @@ def fb_rebuild_latch_needed(
     threat 临时解除)。
     """
     return fb_ever_completed and fb_entities == 0 and sg_ready
+
+
+def forge_rebuild_guarantee_ok(
+    tech_stall_s: float | None,
+    forge_present_or_pending: bool,
+    stall_window: float = 60.0,
+) -> bool:
+    """O377-⑥(o376b g1 尸检):forge 重建保底判据(科技建筑重建
+    的 critical 资金通道)。纯逻辑,可单测。
+
+    o376b g1 实证:594s 起分矿塔链 tech_not_ready 空转 292s —
+    — forge 被拆后重建只靠 O333 常态钉点,非威胁期矿门
+    (forge_pin_affordable 矿 ≥100)在「矿只有 40、气 524 烂
+    银行」的受压局恒关,forge 永远不钉 → 没 forge 不能补塔,
+    农民 43→7。判据:forge 无实体无在途 且 塔需求空转(调用方
+    簿记:forge 缺失期间任一非主基基地就绪+在途塔 <2 的起点)
+    ≥stall_window → 调用方走 critical 资金通道 critical 钉
+    FORGE(150 预扣 = critical 钉点驻点等钱,critical 天然绕过
+    dispatch_viable/矿门,对齐 FB latch 的「攒够即 critical
+    钉」语义;落点走 O357 换锚 _dispatch_pin_reanchor,主基锚
+    O351-① 教义)。只保 FORGE(diff 最小:BY/SG 空转无尸检
+    证据,不同口径扩张)。
+    """
+    return (
+        not forge_present_or_pending
+        and tech_stall_s is not None
+        and tech_stall_s >= stall_window
+    )
 
 
 def fb_latch_stalled(
@@ -5360,6 +5431,27 @@ def power_precheck_covered(sid_name: str, needs_power: bool) -> bool:
         "PHOTONCANNON",
         "SHIELDBATTERY",
     )
+
+
+def power_precheck_stalled(
+    now: float,
+    precheck_since: float | None,
+    window: float = 30.0,
+) -> bool:
+    """O377-⑤(o376a 尸检):供电预检滞留判据(钉水晶后塔落点必须
+    重试)。纯逻辑,可单测。
+
+    o376a 实证:O363/O368「带电余=0→先钉水晶」返回
+    power_precheck 后调用方把结果直接丢弃 —— 不记失败簿记、不进
+    O364/O365 手工锚点重试链;水晶在途/贴槽水晶资金门
+    (pylon_rescue_pin_ok 矿 <400 不钉)卡住时塔落点永不再试,
+    重建/新矿裸奔 150-400s(g1 二矿、g3 三矿直接因此丢基地)。
+    判据:首次 power_precheck 起算(调用方 per-base 簿记)滞留
+    ≥window(水晶早该落地)仍无塔 → True,调用方把该基地并入
+    no_placement 重试链(手工锚点 30s 持续重试,O357 换锚同
+    教义);dispatched/其它结果销账。
+    """
+    return precheck_since is not None and now - precheck_since >= window
 
 
 def sg_power_reserve_needed(powered_free: int, free: int) -> bool:
@@ -6421,15 +6513,20 @@ def zerg_departure_floor_ok(
     return enemy_visible_supply < own_army_supply * ratio
 
 
-def push_fleet_floor_ok(fleet_total: int, floor: int = 6) -> bool:
-    """O376-⑤(o375b 尸检):O302 出击舰队(含在产)下限。纯逻辑,可单测。
+def push_fleet_floor_ok(fleet_total: int, floor: int = 5) -> bool:
+    """O376-⑤(o375b 尸检):O302 出击舰队下限。纯逻辑,可单测。
 
     o375b g2 实证:两次 fleet=4 出击无果+撞波 —— 4 艘舰队压不死人
     也跑不掉,出门就是送战损(下限 4 的口径被实证击穿)。出击闸
-    路径(_army_gate_ok 分支,调用方并入)舰队(含在产)≥floor
-    才放行;黄金窗 min_fleet(zt_golden_window_push,舰队 ≥3+
-    追猎齐编)与 _force_push(舰队 ≥6/8+t>540)通道不动 —— 那
-    两条自带数量/编成前提,豁免语义一行不变。
+    路径(_army_gate_ok 分支,调用方并入)舰队 ≥floor 才放行;
+    黄金窗 min_fleet(zt_golden_window_push,舰队 ≥3+追猎齐编)
+    与 _force_push(舰队 ≥6/8+t>540)通道不动 —— 那两条自带
+    数量/编成前提,豁免语义一行不变。
+    O377-①a(o376a 三局 0/3 尸检):下限 6→5 —— floor 6 封杀了
+    o373a 胜局配方的首推(528.5s fleet=5 起推 ×29),o376a 首推
+    被推迟到 708-776s(Terran 已 40-99 supply,推进窗口数学上
+    不存在);5 对齐胜局配方。O377-④ 起入参口径改在场舰队
+    (剔除在产/队列,o376a g3 报 6 实 3 的虚高实证)。
     """
     return fleet_total >= floor
 
@@ -6449,6 +6546,55 @@ def blind_push_blocked(credited_supply: float) -> bool:
     而是「无情报不出击」。
     """
     return credited_supply <= 0.0
+
+
+def recipe_push_exempt(
+    now: float,
+    fleet_total: int,
+    main_base_cannons: int,
+    opp_race: str,
+    window_start: float = 500.0,
+    window_end: float = 570.0,
+    fleet_need: int = 5,
+    min_cannons: int = 2,
+) -> bool:
+    """O377-①b(o376a 三局 0/3 尸检):o373a 胜局配方的「配方推」
+    盲推闸豁免判据。纯逻辑,可单测。
+
+    o376a 实证:Terran lane 侦查断链,信用 supply 恒 0 →
+    blind_push_blocked 常闭,叠加 floor 6 后首推推迟到 708-776s,
+    推进窗口数学上不存在(o373a 胜局配方首推 528.5s fleet=5
+    ×29 被整体删除)。豁免窗口:t∈[window_start,window_end]
+    (对齐配方首推 528.5s)且在场舰队 ≥fleet_need 且主基就绪塔
+    ≥min_cannons(家有保底防线,不是裸推)→ 豁免盲推闸一次
+    「配方推」。只豁免盲推闸:敌军校验闸(push_enemy_army_gate)
+    与舰队下限(push_fleet_floor_ok)仍生效,撞波/硬对空照拦。
+    限 terran(zerg lane 信用不断链,本豁免不碰 zerg 一行行为)。
+    """
+    return (
+        opp_race == "terran"
+        and window_start <= now <= window_end
+        and fleet_total >= fleet_need
+        and main_base_cannons >= min_cannons
+    )
+
+
+def scout_credit_fallback_ok(
+    now: float,
+    credited_supply: float,
+    opp_race: str,
+    stale_after: float = 480.0,
+) -> bool:
+    """O377-①c(o376a 三局 0/3 尸检):Terran 侦查信用兜底判据。
+    纯逻辑,可单测。
+
+    o376a 实证:Terran lane 侦查断链,480-546s 的 O375 预警全是
+    「信用supply=0」—— 信用 supply(当帧可见+120s 粘滞峰值)为 0
+    且 t≥stale_after → 调用方(OracleManager)把侦查目标从矿区
+    轮转改派敌主基方向前出刷信用。无侦查单位时本判据自然空转
+    (不新造兵,diff 最小方案);限 terran(zerg lane 不断链)。
+    """
+    return opp_race == "terran" and now >= stale_after and credited_supply <= 0.0
 
 
 def transition_push_hold(

@@ -15,6 +15,7 @@ from sc2.units import Units
 from bot.combat.base_unit import BaseUnit
 from bot.combat.oracle_harass import OracleHarass
 from bot.combat.oracle_scout import OracleScout
+from bot.production_plans import scout_credit_fallback_ok
 
 if TYPE_CHECKING:
     from ares import AresBot
@@ -141,6 +142,19 @@ class OracleManager(Manager):
             )
 
     def _update_oracle_scout_target(self):
+        # O377-①c(o376a 三局 0/3 尸检):Terran 侦查信用兜底 ——
+        # terran lane 侦查断链,信用 supply 恒 0(480-546s 的 O375
+        # 预警全是「信用supply=0」)→ t≥480 且信用=0 时把侦查目标
+        # 从矿区轮转改派敌主基方向前出刷信用(接既有 SCOUTING
+        # 通道;无侦查先知时本分支自然空转,不新造兵,diff 最小)。
+        _pm = getattr(self.ai, "production_manager", None)
+        if _pm is not None and scout_credit_fallback_ok(
+            getattr(self.ai, "time", 0.0),
+            _pm._enemy_army_supply_credited(),
+            getattr(_pm, "_opp_race", ""),
+        ):
+            self.current_scout_target = self.ai.focused_enemy_start()
+            return
         if not self.expansions_generator:
             self.expansions_generator = cycle(
                 [i for i in self.ai.expansion_locations_list]

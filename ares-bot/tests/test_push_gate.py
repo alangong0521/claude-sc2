@@ -43,8 +43,9 @@ class _StructList(list):
 
 
 class _OwnStructList(list):
-    """我方 structures 假件 —— 可迭代(O376-⑤ 的 cy_unit_pending
-    要遍历在产订单)且带 .ready(主基就绪塔口径要读)。"""
+    """我方 structures 假件 —— 可迭代且带 .ready(主基就绪塔口径
+    /O377-③ 就绪塔总数硬账要读;O377-④ 起舰队口径只算在场,
+    不再遍历在产订单)。"""
 
     def __init__(self, items=(), ready=()):
         super().__init__(items)
@@ -74,7 +75,7 @@ class TestCarrierPushGate(unittest.TestCase):
             townhalls=[th],
             ready_townhalls=[th],
             structures=_OwnStructList(),
-            race=Race.Protoss,  # O376-⑤:cy_unit_pending 要读
+            race=Race.Protoss,
             enemy_units=list(enemies),
             enemy_structures=_StructList(),
             enemy_race=SimpleNamespace(name="Zerg"),
@@ -277,6 +278,99 @@ class TestCarrierPushGate(unittest.TestCase):
         target2 = CombatManager.attack_target.fget(mgr2)
         self.assertEqual(target2, enemy_base.position)
         self.assertFalse(mgr2._o372_aa_retreat)
+
+
+class TestRecipePushGate(unittest.TestCase):
+    """O377-①a/①b/④(o376a 三局 0/3 尸检):首推窗解锁的闸级线束 —
+    — 在场口径舰队下限 5 + terran 配方推盲推闸豁免。"""
+
+    def _fake_terran(self, own_carriers, main_cannons, t=528.5):
+        th = SimpleNamespace(position=MAIN, tag=1)
+        cannons = [
+            SimpleNamespace(
+                type_id=UnitID.PHOTONCANNON,
+                position=MAIN,
+                is_ready=True,
+            )
+            for _ in range(main_cannons)
+        ]
+        ai = SimpleNamespace(
+            steer_order={},
+            start_location=MAIN,
+            townhalls=[th],
+            ready_townhalls=[th],
+            structures=_OwnStructList(ready=cannons),
+            race=Race.Protoss,
+            enemy_units=[],
+            enemy_structures=_StructList(),
+            enemy_race=SimpleNamespace(name="Terran"),
+            supply_used=120.0,
+            supply_workers=60.0,
+            supply_cap=200,
+            time=t,
+            minerals=0,
+            production_manager=SimpleNamespace(
+                _rush_active=False,
+                _primary_unit_id=lambda: UnitID.CARRIER,
+                _visible_enemy_army_supply=lambda: 0.0,
+                # o376a 实证:terran lane 侦查断链,信用 supply 恒 0
+                _enemy_army_supply_credited=lambda: 0.0,
+                _opp_race="terran",
+                _ai_build="power",
+                _fb_completed_at=None,
+                _threat_active=False,
+            ),
+        )
+        counts = {UnitID.CARRIER: own_carriers}
+        return SimpleNamespace(
+            ai=ai,
+            _flow=SimpleNamespace(name="carrier", pre_fleet=None),
+            _defend_anchor=lambda: MAIN,
+            _hot_base_anchor=lambda min_threat=6: None,
+            _HARD_AA=CombatManager._HARD_AA,
+            _o372_aa_eval_at=0.0,
+            _o372_aa_retreat=False,
+            _o374_aa_peak=0,
+            _o374_aa_peak_at=-9999.0,
+            manager_mediator=SimpleNamespace(
+                get_own_unit_count=lambda unit_type_id: counts.get(unit_type_id, 0)
+            ),
+        )
+
+    def _push_target(self, mgr):
+        enemy_base = SimpleNamespace(position=Point2((150.0, 150.0)))
+        mgr.ai.enemy_structures = _StructList(
+            [_estruct(UnitID.COMMANDCENTER, enemy_base.position)],
+            closest=enemy_base,
+        )
+        return CombatManager.attack_target.fget(mgr), enemy_base.position
+
+    def test_recipe_push_exempts_blind_gate(self):
+        # O377-①b:o373a 胜局配方首推档(528.5s 在场 fleet=5、主基
+        # 2 就绪塔、信用 0)→ 豁免盲推闸,配方推放行
+        mgr = self._fake_terran(5, 2)
+        target, enemy_pos = self._push_target(mgr)
+        self.assertEqual(target, enemy_pos)
+        self.assertTrue(mgr._push_committed)
+
+    def test_recipe_push_needs_main_cannons(self):
+        # O377-①b:主基就绪塔 <2(裸推)→ 不豁免,盲推闸照常闭
+        mgr = self._fake_terran(5, 1)
+        target, _ = self._push_target(mgr)
+        self.assertEqual(target, MAIN)
+        self.assertFalse(mgr._push_committed)
+
+    def test_recipe_push_needs_fleet_onfield(self):
+        # O377-①a/④:在场舰队 4 < 下限 5(在产虚高不计)→ 不推;
+        # 出窗(708s,o376a 被推迟的首推档)同样不豁免
+        mgr = self._fake_terran(4, 2)
+        target, _ = self._push_target(mgr)
+        self.assertEqual(target, MAIN)
+        self.assertFalse(mgr._push_committed)
+        mgr2 = self._fake_terran(5, 2, t=708.0)
+        target2, _ = self._push_target(mgr2)
+        self.assertEqual(target2, MAIN)
+        self.assertFalse(mgr2._push_committed)
 
 
 class TestHotBaseAnchor(unittest.TestCase):

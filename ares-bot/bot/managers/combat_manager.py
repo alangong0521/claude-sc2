@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING
 from ares import ManagerMediator
 from ares.consts import UnitRole
 from ares.managers.manager import Manager
-from cython_extensions.general_utils import cy_unit_pending
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.position import Point2
 from sc2.units import Units
@@ -48,6 +47,7 @@ from bot.production_plans import (
     zerg_departure_floor_ok,
     blind_push_blocked,
     push_fleet_floor_ok,
+    recipe_push_exempt,
     two_base_guard_point,
     main_defense_first,
     zt_golden_window_push,
@@ -526,12 +526,13 @@ class CombatManager(Manager):
                 and e.type_id in self._HARD_AA
             )
             _fleet_count: int = _carriers + _tempests
-            # O376-⑤(o375b 尸检):出击舰队口径含在产(与生产侧
-            # _fleet_total_now 同口径)—— fleet=4 出击两次无果+撞波
-            # 实证,下限 4→6(push_fleet_floor_ok,下方出击闸并入)。
-            _fleet_total: int = _fleet_count + cy_unit_pending(
-                self.ai, UnitID.TEMPEST
-            ) + cy_unit_pending(self.ai, UnitID.CARRIER)
+            # O377-④(o376a g3 尸检):舰队计数口径剔除在产/队列,只算
+            # 在场 —— O376-⑤ 的含在产口径被实证击穿:g3 在 776.1s
+            # 报 fleet=6,在场仅 3 艘(在产/队列虚高),按虚高数过
+            # 下限出击 = 纸面舰队。出击下限(push_fleet_floor_ok)
+            # 与配方推豁免(recipe_push_exempt)只吃在场口径;生产
+            # 侧 _fleet_total_now 含在产口径不动(本判据只管出击)。
+            _fleet_total: int = _fleet_count
             # O164/O195(o194-vh-zerg-rush game_01 实证):舰队成型后(航母+暴风 ≥8)
             # 且游戏时间 >9 分钟仍蹲家 → 强制推进,不再等待 supply 优势。
             # 原阈值 10 艘/10 分钟在 Rush 局优势顶点 9 艘不触发,导致被滚雪球。
@@ -635,13 +636,42 @@ class CombatManager(Manager):
             # supply 含 O376-③ 的 120s 粘滞峰值,真「被榨干」局末次
             # 接触 120s 内仍认账,不误伤收割;_force_push/黄金窗通道
             # 豁免不动。
+            # O377-①b(o376a 三局 0/3 尸检):配方推豁免的主基就绪塔
+            # 口径与下方 O375-① 同源(就绪 PHOTONCANNON 距主基 <12
+            # 格),提到闸前只算一次,terran 才取(zerg 恒 0,豁免
+            # 判据内部也限 terran,双保险)。
+            _o375_main_cn = (
+                sum(
+                    1
+                    for s in self.ai.structures.ready
+                    if s.type_id == UnitID.PHOTONCANNON
+                    and s.position.distance_to(self.ai.start_location) < 12
+                )
+                if (
+                    _pm_o227 is not None
+                    and getattr(_pm_o227, "_opp_race", "") == "terran"
+                )
+                else 0
+            )
+            # O377-①b:配方推豁免 —— terran 信用恒 0 时盲推闸常闭,
+            # o373a 胜局配方首推(528.5s fleet=5 ×29)被整体删除,
+            # o376a 首推推迟到 708-776s;豁免只豁免盲推闸,敌军校验
+            # 闸与舰队下限仍生效(recipe_push_exempt)。
+            _recipe_push = recipe_push_exempt(
+                getattr(self.ai, "time", 0.0),
+                _fleet_total,
+                _o375_main_cn,
+                getattr(_pm_o227, "_opp_race", "")
+                if _pm_o227 is not None
+                else "",
+            )
             _army_gate_ok = (
                 (
                     _opp_is_zerg
                     and zerg_departure_floor_ok(_own_army, _enemy_vis)
                 )
                 or push_enemy_army_gate(_own_army, _enemy_vis, _hard_aa)
-            ) and not blind_push_blocked(_enemy_vis)
+            ) and (not blind_push_blocked(_enemy_vis) or _recipe_push)
             # O374-④b(o373a g1/g2 尸检):Terran 转型真空期(FB 落成→
             # 舰队成型)出击留守闸 —— g1 509.4s/g2 528.5s 的 O302 出击
             # 与敌 515/533s 抄家窗口重叠,舰队出门时家最空(550-700s
@@ -664,12 +694,8 @@ class CombatManager(Manager):
                 _pm_o227 is not None
                 and getattr(_pm_o227, "_opp_race", "") == "terran"
             ):
-                _o375_main_cn = sum(
-                    1
-                    for s in self.ai.structures.ready
-                    if s.type_id == UnitID.PHOTONCANNON
-                    and s.position.distance_to(self.ai.start_location) < 12
-                )
+                # O377-①b:_o375_main_cn 已在闸前算好(与配方推豁免
+                # 共用一次口径计算),本块直接复用。
                 if transition_push_hold(
                     fb_done=(
                         getattr(_pm_o227, "_fb_completed_at", None) is not None
@@ -741,9 +767,12 @@ class CombatManager(Manager):
                     _force_push
                     or (
                         _army_gate_ok
-                        # O376-⑤(o375b 尸检):出击舰队(含在产)下限 4→6
+                        # O376-⑤(o375b 尸检):出击舰队下限 4→6
                         # —— g2 两次 fleet=4 出击无果+撞波;黄金窗/
-                        # _force_push 通道不走本闸,一行不变
+                        # _force_push 通道不走本闸,一行不变。
+                        # O377-①a/④(o376a 尸检):下限 6→5(对齐 o373a
+                        # 胜局配方 528.5s fleet=5 首推),口径改在场
+                        # (g3 报 6 实 3 的在产虚高剔除)
                         and push_fleet_floor_ok(_fleet_total)
                         and (
                             should_push_advantage(

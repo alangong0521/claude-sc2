@@ -22,6 +22,12 @@ from bot.production_plans import (  # noqa: E402
     carrier_quota_spawn,
     carrier_rally_against_aa,
     carrier_transition_ready,
+    carrier_transition_time_box,
+    cannon_hard_cap_active,
+    recipe_push_exempt,
+    scout_credit_fallback_ok,
+    power_precheck_stalled,
+    forge_rebuild_guarantee_ok,
     carrier_push_safe,
     chrono_first_zealot,
     chrono_forge_first,
@@ -5634,13 +5640,88 @@ class TestO376Plans(unittest.TestCase):
         self.assertEqual(f2_global_cannon_cap(2, 1, 3, True, False), (2, 1))
 
     def test_push_fleet_floor_ok(self):
-        # O376-⑤:出击舰队(含在产)下限 4→6(o375b g2 两次
-        # fleet=4 无果+撞波档);≥6 放行,黄金窗/_force_push
-        # 通道不走本闸(调用方语义)
+        # O376-⑤:出击舰队下限 4→6(o375b g2 两次 fleet=4 无果+撞波档)
+        # O377-①a:下限 6→5 —— floor 6 封杀 o373a 胜局配方首推
+        # (528.5s fleet=5 起推 ×29),o376a 首推推迟到 708-776s 实证;
+        # O377-④ 起入参为在场口径(在产/队列虚高剔除,g3 报 6 实 3 档)
         self.assertFalse(push_fleet_floor_ok(4))
-        self.assertFalse(push_fleet_floor_ok(5))
+        self.assertTrue(push_fleet_floor_ok(5))
         self.assertTrue(push_fleet_floor_ok(6))
         self.assertTrue(push_fleet_floor_ok(8))
+        # 显式 floor 参数不受默认值调整影响(黄金窗/其它调用方)
+        self.assertFalse(push_fleet_floor_ok(5, floor=6))
+        self.assertTrue(push_fleet_floor_ok(6, floor=6))
+
+    def test_recipe_push_exempt(self):
+        # O377-①b(o376a 三局 0/3 尸检):配方推豁免 —— t∈[500,570]
+        # 且在场舰队 ≥5 且主基就绪塔 ≥2 的 terran 局豁免盲推闸
+        # (o373a 胜局配方 528.5s fleet=5 首推档)
+        self.assertTrue(recipe_push_exempt(528.5, 5, 2, "terran"))
+        # 窗口边界:500/570 含端点,499.9/570.1 不豁免
+        self.assertTrue(recipe_push_exempt(500.0, 5, 2, "terran"))
+        self.assertTrue(recipe_push_exempt(570.0, 5, 2, "terran"))
+        self.assertFalse(recipe_push_exempt(499.9, 5, 2, "terran"))
+        self.assertFalse(recipe_push_exempt(570.1, 5, 2, "terran"))
+        # 舰队不足/主基塔不足 → 不豁免(盲推闸照常闭)
+        self.assertFalse(recipe_push_exempt(528.5, 4, 2, "terran"))
+        self.assertFalse(recipe_push_exempt(528.5, 5, 1, "terran"))
+        # zerg lane 恒不豁免(信用不断链,zerg 行为一行不变)
+        self.assertFalse(recipe_push_exempt(528.5, 5, 2, "zerg"))
+        self.assertFalse(recipe_push_exempt(528.5, 5, 2, "protoss"))
+
+    def test_scout_credit_fallback_ok(self):
+        # O377-①c(o376a 尸检):terran t≥480 且信用 supply=0 → 侦查
+        # 前出刷信用;信用 >0/未到点/非 terran 不触发
+        self.assertTrue(scout_credit_fallback_ok(480.0, 0.0, "terran"))
+        self.assertTrue(scout_credit_fallback_ok(546.0, 0.0, "terran"))
+        self.assertFalse(scout_credit_fallback_ok(479.9, 0.0, "terran"))
+        self.assertFalse(scout_credit_fallback_ok(480.0, 0.1, "terran"))
+        self.assertFalse(scout_credit_fallback_ok(480.0, 37.0, "terran"))
+        self.assertFalse(scout_credit_fallback_ok(480.0, 0.0, "zerg"))
+
+    def test_carrier_transition_time_box(self):
+        # O377-②(o376a 三局 0/3 尸检):vs Terran 时间盒 —— FB 落成
+        # +150s 转(对齐胜局配方 FB~300s+150≈454s 首航母)、480s 硬顶
+        # 兜底、坦克扳机不再是必要条件;非 terran 恒不转
+        # FB 落成 300s:+149.9 不转,+150 转
+        self.assertFalse(carrier_transition_time_box(449.9, 300.0, "terran"))
+        self.assertTrue(carrier_transition_time_box(450.0, 300.0, "terran"))
+        # FB 迟落(626s):480s 硬顶先触发,不等 FB+150
+        self.assertTrue(carrier_transition_time_box(480.0, 626.0, "terran"))
+        self.assertFalse(carrier_transition_time_box(479.9, 626.0, "terran"))
+        # FB 未落成:480s 硬顶照转(坦克首现不再必要)
+        self.assertTrue(carrier_transition_time_box(480.0, None, "terran"))
+        self.assertFalse(carrier_transition_time_box(479.9, None, "terran"))
+        # zerg/protoss 一行不动(原判据不管时间盒)
+        self.assertFalse(carrier_transition_time_box(600.0, 300.0, "zerg"))
+        self.assertFalse(carrier_transition_time_box(600.0, 300.0, "protoss"))
+
+    def test_cannon_hard_cap_active(self):
+        # O377-③(o376b 尸检):就绪塔总数全通道硬顶 18 —— 17 在顶内
+        # (o376b 胜局配方不动),18/21 超顶(21 实证档被钳)
+        self.assertFalse(cannon_hard_cap_active(0))
+        self.assertFalse(cannon_hard_cap_active(17))
+        self.assertTrue(cannon_hard_cap_active(18))
+        self.assertTrue(cannon_hard_cap_active(21))
+
+    def test_power_precheck_stalled(self):
+        # O377-⑤(o376a 尸检):供电预检滞留 ≥30s → 并入 no_placement
+        # 重试链(钉水晶后塔落点必须重试);None(未预检)不触发
+        self.assertFalse(power_precheck_stalled(100.0, None))
+        self.assertFalse(power_precheck_stalled(129.9, 100.0))
+        self.assertTrue(power_precheck_stalled(130.0, 100.0))
+        self.assertTrue(power_precheck_stalled(400.0, 100.0))
+
+    def test_forge_rebuild_guarantee_ok(self):
+        # O377-⑥(o376b g1 尸检):forge 缺失且塔链 tech_not_ready
+        # 空转 ≥60s → critical 资金通道保底钉 FORGE(292s 空转档);
+        # forge 在途/就绪、空转 <60s、无空转(None)不触发
+        self.assertTrue(forge_rebuild_guarantee_ok(60.0, False))
+        self.assertTrue(forge_rebuild_guarantee_ok(292.0, False))
+        self.assertFalse(forge_rebuild_guarantee_ok(59.9, False))
+        self.assertFalse(forge_rebuild_guarantee_ok(None, False))
+        self.assertFalse(forge_rebuild_guarantee_ok(292.0, True))
+        self.assertFalse(forge_rebuild_guarantee_ok(None, True))
 
     def test_sg_rebuild_cooldown_ok(self):
         # O376-⑥:O182 紧急重建星门 30s 冷却(o375a g2 一秒连发

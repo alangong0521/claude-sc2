@@ -55,6 +55,7 @@ from bot.production_plans import (
     carrier_quota_active,
     carrier_quota_spawn,
     carrier_transition_ready,
+    carrier_transition_time_box,
     chrono_first_zealot,
     chrono_forge_first,
     critical_dispatch_exempt,
@@ -168,6 +169,7 @@ from bot.production_plans import (
     sg_idle_reset_needed,
     sg_post_fb_fill,
     power_precheck_covered,
+    power_precheck_stalled,
     reanchor_fallback_default,
     cannon_investment_freeze,
     cannon_freeze_clamp,
@@ -186,6 +188,7 @@ from bot.production_plans import (
     f2_survival_floor,
     f2_target_literal,
     f2_global_cannon_cap,
+    cannon_hard_cap_active,
     nexus_repin_afford_ok,
     wave_cannon_floor_active,
     wave_cannon_floor_trigger,
@@ -196,6 +199,7 @@ from bot.production_plans import (
     sg_prefb_voidray_fill,
     zerg_sg_pin_lane_active,
     fb_rebuild_latch_needed,
+    forge_rebuild_guarantee_ok,
     fb_latch_yields_first_cannon,
     sg_power_reserve_needed,
     fleet_rebuild_watchdog_needed,
@@ -632,6 +636,15 @@ class ProductionManager(Manager):
         # (一秒连发 15 条实证;节流注册行为本身,非只节流言);
         # __init__ 初始化。
         self._o182_sg_rebuild_last: float = 0.0
+        # O377-⑤(o376a 尸检):供电预检(power_precheck)滞留 per-base
+        # 起点台账 —— 「带电余=0→钉水晶」后塔落点重试链的起点
+        # (滞留 ≥30s 并入 no_placement 手工锚点链);__init__ 初始化。
+        self._o377_precheck_since: dict = {}
+        # O377-⑥(o376b g1 尸检):forge 重建保底簿记 —— forge 缺失且
+        # 分矿有塔需求(塔链 tech_not_ready 空转)的起点,与保底钉点
+        # 30s 节流时刻;__init__ 初始化。
+        self._o377_tech_stall_since: float | None = None
+        self._o377_forge_pin_last: float = 0.0
         # O374-④a(o373a 双负尸检):敌坦克首现 latch(SIEGETANK/
         # SIEGETANKSIEGED 任一可见即锁存)—— E10 航母转型点与敌情
         # 挂钩的输入;__init__ 初始化。
@@ -1135,6 +1148,9 @@ class ProductionManager(Manager):
         # fb_fund_exempt,o363a g1 塔被基金窗压到落成后 272s 实证),
         # 资金紧张也至少 1 塔走 critical。
         _th_now = self.ai.townhalls.amount
+        # O377-⑥(o376b g1 尸检):塔需求登记(forge 重建保底的空转
+        # 口径,就绪+在途 <2,与 new_base_defense_pins 同口径)。
+        _o377_tower_demand = False
         # O371-①a(o370b Terran Power 0/3 尸检):守卫块去 zerg 门 ——
         # o370b 三局三矿落成后裸奔 60-80s 被 ~495-510s 首波(25-30
         # supply M&M+坦克)准点收走(O337/O363 事件全 0)。terran 全
@@ -1164,6 +1180,15 @@ class ProductionManager(Manager):
                 )
                 if _cn_near >= 2:
                     continue
+                # O377-⑥:塔需求在节流前登记 —— 被 30s 节流跳过的
+                # 基地也算需求(forge 保底看全局 tech_not_ready 空转,
+                # 与单基地钉点节流无关)。
+                if (
+                    _cn_near
+                    + self._in_flight_near(UnitID.PHOTONCANNON, _exp_th.position)
+                    < 2
+                ):
+                    _o377_tower_demand = True
                 # O363-①:per-base 节流(原全局 _o323_cannon_last 被首矿
                 # 吃掉后其余基地排队整局)
                 _bk = (round(_exp_th.position.x), round(_exp_th.position.y))
@@ -1318,15 +1343,40 @@ class ProductionManager(Manager):
                         "t": round(self.ai.time, 1),
                         "msg": f"O337:分矿塔持续守卫(共{_th_now}基地,派工={_rc})",
                     })
+                    # O377-⑤(o376a 尸检):供电预检滞留簿记 —— 「带电余
+                    # =0→先钉水晶」返回 power_precheck 后旧版直接丢弃
+                    # (不进下方重试链),水晶在途/贴槽资金门卡住时塔
+                    # 落点永不再试,重建/新矿裸奔 150-400s(g1 二矿、
+                    # g3 三矿丢基地实证)。滞留 ≥30s 视同 no_placement
+                    # 进 O364/O365 手工锚点重试链(O357 换锚同教义);
+                    # 其它结果(dispatched/taken 等)销账。
+                    if _rc == "power_precheck":
+                        self._o377_precheck_since.setdefault(_bk, self.ai.time)
+                    else:
+                        self._o377_precheck_since.pop(_bk, None)
                     # O364-⑤a(o363a g1/g2 实证):塔链 no_placement 连续
                     # 30s → 手工锚点兜底 —— placement solver 黑格(主基
                     # 26 水晶却报带电 2x2 槽=0)实证空转 271→512s(g2)/
                     # 311→436s(g1);不再依赖 solver,按 Nexus 坐标+矿线
                     # 几何直算塔锚(manual_cannon_anchor,放不进每次外扩
                     # 1 格),先立 1 塔再说(O357 死槽换锚同教义)。
-                    if _rc == "no_placement":
+                    if _rc == "no_placement" or (
+                        _rc == "power_precheck"
+                        and power_precheck_stalled(
+                            self.ai.time, self._o377_precheck_since.get(_bk)
+                        )
+                    ):
+                        # O377-⑤:滞留预检并入时簿记起点用预检起点
+                        # (不从头再计 30s,新矿 90s 验收窗装不下)
                         _np0 = self._o364_cannon_np_since.setdefault(
-                            _bk, self.ai.time
+                            _bk,
+                            (
+                                self._o377_precheck_since.get(
+                                    _bk, self.ai.time
+                                )
+                                if _rc == "power_precheck"
+                                else self.ai.time
+                            ),
                         )
                         # O365-⑤c(o364b g3 实证):per-base 簿记+持续
                         # 重试 —— 旧版 taken/其它失败即销账,下次
@@ -1426,6 +1476,48 @@ class ProductionManager(Manager):
                         "t": round(self.ai.time, 1),
                         "msg": f"O363:新矿电池钉点({_bk},派工={_brc})",
                     })
+        # O377-⑥(o376b g1 尸检):forge 重建保底 —— g1 在 594s 起
+        # 塔链 tech_not_ready 空转 292s:forge 被拆后重建只靠常态
+        # 钉点(O333),非威胁期矿门(forge_pin_affordable 矿 ≥100)
+        # 在「矿只有 40、气 524 烂银行」的受压局恒关,forge 永远
+        # 不钉 → 没 forge 不能补塔,农民 43→7。空转 ≥60s 触发
+        # critical 资金通道:critical 钉 FORGE(150 预扣 = 钉点
+        # 驻点等钱,critical 天然绕 dispatch_viable/矿门,对齐 FB
+        # latch 的「攒够即 critical 钉」语义),落点走 O357 换锚
+        # (_dispatch_pin_reanchor,主基锚 O351-① 教义);30s 节流
+        # (O340 同款)。只保 FORGE —— BY/SG 空转无尸检证据,
+        # 不同口径扩张(diff 最小)。
+        if expansion_defense_guard_active(self._opp_race, self._ai_build):
+            if _o377_tower_demand and not self._structure_present_or_pending(
+                UnitID.FORGE
+            ):
+                if self._o377_tech_stall_since is None:
+                    self._o377_tech_stall_since = self.ai.time
+            else:
+                self._o377_tech_stall_since = None
+            if (
+                forge_rebuild_guarantee_ok(
+                    (
+                        None
+                        if self._o377_tech_stall_since is None
+                        else self.ai.time - self._o377_tech_stall_since
+                    ),
+                    self._structure_present_or_pending(UnitID.FORGE),
+                )
+                and self.ai.time - self._o377_forge_pin_last > 30.0
+            ):
+                self._o377_forge_pin_last = self.ai.time
+                _rc377 = self._dispatch_pin_reanchor(
+                    UnitID.FORGE, self.ai.start_location
+                )
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O377:forge重建保底(critical钉,"
+                        f"空转{self.ai.time - self._o377_tech_stall_since:.0f}s,"
+                        f"派工={_rc377})"
+                    ),
+                })
         self._o323_th_last = _th_now
         # O329-③(司令 2026-08-18 拍板):分矿塔链前移到「Nexus 在途」——
         # 落成再钉 = 裸奔 30-100s(o321b 实证);防御跟着 2 矿走,Nexus
@@ -3698,12 +3790,23 @@ class ProductionManager(Manager):
             # (f2_global_cannon_cap),主基先占份额分矿均摊余额;
             # threat/rush 豁免(生死窗塔不设顶,O375-② 地板语义优先)。
             # 放在所有地板/增防之后:帽管总量,不管哪一路抬上来的。
+            # O377-③(o376b 尸检):threat 豁免加帽上帽 —— 就绪塔总数
+            # ≥18(全通道硬账,cannon_hard_cap_active)时豁免截止、
+            # 总帽恢复钳制;o376b 两胜局塔峰 17/21,17 在顶内不动、
+            # 21 超顶被钳。硬顶同时关 main_siege 加强通道(下方)。
+            _o377_cn_ready_total = sum(
+                1
+                for s in self.ai.structures.ready
+                if s.type_id == UnitID.PHOTONCANNON
+            )
+            _o377_hard_capped = cannon_hard_cap_active(_o377_cn_ready_total)
             cannons, _cannons_expansion = f2_global_cannon_cap(
                 cannons,
                 _cannons_expansion,
                 bases=max(1, self.ai.townhalls.ready.amount),
                 fb_done=self._fb_completed_at is not None,
-                threat_active=(self._threat_active or self._rush_active),
+                threat_active=(self._threat_active or self._rush_active)
+                and not _o377_hard_capped,
             )
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
@@ -3751,6 +3854,13 @@ class ProductionManager(Manager):
                 siege = False
             # O290(B 案):激活期 siege 12 塔链同封顶(o283dbg 塔 6→10 主嫌)。
             if _pocket_saving:
+                siege = False
+            # O377-③(o376b 尸检):main_siege 通道纳入全通道硬顶 ——
+            # 旧版 siege 分支(前线 6 塔/基地,flows.yml:130)不过
+            # f2_global_cannon_cap,叠加 threat 常开,塔峰 17/21 全在
+            # 台账外;就绪塔 ≥18 时 siege 加强整体关闭,回退下方已
+            # 钳制的常态 PSD 目标(cannons 已过总帽)。
+            if _o377_hard_capped:
                 siege = False
             if siege and ms is not None:
                 # 需求3:敌大军压上分矿(前线)→ 双实例(exclude 互补:只前线加强,
@@ -8454,6 +8564,14 @@ class ProductionManager(Manager):
                 and is_combat_type(u.type_id)
             ),
             tank_seen=self._o374_tank_seen,
+        ) or carrier_transition_time_box(
+            # O377-②(o376a 三局 0/3 尸检):vs Terran 时间盒硬转 ——
+            # 「等坦克首现」被动扳机下首航母 498-671 vs 胜局配方
+            # 454;FB 落成 +150s 或 t≥480 硬转(坦克扳机保留为更
+            # 早的提前条件,不再是必要条件)。非 terran 恒 False。
+            self.ai.time,
+            self._fb_completed_at,
+            self._opp_race,
         ):
             self._pivot_transitioned = True
             self.ai._events.append(

@@ -27,7 +27,7 @@ from bot.managers.production_manager import ProductionManager  # noqa: E402
 
 
 def _pm(verdict, flow_name="carrier", time=200.0, tempest_count=0,
-        transitioned=False):
+        transitioned=False, opp_race="", fb_completed_at=None):
     """不走 ares Manager.__init__,直接构造最小可用实例。"""
     pm = ProductionManager.__new__(ProductionManager)
     pm._flow = SimpleNamespace(name=flow_name)
@@ -35,6 +35,9 @@ def _pm(verdict, flow_name="carrier", time=200.0, tempest_count=0,
     pm._verdict = verdict
     # O374-④a:坦克首现 latch(__init__ 初始化的实例属性,fake 同补)
     pm._o374_tank_seen = False
+    # O377-②:E10 时间盒输入(__init__ 初始化的实例属性,fake 同补)
+    pm._opp_race = opp_race
+    pm._fb_completed_at = fb_completed_at
     pm.manager_mediator = SimpleNamespace(
         get_own_unit_count=lambda unit_type_id: tempest_count
     )
@@ -75,6 +78,32 @@ class TestPivotTempestModeWiring(unittest.TestCase):
         pm = _pm("greedy", time=450.0, tempest_count=10)
         self.assertFalse(pm._pivot_tempest_mode())
         self.assertTrue(pm._pivot_transitioned)
+
+    def test_terran_time_box_hard_transition(self):
+        # O377-②(o376a 三局 0/3 尸检):vs Terran 480s 硬转 —— 无坦克
+        # 首现、敌情 0、未到 600s 也转(等坦克 = 首航母 498-671 vs
+        # 配方 454 实证);latch 置位记事件
+        pm = _pm("greedy", time=480.0, opp_race="terran")
+        self.assertFalse(pm._pivot_tempest_mode())
+        self.assertTrue(pm._pivot_transitioned)
+        self.assertTrue(any("E10" in e["msg"] for e in pm.ai._events))
+
+    def test_terran_time_box_fb_delay(self):
+        # O377-②:FB 落成 +150s 先到先转(300+150=450 <480 硬顶)
+        pm = _pm("greedy", time=450.0, opp_race="terran", fb_completed_at=300.0)
+        self.assertFalse(pm._pivot_tempest_mode())
+        self.assertTrue(pm._pivot_transitioned)
+        # FB+150 未到且 <480 → 不转(时间盒三态之「留」)
+        pm2 = _pm("greedy", time=449.9, opp_race="terran", fb_completed_at=300.0)
+        self.assertTrue(pm2._pivot_tempest_mode())
+        self.assertFalse(pm2._pivot_transitioned)
+
+    def test_time_box_never_fires_off_terran(self):
+        # O377-②:zerg/空 race 一行不动 —— 480s 不硬转(等 600s 原判据)
+        for race in ("zerg", "protoss", ""):
+            pm = _pm("greedy", time=480.0, opp_race=race)
+            self.assertTrue(pm._pivot_tempest_mode(), race)
+            self.assertFalse(pm._pivot_transitioned, race)
 
 
 if __name__ == "__main__":
