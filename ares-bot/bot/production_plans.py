@@ -4873,6 +4873,11 @@ def f2_survival_floor(
     在途皆 0)target 下限 1 —— 首座保命塔豁免征用(O216j 分矿
     「保底塔不走归零」/O367-⑤a 保命塔同教义:钉点等几秒 > 基地
     整局裸奔);已有塔(含在途)或 target >0 → 原值不动。
+    O373-②a(o372 三局 7 次 F2 注册 target=0 尸检):在途豁免收窄
+    口径合同 —— cannons_in_flight 必须是「距本基 <15 格且派工
+    工人存活」的局部口径(调用方 _in_flight_near;全图在途/工人
+    已死的残留条目不算数)。在途塔黄了(订单取消/工人死/被拽走
+    闲置)由调用方清 tracker 台账,清后本函数当帧抬 1 补注册。
     """
     if target == 0 and (cannons_ready + cannons_in_flight) == 0:
         return 1
@@ -5066,7 +5071,24 @@ def fb_latch_pin_allowed(
     return second_base_dealt and not nexus_hold_active
 
 
-def fb_latch_yields_first_cannon(new_base_cannon_missing: bool) -> bool:
+def fb_latch_trigger_gated(townhalls: int) -> bool:
+    """O373-③a(o372b g3 实证):FB latch 触发门 —— 单矿局不触发。
+    纯逻辑,可单测。
+
+    o372b g3 实证:387.3s FB fund-first latch 在矿够 Nexus 时抽走
+    475 矿,二矿派工 4 轮失败拖到 526.3s(420s 仍单矿)—— latch
+    与首扩抢同一笔矿,latch 先攒先钉,Nexus 永远差一口气。二矿
+    Nexus 无实体无在建(townhalls 含在建口径 <2)→ latch 不触发;
+    Nexus 开工后恢复常态(钉点先后另受 O370-②a/O373-③b 仲裁)。
+    """
+    return townhalls >= 2
+
+
+def fb_latch_yields_first_cannon(
+    new_base_cannon_missing: bool,
+    minerals: float = 0.0,
+    reserve: float = 400.0,
+) -> bool:
     """O372-①b(o371b g1 尸检):FB latch × 新矿首塔专款互斥判据。
     纯逻辑,可单测。
 
@@ -5076,8 +5098,57 @@ def fb_latch_yields_first_cannon(new_base_cannon_missing: bool) -> bool:
     new_base_survival_cannon_ok 保命塔口径,调用方算)→ latch 不
     触发、已激活也暂停钉 FB(150 矿首塔专款优先;首塔立起判据
     自灭,latch 恢复常态)。
+    O373-①b(o372a g3 尸检):资金冗余门 —— 矿 ≥reserve(默认 400
+    =塔 100+FB 300)时不让位,首塔与 FB 二者并行(g3 基金窗开时
+    矿 300 气 522 充足仍让位空转三次实证,302.7/353.3/383.3s)。
     """
-    return new_base_cannon_missing
+    return new_base_cannon_missing and minerals < reserve
+
+
+def fb_yield_deadlock_fuse(
+    yield_since: float | None,
+    now: float,
+    cannon_np_streak: int,
+    timeout: float = 60.0,
+    max_np: int = 3,
+) -> bool:
+    """O373-①a(o372a g3 尸检):让位死锁超时熔断判据。纯逻辑,可单测。
+
+    o372a g3 实证:302.7/353.3/383.3s 三次「新矿首塔未立,latch
+    钉 FB 让位」—— 被让位的二矿首塔因「带电余=0→贴槽水晶」+
+    「O337 派工=no_placement」循环立不起(204.9s 落成→567.1s 才
+    立,晚 362s),让位无任何超时/升级出口,FB 拖到 554.5s(vs
+    基线 377.7s,+177s),舰队全程 0。让位持续 ≥timeout 秒 或 首塔
+    (survival 豁免)派工连续 no_placement ≥max_np 次 → 判首塔链路
+    坏死,调用方令让位自灭、恢复 critical 钉 FB(事件簿记;首塔
+    立起后复位)。
+    """
+    return cannon_np_streak >= max_np or (
+        yield_since is not None and now - yield_since >= timeout
+    )
+
+
+def pylon_rescue_pin_ok(
+    last_pin_at: float,
+    now: float,
+    minerals: float,
+    cooldown: float = 60.0,
+    reserve_after: float = 300.0,
+    pylon_cost: float = 100.0,
+) -> bool:
+    """O373-①c(o372a g3 尸检):O110 贴槽水晶自救冷却判据。
+    纯逻辑,可单测。
+
+    o372a g3 实证:O110 贴槽水晶自救把水晶从 8 钉到 30 根(基线
+    10)≈烧 2000 矿,塔反因 no_money 立不起。同一基地 cooldown
+    秒内不重复钉贴槽水晶(per-base 台账,调用方簿记),且钉后矿
+    不得击穿 FB/塔专款下限(minerals-pylon_cost ≥reserve_after,
+    即矿 ≥400 才钉);last_pin_at 传 -9999 = 本基地从未钉过。
+    """
+    return (
+        now - last_pin_at >= cooldown
+        and minerals - pylon_cost >= reserve_after
+    )
 
 
 def nexus_repin_loop_forced(loop_count: int, max_rounds: int = 1) -> bool:
@@ -5677,6 +5748,23 @@ def fleet_rebuild_watchdog_needed(
     )
 
 
+def fleet_collapse_clock_reset(
+    recovered_since: float | None,
+    now: float,
+    grace: float = 15.0,
+) -> bool:
+    """O373-④a(o372b g1 实证):塌缩计时累计制的清零判据。
+    纯逻辑,可单测。
+
+    o372b g1 实证:舰队 1121s 跌破 2 后短暂回到 2 艘,旧连续制把
+    collapsed_since 清零重计,断档永远攒不满 60s,至终局 70s 零
+    补产。改累计制:回到 ≥max_now 持续 ≥grace 秒才清零(调用方
+    簿记 recovered_since;再度跌破即放弃清零、计时原样累计),
+    短暂假恢复不重置断档计时。
+    """
+    return recovered_since is not None and now - recovered_since >= grace
+
+
 def manual_cannon_anchor(
     nexus_xy: tuple,
     mineral_xy: tuple | None,
@@ -5955,7 +6043,7 @@ def push_enemy_army_gate(
     own_army_supply: float,
     enemy_visible_supply: float,
     enemy_hard_aa: int,
-    supply_ratio: float = 1.5,
+    supply_ratio: float = 1.0,
     max_hard_aa: int = 4,
 ) -> bool:
     """O371-②(o370b 尸检):推进的敌军校验闸。纯逻辑,可单测。
@@ -5966,6 +6054,11 @@ def push_enemy_army_gate(
     army supply ×supply_ratio(量级不送死)且 敌硬对空(维京/
     腐化/凤凰/飞蛇,调用方 _HARD_AA 口径)<max_hard_aa(舰队不
     被点名)。敌可见 0(被榨干/迷雾收割)自然过闸(0 ≤ 任何)。
+    O373-⑥(o372a g1 实证):supply_ratio 1.5→1.0,并入 O302 出发
+    闸 —— g1 舰队 5 于 562.9s 顶波出击离家,3 秒后敌 46 supply
+    波进门,三矿→二矿→主基连掉(×1.5 时 own≥31 即放行);出发
+    判据收紧为「敌可见 supply ≤ 我方 army supply」,与 advantage/
+    full_pop 闸合并单判(_army_gate_ok),不双判。
     """
     return (
         enemy_visible_supply <= own_army_supply * supply_ratio
@@ -5995,6 +6088,22 @@ def push_commit_aa_retreat(
     return (
         enemy_hard_aa + (starport_aa_credit if starport_seen else 0)
     ) >= max_hard_aa
+
+
+def zerg_aa_exemption_capped(
+    corruptor_broodlord_visible: int,
+    cap: int = 8,
+) -> bool:
+    """O373-⑤(o372b g1 实证):zerg AA 豁免上限判据。纯逻辑,可单测。
+
+    o372b g1 实证:884.2s 唯一推进后蹲守不还,1117s 撞 20 腐化
+    +4 大龙团灭 —— commit 期 zerg 豁免(O371-②/O372-⑤ 教义:
+    O302 黄金窗自带腐化闸)零对空重评兜底,腐化+大龙无上限膨胀。
+    commit 期可见 CORRUPTOR+BROODLORD ≥cap → 豁免封顶,即便
+    zerg 也走 push_commit_aa_retreat 重评撤蹲;cap 以下原豁免
+    不动(黄金窗打法一行不变)。
+    """
+    return corruptor_broodlord_visible >= cap
 
 
 def cyber_core_np_default_fallback(streak: int, threshold: int = 2) -> bool:

@@ -10484,3 +10484,61 @@ Nexus/FB);③ SG ≤300s;④ 停气触发后 30s 内气增长压
 - F2 注册事件日志对分矿仍印主基 target(历史遗留),真实分矿注册值是 _exp_cannons,下轮尸检读 target=0 需注意。
 - O372-④ 的 90s 节流同时节流补产动作(与 O357-④「只节流言」规约有意偏离,注释已注明)。
 - O372-⑤ 星港预警 +2 的权值可能需要实战校准。
+
+
+## o372 结果(VH Terran Power 0/3 回落 + VH Zerg Rush 1/3 回水位)+ O372 六验收判定(①让位死锁实锤回归)+ O373(让位死锁三刀+F2 豁免收口+latch×首扩互斥+watchdog 双孔封堵+zerg AA 豁免上限+O302 出发闸)
+
+**日期**:2026-08-20
+
+### o372 结果
+
+- o372a carrier vs VH Terran Power:0/3(上轮 1/3,未保持)。
+- o372b carrier vs VH Zerg Rush:1/3(g2 胜 1307s,回到水位,上轮方差判决成立)。
+- **总目标盘点**:VH Zerg Power/Rush 打穿、Timing 封存;Terran Power 1/6(破零后回落);Terran Rush/Timing 未测。
+
+### O372 六验收判定(本轮验证对象)
+
+- O372-① F2 target=0 修复+首塔兜底+latch 互斥 → **验收① 六局五违例(最差项)且①自身实锤回归**(详尸检见下);f2_survival_floor 在途塔豁免漏洞:注册瞬间有在途塔使地板空转,在途塔黄了无人补注册(7 次分矿注册全 target=0)。
+- O372-② FB 重建通道 → 零触发(o372b g1 有一次 32s 快速重建 514拆→546落 ✓)。
+- O372-③ 主基电力预留 → ✓ 零「带电余=0」停滞(停滞全 no_money)。
+- O372-④ 舰队重建 watchdog → **双孔暴露**:o372b g1 跌破 2 至终局 70s 零补产((a) 短暂回 2 重置 collapsed_since;(b) can_afford 静默跳过);zerg lane 三局「O372」前缀事件 0 条。
+- O372-⑤ 推进 AA 重评 → 零误撤(zerg 豁免生效)。
+- **验收⑥:Terran 0/3 未保持 ✗;Zerg Rush 1/3 ✓**。
+
+### O372-① 让位死锁(实锤回归,两 lane 尸检一致)
+
+- o372a g3 事件簿:302.7/353.3/383.3s 三次「新矿首塔未立,latch钉FB让位」——每次基金窗开(矿300气522充足)就让位,循环空转;让位 elif 排在 critical 钉FB 之前,无任何超时/升级出口。
+- 被让位的二矿首塔因「带电余=0→贴槽水晶」+「O337派工=no_placement」循环,二矿落成 204.9s → 567.1s 才立(晚 362s)。
+- FB 554.5s vs 基线 377.7s(+177s),舰队全程 0,577.7s 被 36 地面推平。
+- 附带:O110 贴槽水晶自救把水晶从 8 钉到 30 根(基线 10)≈烧 2000 矿,塔反因 no_money 立不起。
+- 其余四项全部无罪(零误触发);Terran 0/3 = 1 局真回归 + 2 局基线策略短板(600s 转航母撞 560-570s MM timing——E10 判非 rush 走风暴主C,转型点太晚,既有缺陷非本轮引入)。
+- FB latch×首扩互撞(o372b g3):387.3s latch 抽走 475 矿,二矿拖 526.3s;且 O370 仲裁判了让位 FB 仍经非 latch 通道落地。
+
+### o372b 胜局(g2)配方满格复现
+
+- 农 72 ✓、6 矿 ✓、舰队峰 27(4 航母+23 暴风)✓、O302 十五连推(875.3s 起)→ 1307s 胜;科技链全面晚 ~200s(SG 446/FB 570/首航母 783)但防御型 Zerg 局可接受。
+- 两负死因一致:舰队规模不足(峰 6-7)+三矿裸奔,敌 890-1080s 腐化 14-20+大龙 4-5 成型即无解。
+
+### O373 落地(下一轮验证对象,六项,单测 803→808 绿,冒烟过)
+
+1. **让位死锁三刀**:fb_yield_deadlock_fuse(让位 ≥60s 或首塔 no_placement ≥3 → 熔断恢复 critical 钉 FB);冗余门(矿 ≥400 不让位);pylon_rescue_pin_ok(per-base 60s 冷却+矿 ≥400 才钉,三处贴槽水晶共用台账)。
+2. **f2_survival_floor 豁免收口**:在途塔黄了(工人死/被拽走)即清台账补注册+per-base 事件;告警 age 从 Nexus 落成分矿守卫首帧起算(修晚 68s)。
+3. **latch×首扩互斥+通道收口**:fb_latch_trigger_gated(townhalls 含在建 <2 不触发);_o373_fb_pin_yield 仲裁统一出口,_dispatch_structure 入口对让位期 FLEETBEACON 一律 nexus_yield(O110/O360 超时等非 latch 通道全堵)。
+4. **watchdog 双孔封堵**:fleet_collapse_clock_reset(回 ≥2 持续 ≥15s 才清零,累计制);「O373:舰队断档但无钱」30s 节流事件不静默。
+5. **zerg AA 豁免上限**:zerg_aa_exemption_capped(commit 期可见 CORRUPTOR+BROODLORD ≥8 即便 zerg 也撤蹲)。
+6. **O302 出发闸**:push_enemy_army_gate supply_ratio 1.5→1.0(敌可见 ≤ 我方才出发),与 advantage/full_pop 合并单判;既有测试 test_full_pop_all_in 语义相应更新(敌 150>139 改判蹲守)。
+
+### 本轮 bench 验收口径
+
+① 零让位死锁(≤60s 或矿 ≥400 不让);② F2 注册零 target=0;③ 单矿局 FB 不抢 Nexus;④ 断档无钱有事件;⑤ zerg commit 期腐化+大龙 ≥8 撤蹲;⑥ 零顶波出击;⑦ Terran ≥1/3 恢复+Rush ≥1/3 保持。
+
+### 下轮安排
+
+- lane1 o373a:VH Terran Power×3(恢复验证)。
+- lane2 o373b:VH Zerg Rush×3(回归保险)。
+
+**遗留风险(记入)**:
+
+- O373-③a 触发门对重建 latch 一并生效:二矿被拆回单矿且 FB 待重建时,latch 要等重新开矿才触发(Nexus 优先教义的必然推论),若 bench 出现该形态回归可再议。
+- O307 撤开矿抖动、O364/O365 循环欠账未动。
+- Terran 转型点(600s 转航母撞 560-570s MM timing)是策略层欠账,下轮候选。

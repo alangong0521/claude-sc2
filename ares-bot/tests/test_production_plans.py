@@ -159,6 +159,11 @@ from bot.production_plans import (  # noqa: E402
     sg_power_reserve_needed,
     fleet_rebuild_watchdog_needed,
     push_commit_aa_retreat,
+    fleet_collapse_clock_reset,
+    fb_latch_trigger_gated,
+    fb_yield_deadlock_fuse,
+    pylon_rescue_pin_ok,
+    zerg_aa_exemption_capped,
     fleet_formed_release_rush,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -5002,11 +5007,15 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(timing_defense_chain_active("protoss", "timing"))
 
     def test_push_enemy_army_gate(self):
-        # O371-②:敌可见 supply ≤ 我方 ×1.5 且 敌硬对空 <4 才推
+        # O371-② + O373-⑥:敌可见 supply ≤ 我方 ×1.0(O373-⑥ 由
+        # ×1.5 收紧,兼任 O302 出发闸)且 敌硬对空 <4 才推
         # o370b g3 档:fleet=4(army ~20)撞敌 47 supply → 否决
         self.assertFalse(push_enemy_army_gate(20.0, 47.0, 0))
-        # 量级达标 + 对空稀薄 → 放行
-        self.assertTrue(push_enemy_army_gate(40.0, 47.0, 3))
+        # O373-⑥(o372a g1 档):own 40 撞敌 47 —— ×1.5 旧闸放行
+        # (47≤60)顶波出击,×1.0 新闸否决(47>40)
+        self.assertFalse(push_enemy_army_gate(40.0, 47.0, 3))
+        # 量级达标(敌 ≤ 我)+ 对空稀薄 → 放行
+        self.assertTrue(push_enemy_army_gate(47.0, 47.0, 3))
         # o370b g2 档:敌 11 维京 vs 我 5 风暴 → 对空闸否决
         self.assertFalse(push_enemy_army_gate(40.0, 30.0, 11))
         self.assertFalse(push_enemy_army_gate(40.0, 30.0, 4))
@@ -5030,8 +5039,13 @@ class TestO365Fixes(unittest.TestCase):
         self.assertEqual(f2_survival_floor(0, 0, 0), 1)
         # 有就绪塔 → 不动(回归常规纪律)
         self.assertEqual(f2_survival_floor(0, 1, 0), 0)
-        # 有在途塔 → 不动(首塔已在路上,不重复征用)
+        # 有在途塔 → 不动(首塔已在路上,不重复征用);O373-②a
+        # 收窄合同:第三参必须是「距本基 <15 格且派工工人存活」
+        # 口径(_in_flight_near),全图在途/死亡工人残留条目不算
         self.assertEqual(f2_survival_floor(0, 0, 1), 0)
+        # O373-②b:在途塔黄了(调用方清 tracker 后 in_flight=0)
+        # → 当帧抬 1 补注册(o372 三局 7 次注册 target=0 档)
+        self.assertEqual(f2_survival_floor(0, 0, 0), 1)
         # target >0 → 原值不动(常态/让位语义不变)
         self.assertEqual(f2_survival_floor(3, 0, 0), 3)
         self.assertEqual(f2_survival_floor(2, 2, 0), 2)
@@ -5042,6 +5056,39 @@ class TestO365Fixes(unittest.TestCase):
         self.assertTrue(fb_latch_yields_first_cannon(True))
         # 首塔已立(含在途)→ 不让位,latch 恢复常态
         self.assertFalse(fb_latch_yields_first_cannon(False))
+        # O373-①b:资金冗余门 —— 矿 ≥400(塔100+FB300)时不让位,
+        # 二者并行(o372a g3 矿300气522充足仍让位空转档)
+        self.assertFalse(fb_latch_yields_first_cannon(True, 400.0))
+        self.assertFalse(fb_latch_yields_first_cannon(True, 522.0))
+        # 矿 <400 → 让位维持(首塔专款优先原语义)
+        self.assertTrue(fb_latch_yields_first_cannon(True, 399.9))
+        self.assertTrue(fb_latch_yields_first_cannon(True, 95.0))
+
+    def test_fb_yield_deadlock_fuse(self):
+        # O373-①a:熔断触发一 —— 让位持续 ≥60s(o372a g3 让位
+        # 302.7/353.3/383.3s 循环空转、首塔 362s 立不起档)
+        self.assertTrue(fb_yield_deadlock_fuse(300.0, 360.0, 0))
+        # <60s → 不熔断(正常让位窗)
+        self.assertFalse(fb_yield_deadlock_fuse(300.0, 359.9, 0))
+        # 未在让位(None)→ 不熔断
+        self.assertFalse(fb_yield_deadlock_fuse(None, 999.0, 0))
+        # 熔断触发二 —— 首塔 survival 派工连续 no_placement ≥3
+        # (g3「带电余=0→贴槽水晶」+「O337=no_placement」循环档)
+        self.assertTrue(fb_yield_deadlock_fuse(None, 100.0, 3))
+        self.assertTrue(fb_yield_deadlock_fuse(300.0, 310.0, 5))
+        # 连击 <3 且让位 <60s → 不熔断
+        self.assertFalse(fb_yield_deadlock_fuse(300.0, 310.0, 2))
+
+    def test_pylon_rescue_pin_ok(self):
+        # O373-①c:水晶自救冷却 —— 同基地 60s 内不重复钉(o372a g3
+        # 水晶 8→30 根 ≈烧 2000 矿档)
+        self.assertFalse(pylon_rescue_pin_ok(100.0, 159.9, 1000.0))
+        self.assertTrue(pylon_rescue_pin_ok(100.0, 160.0, 1000.0))
+        # 从未钉过(-9999)→ 放行(矿够时)
+        self.assertTrue(pylon_rescue_pin_ok(-9999.0, 50.0, 500.0))
+        # 矿专款下限:钉后矿 <300(即矿 <400)→ 不钉
+        self.assertFalse(pylon_rescue_pin_ok(-9999.0, 50.0, 399.9))
+        self.assertTrue(pylon_rescue_pin_ok(-9999.0, 50.0, 400.0))
 
     def test_fb_rebuild_latch_needed(self):
         # O372-②:重建触发 —— FB 曾落成+实体归零(被拆)+SG 就绪
@@ -5067,6 +5114,32 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(sg_power_reserve_needed(0, 0))
         # 簿记拿不到槽(99,99,-1)→ 不触发
         self.assertFalse(sg_power_reserve_needed(99, 99))
+
+    def test_fb_latch_trigger_gated(self):
+        # O373-③a:触发门 —— 单矿局(townhalls 含在建 <2)不触发
+        # latch(o372b g3 387.3s latch 抽走 475 矿、二矿拖到 526.3s
+        # 档);Nexus 开工(≥2)恢复常态
+        self.assertFalse(fb_latch_trigger_gated(1))
+        self.assertTrue(fb_latch_trigger_gated(2))
+        self.assertTrue(fb_latch_trigger_gated(3))
+
+    def test_fleet_collapse_clock_reset(self):
+        # O373-④a:累计制清零 —— 回到 ≥2 持续 ≥15s 才清零(o372b
+        # g1 短暂回到 2 艘重置 collapsed_since、70s 零补产档)
+        self.assertTrue(fleet_collapse_clock_reset(100.0, 115.0))
+        # 恢复 <15s(假恢复)→ 不清零,断档计时原样累计
+        self.assertFalse(fleet_collapse_clock_reset(100.0, 114.9))
+        # 未在恢复观察(None,仍 <2)→ 不清零
+        self.assertFalse(fleet_collapse_clock_reset(None, 999.0))
+
+    def test_zerg_aa_exemption_capped(self):
+        # O373-⑤:zerg 豁免上限 —— commit 期可见腐化+大龙 ≥8
+        # 即便 zerg 也撤蹲(o372b g1 撞 20 腐化+4 大龙团灭档)
+        self.assertTrue(zerg_aa_exemption_capped(24))
+        self.assertTrue(zerg_aa_exemption_capped(8))
+        # <8 → 豁免维持(O302 黄金窗打法不变)
+        self.assertFalse(zerg_aa_exemption_capped(7))
+        self.assertFalse(zerg_aa_exemption_capped(0))
 
     def test_fleet_rebuild_watchdog_needed(self):
         # O372-④:断档判定 —— 曾 ≥3 掉到 <2 持续 >60s+FB 就绪+

@@ -154,8 +154,10 @@ class TestCarrierPushGate(unittest.TestCase):
         self.assertEqual(calls, [25])
 
     def test_full_pop_all_in_pushes_despite_enemy_lead(self):
-        # O70(司令观察):199/200+5000 存款 → 敌 supply 领先(150 vs 我方 60)也推
-        mgr = self._fake(20, [], 150.0)
+        # O70(司令观察):199/200+5000 存款 → 敌 supply 接近(130 vs
+        # 我方 139,fleet=7 <8 时 advantage margin 15 不够)也推,
+        # 跳过 supply 优势检查(full_pop 是唯一放行理由)。
+        mgr = self._fake(7, [], 130.0)
         mgr.ai.supply_used = 199.0
         mgr.ai.minerals = 5000
         enemy_base = SimpleNamespace(position=Point2((150.0, 150.0)))
@@ -165,6 +167,15 @@ class TestCarrierPushGate(unittest.TestCase):
         target = CombatManager.attack_target.fget(mgr)
         self.assertEqual(target, enemy_base.position)
         self.assertTrue(mgr._push_committed)
+        # O373-⑥(o372a g1 顶波出击实证):敌 150 > 我方 139 → 即便
+        # 满人口全攻档也不出发(出发闸与 advantage/full_pop 合并
+        # 单判,原 150 用例改判蹲守)
+        mgr2 = self._fake(7, [], 150.0)
+        mgr2.ai.supply_used = 199.0
+        mgr2.ai.minerals = 5000
+        target2 = CombatManager.attack_target.fget(mgr2)
+        self.assertEqual(target2, MAIN)
+        self.assertFalse(mgr2._push_committed)
 
     def test_full_pop_without_bank_still_holds(self):
         # O70:满人口但存款 <1500 → 不触发全攻(换不起血,维持优势判据)

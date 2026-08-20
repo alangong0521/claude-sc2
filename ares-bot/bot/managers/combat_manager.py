@@ -40,6 +40,7 @@ from bot.production_plans import (
     should_push_advantage,
     push_enemy_army_gate,
     push_commit_aa_retreat,
+    zerg_aa_exemption_capped,
     two_base_guard_point,
     main_defense_first,
     zt_golden_window_push,
@@ -582,7 +583,10 @@ class CombatManager(Manager):
             # fleet=4 对敌 47 supply 主动推进(569.5s)纯送;g1 900s
             # 损失风暴×2、g2 敌 11 维京 vs 我 5 风暴(维京 ≥4 风暴
             # 被点名)。「优势推/满人口全攻」路径必须敌可见 supply ≤
-            # 我方 army supply ×1.5 且 敌硬对空 <4;不满足 → 不推进,
+            # 我方 army supply(O373-⑥ 由 ×1.5 收紧,并兼任 O302 出发
+            # 闸:o372a g1 舰队 5 于 562.9s 顶波出击,3 秒后敌 46
+            # supply 波进门连掉三矿;合并单判不双判)且 敌硬对空 <4;
+            # 不满足 → 不推进,
             # 走下方既有热点回防/蹲守锚点(O63/O37 后撤逻辑,不发明
             # 新分支)。两处豁免:① _force_push(O164/O241 舰队成型
             # +timeout 强推,蹲=必输的兜底,g3 的 fleet=4 本就走不到
@@ -607,7 +611,16 @@ class CombatManager(Manager):
             # 锚点(O63 热点/O37 静态锚,不发明新分支);重评间隔内
             # 旗标粘滞,可见性抖动不反复收放。zerg 豁免(同 O371-②
             # 教义:O302 黄金窗是胜局实证打法,自带腐化闸)。
-            if not _opp_is_zerg:
+            # O373-⑤(o372b g1 实证):zerg 豁免加上限 —— g1 蹲守
+            # 不还,1117s 撞 20 腐化+4 大龙团灭(commit 期豁免零对空
+            # 重评兜底);可见腐化+大龙 ≥8(zerg_aa_exemption_capped)
+            # 即便 zerg 也走本重评撤蹲。
+            _zerg_cb = sum(
+                1
+                for u in self.ai.enemy_units
+                if u.type_id in (UnitID.CORRUPTOR, UnitID.BROODLORD)
+            )
+            if not _opp_is_zerg or zerg_aa_exemption_capped(_zerg_cb):
                 if self.ai.time - self._o372_aa_eval_at >= 30.0:
                     self._o372_aa_eval_at = self.ai.time
                     self._o372_aa_retreat = push_commit_aa_retreat(

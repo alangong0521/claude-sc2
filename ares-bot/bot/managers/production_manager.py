@@ -189,6 +189,10 @@ from bot.production_plans import (
     fb_latch_yields_first_cannon,
     sg_power_reserve_needed,
     fleet_rebuild_watchdog_needed,
+    fleet_collapse_clock_reset,
+    fb_latch_trigger_gated,
+    fb_yield_deadlock_fuse,
+    pylon_rescue_pin_ok,
     fleet_formed_release_rush,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -569,6 +573,29 @@ class ProductionManager(Manager):
         self._o372_fleet_peak: int = 0
         self._o372_fleet_collapsed_since: float | None = None
         self._o372_fleet_wd_ts: float = 0.0
+        # O373-④(o372b g1 实证):watchdog 双孔封堵簿记 —— ④a 塌缩
+        # 计时累计制的恢复起点(回到 ≥2 不足 15s 不清零,None=未在
+        # 恢复观察);④b「断档但无钱」事件 30s 节流时刻(不再静默)。
+        self._o372_fleet_recovered_since: float | None = None
+        self._o372_fleet_nomoney_ts: float = 0.0
+        # O373-①(o372a g3 尸检):让位死锁三刀簿记 —— 让位起始戳
+        # (None=未在让位)、熔断旗标(让位 ≥60s 或首塔 no_placement
+        # ≥3 判链路坏死,让位自灭;首塔立起复位)、首塔 survival
+        # 派工 no_placement 连击;__init__ 初始化。
+        self._o373_yield_since: float | None = None
+        self._o373_yield_fused: bool = False
+        self._o373_cannon_np_streak: int = 0
+        # O373-①c(o372a g3 的 30 根水晶实证):O110 贴槽水晶自救
+        # per-base 末次钉点时刻台账(60s 冷却 + 钉后矿 ≥300 专款
+        # 下限;precheck/电力预留三处贴槽水晶共用)。
+        self._o373_pylon_pin_at: dict = {}
+        # O373-②(o372 三局 7 次 F2 注册 target=0 尸检):分矿在途塔
+        # 黄了补注册事件 per-base 30s 节流时刻(只节流言)。
+        self._o373_rereg_last: dict = {}
+        # O373-③b(o372b g3 实证):FB 非 latch 通道封堵旗标 —— O370
+        # 仲裁判让位时每帧置 True,_dispatch_structure 入口统一读
+        # (仲裁结果单一出口,latch 钉点只在放行时调用不受影响)。
+        self._o373_fb_pin_yield: bool = False
         # O369-⑤(o368b g2 实证):塔投资总量闸旗标(F2 段每帧重算;
         # O337 分矿守卫钉点闸读上一帧值)。
         self._o369_cannon_freeze: bool = False
@@ -1074,6 +1101,18 @@ class ProductionManager(Manager):
             for _exp_th in self.ai.townhalls:
                 if _exp_th.position.distance_to(self.ai.start_location) <= 5.0:
                     continue
+                # O373-②c(o372b g1 实测):Nexus 落成台账前移登记 ——
+                # 原登记在 update 尾部 FB 段,受段内闸门影响告警 age
+                # 晚起算 68s;本循环首帧见到就绪 Nexus 即记,④c 告警
+                # age 从真·落成起算。
+                if _exp_th.is_ready:
+                    self._nexus_ready_at.setdefault(
+                        (
+                            round(_exp_th.position.x),
+                            round(_exp_th.position.y),
+                        ),
+                        self.ai.time,
+                    )
                 _cn_near = sum(
                     1
                     for s in self.ai.structures.ready
@@ -1223,6 +1262,15 @@ class ProductionManager(Manager):
                         ),
                         survival_exempt=_surv_exempt,
                     )
+                    # O373-①a(o372a g3 尸检):首塔(survival 豁免)派工
+                    # no_placement 连击 —— 让位死锁熔断判据 b(≥3 次判
+                    # 首塔链路坏死,见 latch 段 fb_yield_deadlock_fuse);
+                    # dispatched 即清零。
+                    if _surv_exempt:
+                        if _rc == "no_placement":
+                            self._o373_cannon_np_streak += 1
+                        elif _rc == "dispatched":
+                            self._o373_cannon_np_streak = 0
                     self.ai._events.append({
                         "t": round(self.ai.time, 1),
                         "msg": f"O337:分矿塔持续守卫(共{_th_now}基地,派工={_rc})",
@@ -2469,9 +2517,54 @@ class ProductionManager(Manager):
             )
             for th in self.ai.townhalls.ready
         )
+        # O373-①(o372a g3 尸检):让位死锁三刀 ——
+        # a) 超时熔断:g3 三次「首塔未立,latch钉FB让位」(302.7/
+        #    353.3/383.3s)循环空转,被让位的首塔因「带电余=0→贴槽
+        #    水晶」+「O337派工=no_placement」立不起(204.9→567.1s,
+        #    晚 362s),让位无超时/升级出口 → FB 554.5s(vs 基线
+        #    377.7s,+177s),舰队全程 0。让位 ≥60s 或首塔 survival
+        #    派工连续 no_placement ≥3 → 判链路坏死,让位自灭恢复
+        #    critical 钉 FB(fb_yield_deadlock_fuse);首塔立起复位。
+        # b) 资金冗余门:矿 ≥400(塔100+FB300)时不让位,二者并行
+        #    (g3 基金窗开时矿300气522充足仍让位空转实证)—— 门在
+        #    fb_latch_yields_first_cannon 内,下方统一读
+        #    _o373_yield_active。
+        if not _o372_nb_cannon_missing:
+            # 首塔立起 → 熔断台账复位(下轮让位重新计时/连击清零)
+            self._o373_yield_fused = False
+            self._o373_cannon_np_streak = 0
+        _o373_yield_wanted = fb_latch_yields_first_cannon(
+            _o372_nb_cannon_missing, self.ai.minerals
+        )
+        if self._fb_bankrupt and _o373_yield_wanted and (
+            not self._o373_yield_fused
+        ):
+            if self._o373_yield_since is None:
+                self._o373_yield_since = self.ai.time
+        else:
+            self._o373_yield_since = None
+        if not self._o373_yield_fused and fb_yield_deadlock_fuse(
+            self._o373_yield_since, self.ai.time, self._o373_cannon_np_streak
+        ):
+            self._o373_yield_fused = True
+            self._o373_yield_since = None
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": (
+                    f"O373:让位死锁熔断,恢复critical钉FB"
+                    f"(首塔no_placement连击{self._o373_cannon_np_streak})"
+                ),
+            })
+        _o373_yield_active = _o373_yield_wanted and not self._o373_yield_fused
+        # O373-③a(o372b g3 实证):latch 触发门 —— 单矿局(二矿
+        # Nexus 无实体无在建,townhalls 含在建口径 <2)不触发
+        # latch:g3 387.3s latch 在矿够 Nexus 时抽走 475 矿,二矿
+        # 派工 4 轮失败拖到 526.3s(420s 仍单矿)。
         if not self._fb_bankrupt and not self._threat_active and (
             self.ai.time >= self._fb_latch_release_until
-        ) and not fb_latch_yields_first_cannon(_o372_nb_cannon_missing):
+        ) and not _o373_yield_active and fb_latch_trigger_gated(
+            self.ai.townhalls.amount
+        ):
             _latch_missing_s = (
                 self.ai.time - self._fb_missing_since
                 if (
@@ -2524,6 +2617,13 @@ class ProductionManager(Manager):
             self.ai.not_started_but_in_building_tracker(UnitID.FLEETBEACON)
             > 0
         )
+        # O373-③b(o372b g3 实证):仲裁结果统一出口 —— O370 判让位
+        # 期每帧置旗标,_dispatch_structure 入口堵 FB 一切非 latch
+        # 通道(g3 仲裁判了让位,FB 仍经 O110 自救等非 latch 通道
+        # 落地实证);latch 钉点只在仲裁放行分支调用,天然不受影响。
+        self._o373_fb_pin_yield = not fb_latch_pin_allowed(
+            _o370_second_base_dealt, self._o364_nexus_fund_hold()
+        )
         if (
             self._fb_bankrupt
             and _fb_entities_now == 0
@@ -2539,10 +2639,11 @@ class ProductionManager(Manager):
                             "(非latch通道)"
                         ),
                     })
-            elif fb_latch_yields_first_cannon(_o372_nb_cannon_missing):
+            elif _o373_yield_active:
                 # O372-①b(o371b g1 实证):新矿首塔未立,latch 钉 FB
                 # 让位 —— 150 矿首塔专款优先(触发闸同口径互斥;
-                # 30s 节流只节流言)。
+                # 30s 节流只节流言)。O373-①:让位死锁熔断/矿≥400
+                # 冗余门已在 _o373_yield_active 内合成。
                 if event_throttle_ok(self.ai.time, self._o370_latch_inflight_ts):
                     self._o370_latch_inflight_ts = self.ai.time
                     self.ai._events.append({
@@ -3704,12 +3805,66 @@ class ProductionManager(Manager):
                         # 的 120s 新矿窗/O370 冻结钳影响(o371b g3 三矿
                         # target=0 两度被拆、o369b g3 二矿同型实证);
                         # 有塔/在途或 target >0 不动。
+                        # O373-②b(o372 三局 7 次 F2 注册 target=0 尸检):
+                        # 在途塔黄了即清 —— 注册瞬间在途塔把地板顶成 0,
+                        # 在途订单黄了(工人死/被拽走闲置)但 tracker
+                        # 条目残留,_in_flight_near 恒计数 → 地板恒 0
+                        # 无人补注册。借用 _dispatch_structure 的 taken
+                        # 快回收同判据(tracker_entry_stale)清本基 15
+                        # 格内残留条目,清后地板当帧抬 1 补注册(豁免
+                        # 收窄口径合同见 f2_survival_floor docstring)。
+                        _exp_if = self._in_flight_near(
+                            UnitID.PHOTONCANNON, th.position
+                        )
+                        if _exp_if > 0 and _cannons_near.get(th.tag, 0) == 0:
+                            _trk = (
+                                self.manager_mediator.get_building_tracker_dict
+                            )
+                            _purged = 0
+                            for _tag, _info in list(_trk.items()):
+                                if _info[TRACKER_ID] != UnitID.PHOTONCANNON:
+                                    continue
+                                _w = self.ai.workers.find_by_tag(_tag)
+                                if _w is not None and (
+                                    _w.position.distance_to(th.position)
+                                    >= 15.0
+                                ):
+                                    continue
+                                if tracker_entry_stale(
+                                    _w is not None,
+                                    _w.is_idle if _w is not None else False,
+                                    self.ai.time
+                                    - _info[TIME_ORDER_COMMENCED],
+                                ):
+                                    self.manager_mediator.get_building_counter[
+                                        UnitID.PHOTONCANNON
+                                    ] -= 1
+                                    _trk.pop(_tag)
+                                    _purged += 1
+                            if _purged:
+                                _exp_if = self._in_flight_near(
+                                    UnitID.PHOTONCANNON, th.position
+                                )
+                                if event_throttle_ok(
+                                    self.ai.time,
+                                    self._o373_rereg_last.get(
+                                        _reg_key, -9999.0
+                                    ),
+                                ):
+                                    self._o373_rereg_last[_reg_key] = (
+                                        self.ai.time
+                                    )
+                                    self.ai._events.append({
+                                        "t": round(self.ai.time, 1),
+                                        "msg": (
+                                            f"O373:分矿{_reg_key}在途塔黄了,"
+                                            f"清台账×{_purged}补注册"
+                                        ),
+                                    })
                         _exp_cannons = f2_survival_floor(
                             _exp_cannons,
                             _cannons_near.get(th.tag, 0),
-                            self._in_flight_near(
-                                UnitID.PHOTONCANNON, th.position
-                            ),
+                            _exp_if,
                         )
                         # O78c(o78b 实证):分矿防御绕过 ProtossStaticDefence —— 其
                         # static_defence=True 的槽位检索在分矿静默返回 None
@@ -4796,11 +4951,23 @@ class ProductionManager(Manager):
         # 风暴),90s 节流+事件。种族不挂门:只在「成型舰队塌掉
         # ≥60s」开火,ZT 既有通道正常期先于它触发,天然不打架。
         self._o372_fleet_peak = max(self._o372_fleet_peak, _fleet_total_now)
+        # O373-④a(o372b g1 实证):塌缩计时改累计制 —— g1 舰队 1121s
+        # 跌破 2 后短暂回到 2 艘,旧连续制把 collapsed_since 清零
+        # 重计,断档永远攒不满 60s,至终局 70s 零补产。回到 ≥2 只
+        # 进入恢复观察(recovered_since),持续 ≥15s 才清零
+        # (fleet_collapse_clock_reset);再度跌破放弃清零、原样累计。
         if _fleet_total_now < 2:
+            self._o372_fleet_recovered_since = None
             if self._o372_fleet_collapsed_since is None:
                 self._o372_fleet_collapsed_since = self.ai.time
-        else:
-            self._o372_fleet_collapsed_since = None
+        elif self._o372_fleet_collapsed_since is not None:
+            if self._o372_fleet_recovered_since is None:
+                self._o372_fleet_recovered_since = self.ai.time
+            elif fleet_collapse_clock_reset(
+                self._o372_fleet_recovered_since, self.ai.time
+            ):
+                self._o372_fleet_collapsed_since = None
+                self._o372_fleet_recovered_since = None
         _o372_idle_sg = [
             s
             for s in self.manager_mediator.get_own_structures_dict[
@@ -4815,13 +4982,30 @@ class ProductionManager(Manager):
             now=self.ai.time,
             fb_ready=self._fb_entities_now > 0,
             idle_ready_sg=len(_o372_idle_sg),
-        ) and event_throttle_ok(self.ai.time, self._o372_fleet_wd_ts, 90.0):
+        ):
             _o372_train = (
                 UnitID.CARRIER
                 if self.ai.can_afford(UnitID.CARRIER)
                 else (UnitID.TEMPEST if self.ai.can_afford(UnitID.TEMPEST) else None)
             )
-            if _o372_train is not None:
+            if _o372_train is None:
+                # O373-④b(o372b g1 实证):断档但无钱不再静默 —— g1
+                # can_afford 不满足时静默跳过,败局永远静默;30s 节流
+                # 发事件(只节流言),尸检直接可读断档时长与银行。
+                if event_throttle_ok(
+                    self.ai.time, self._o372_fleet_nomoney_ts, 30.0
+                ):
+                    self._o372_fleet_nomoney_ts = self.ai.time
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": (
+                            f"O373:舰队断档但无钱(峰值"
+                            f"{self._o372_fleet_peak},现{_fleet_total_now},"
+                            f"断档{self.ai.time - self._o372_fleet_collapsed_since:.0f}s,"
+                            f"矿{self.ai.minerals:.0f},气{self.ai.vespene:.0f})"
+                        ),
+                    })
+            elif event_throttle_ok(self.ai.time, self._o372_fleet_wd_ts, 90.0):
                 _o372_idle_sg[0].train(_o372_train)
                 self._o372_fleet_wd_ts = self.ai.time
                 self.ai._events.append({
@@ -6511,7 +6695,19 @@ class ProductionManager(Manager):
                         self._fb_safe_anchor() if sid == fb else None
                     ),
                 )
-                if self.ai.can_afford(UnitID.PYLON):
+                # O373-①c(o372a g3 的 30 根水晶实证):贴槽水晶自救
+                # 冷却 —— 同一基地 60s 内不重复钉,且钉后矿不得击穿
+                # FB/塔专款下限 300(矿 ≥400 才钉;g3 水晶 8→30 根
+                # ≈烧 2000 矿、塔反因 no_money 立不起实证)。
+                _pyl_bk = (
+                    round(self.ai.start_location.x),
+                    round(self.ai.start_location.y),
+                )
+                if self.ai.can_afford(UnitID.PYLON) and pylon_rescue_pin_ok(
+                    self._o373_pylon_pin_at.get(_pyl_bk, -9999.0),
+                    self.ai.time,
+                    self.ai.minerals,
+                ):
                     # O113-①(o112 局2/局5 实证):贴最近的空闲 3x3 槽落水晶
                     # —— 簿记实锤「余20/总25,槽没占满,是带电槽为零」;
                     # 泛泛补水晶落点不覆盖空闲槽,自救空转两轮
@@ -6519,6 +6715,7 @@ class ProductionManager(Manager):
                         self._free_3x3_slots_at(self.ai.start_location),
                         (self.ai.start_location.x, self.ai.start_location.y),
                     )
+                    self._o373_pylon_pin_at[_pyl_bk] = self.ai.time
                     self.ai.register_behavior(
                         BuildStructure(
                             self.ai.start_location,
@@ -9079,6 +9276,13 @@ class ProductionManager(Manager):
         借出即从 _gas_stopped_tags 摘除,防 rush 解除的回气循环把建造工
         从建造点拽走)。失败环节由调用方写事件(下轮尸检直接读)。
         """
+        # O373-③b(o372b g3 实证):仲裁判让位期堵 FB 非 latch 通道
+        # —— O370 判了让位,FB 仍经 O110 自救/O360 超时强制等非
+        # latch 通道落地(全部过本函数);入口统一读仲裁旗标
+        # (_o373_fb_pin_yield,latch 段每帧重算),latch 钉点只在
+        # 仲裁放行分支调用,不受影响。
+        if sid == UnitID.FLEETBEACON and self._o373_fb_pin_yield:
+            return "nexus_yield"
         # O354-④(o353 五局尸检):静态防御封顶 —— 败局塔峰值 8-13 座
         # (≈1950 矿 ≈ 5 艘航母),舰队 ≥4 后仍在补塔。t≥600 且舰队
         # (TEMPEST+CARRIER)≥4 且全局塔 ≥8 → 不再新钉塔(返回 "capped");
@@ -9192,11 +9396,22 @@ class ProductionManager(Manager):
             )
             _pw, _fr, _ = self._slot_counts_at(base_location, _pc_size)
             if power_precheck_needed(_pw, _fr):
-                if self._in_flight_near(UnitID.PYLON, base_location) == 0:
+                # O373-①c(o372a g3 的 30 根水晶实证):贴槽水晶 per-base
+                # 60s 冷却 + 钉后矿 ≥300 专款下限(矿 <400 不钉,别把
+                # FB/塔专款烧成水晶);在途守卫同 O368-③ 原语义。
+                _pw_bk = (round(base_location.x), round(base_location.y))
+                if self._in_flight_near(
+                    UnitID.PYLON, base_location
+                ) == 0 and pylon_rescue_pin_ok(
+                    self._o373_pylon_pin_at.get(_pw_bk, -9999.0),
+                    self.ai.time,
+                    self.ai.minerals,
+                ):
                     _pw_anchor = pick_slot_anchor(
                         self._free_3x3_slots_at(base_location, _pc_size),
                         (base_location.x, base_location.y),
                     )
+                    self._o373_pylon_pin_at[_pw_bk] = self.ai.time
                     self._dispatch_structure(
                         UnitID.PYLON, base_location,
                         closest_to=(
@@ -9773,6 +9988,14 @@ class ProductionManager(Manager):
             )
             if sg_power_reserve_needed(_pw, _fr) and (
                 self._in_flight_near(UnitID.PYLON, _pc_base) == 0
+            # O373-①c(o372a g3 的 30 根水晶实证):电力预留贴槽水晶
+            # 同冷却 —— per-base 60s + 钉后矿 ≥300 专款下限。
+            ) and pylon_rescue_pin_ok(
+                self._o373_pylon_pin_at.get(
+                    (round(_pc_base.x), round(_pc_base.y)), -9999.0
+                ),
+                self.ai.time,
+                self.ai.minerals,
             ):
                 _pw_anchor = pick_slot_anchor(
                     self._free_3x3_slots_at(
@@ -9780,6 +10003,9 @@ class ProductionManager(Manager):
                     ),
                     (_pc_base.x, _pc_base.y),
                 )
+                self._o373_pylon_pin_at[
+                    (round(_pc_base.x), round(_pc_base.y))
+                ] = self.ai.time
                 self._dispatch_structure(
                     UnitID.PYLON, _pc_base,
                     closest_to=(
