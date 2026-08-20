@@ -4891,6 +4891,7 @@ def new_base_no_cannon_alarm(
 def fb_safe_anchor(
     slots: list,
     ramp_xy: tuple[float, float],
+    occupied_fallback: bool = False,
 ) -> tuple[float, float] | None:
     """O366-①b(o365 双 lane 尸检):FB 落点保护锚 —— 主基塔阵后方。
     纯逻辑,可单测。
@@ -4903,9 +4904,17 @@ def fb_safe_anchor(
     加电力标注,与 _dispatch_pin_reanchor 同口径);无带电空闲槽 →
     None(调用方退回默认落位,别为落点把 FB 卡死)。重建同口径
     (每次派工都过本判据)。
+    O371-④(o370a g3 实证):occupied_fallback 保底落点 —— 无带电
+    「空闲」槽时降级到「带电但非空闲」槽(force place 尝试,
+    placement solver 在锚点周边自找空位)。g3 分矿试建禁用后
+    O110 自救 ×8 全部落空、FB 整局悬空 = 科技链全断,落点判据
+    不得成为 FB 的整局否决项;全无带电槽仍 None(退回默认落位)。
     """
     rx, ry = ramp_xy
     cands = [(x, y) for x, y, free, powered in slots if free and powered]
+    if not cands and occupied_fallback:
+        # O371-④:降级分支 —— 带电但非空闲槽(同取离坡口最远)
+        cands = [(x, y) for x, y, free, powered in slots if powered]
     if not cands:
         return None
     return max(cands, key=lambda s: (s[0] - rx) ** 2 + (s[1] - ry) ** 2)
@@ -5014,7 +5023,7 @@ def fb_latch_pin_allowed(
     return second_base_dealt and not nexus_hold_active
 
 
-def nexus_repin_loop_forced(loop_count: int, max_rounds: int = 3) -> bool:
+def nexus_repin_loop_forced(loop_count: int, max_rounds: int = 1) -> bool:
     """O370-②b(o369a g3 实证):Nexus「条目消失无实体」死循环
     计数判据。纯逻辑,可单测。
 
@@ -5024,6 +5033,10 @@ def nexus_repin_loop_forced(loop_count: int, max_rounds: int = 3) -> bool:
     冷却→重钉」空转。循环 >max_rounds 轮 → 调用方强制 critical
     直钉(EC 通道 max_on_route=99,清保险丝重钉冷却绕开 30s
     空等),「消失→重钉」60s 内收敛;成交即清零(调用方)。
+    O371-③(o370a g3 实证):max_rounds 3→1(第 2 轮消失即强制
+    直钉)—— o370a g3 二矿死循环 4 轮 279.6→409.8s=130s(验收
+    ≤60s),旧阈第 4 轮才强制、每轮 ~30s 保险丝重钉冷却空等;
+    第 2 轮即清冷却 critical 直钉,收敛 ~60s(2 轮 ×~30s)。
     """
     return loop_count > max_rounds
 
@@ -5798,6 +5811,73 @@ def cyber_core_build_allowed(
     runner_core_ahead=False,兜底钉点恢复。
     """
     return not present_or_pending and not runner_core_ahead
+
+
+def expansion_defense_guard_active(opp_race: str, ai_build: str) -> bool:
+    """O371-①a(o370b Terran Power 0/3 尸检):分矿防御持续守卫
+    (O323/O337/O363 整块)的种族门。纯逻辑,可单测。
+
+    o370b 实证:守卫整段包在「zerg and (timing,rush)」门内,打
+    Terran 时事件簿对照 o370a→o370b = O337 26→0、O363 19→0、
+    O329 7→0、O118 26→0、O216 13→0、O98 3→0,三局三矿落成后
+    裸奔 60-80s 被 ~495-510s 首波(25-30 supply M&M+坦克)准点
+    收走。去门:zerg timing/rush 返回值与原门完全一致(行为
+    不变,只放宽),terran 全 build 生效;protoss 尚无尸检证据,
+    不放宽。
+    """
+    return (opp_race == "zerg" and ai_build in ("timing", "rush")) or (
+        opp_race == "terran"
+    )
+
+
+def timing_defense_chain_active(opp_race: str, ai_build: str) -> bool:
+    """O371-①b/c(o370b 尸检):zerg-timing 防御钉点链(O329 分矿
+    预置塔链/O333 forge 钉点/O349 forge 看门狗/O338 GW2)的种族
+    门。纯逻辑,可单测。
+
+    o370b 实证:O329 预置塔链 7→0;forge 兜底静默(forge 晚至
+    168-217s vs zerg 局 92s);O338 GW2 静默(Terran 局零地面填线,
+    M&M 波到脸无兵可填)。同 O371-①a 去门:zerg timing 返回值
+    与原门完全一致,terran 全 build 生效;zerg rush/protoss 无
+    证据,不放宽。
+    """
+    return (opp_race == "zerg" and ai_build == "timing") or opp_race == "terran"
+
+
+def push_enemy_army_gate(
+    own_army_supply: float,
+    enemy_visible_supply: float,
+    enemy_hard_aa: int,
+    supply_ratio: float = 1.5,
+    max_hard_aa: int = 4,
+) -> bool:
+    """O371-②(o370b 尸检):推进的敌军校验闸。纯逻辑,可单测。
+
+    o370b g3 实证:fleet=4 对敌 47 supply 主动推进(569.5s),纯送;
+    g1 900s 损失风暴×2、g2 敌 11 维京 vs 我 5 风暴 —— 维京 ≥4
+    时风暴被点名。推进必须同时过两闸:敌可见 supply ≤ 我方
+    army supply ×supply_ratio(量级不送死)且 敌硬对空(维京/
+    腐化/凤凰/飞蛇,调用方 _HARD_AA 口径)<max_hard_aa(舰队不
+    被点名)。敌可见 0(被榨干/迷雾收割)自然过闸(0 ≤ 任何)。
+    """
+    return (
+        enemy_visible_supply <= own_army_supply * supply_ratio
+        and enemy_hard_aa < max_hard_aa
+    )
+
+
+def cyber_core_np_default_fallback(streak: int, threshold: int = 2) -> bool:
+    """O371-⑤(o370a g3 实证):BY watchdog 连续 no_placement 走
+    默认 placement 回退的判据。纯逻辑,可单测。
+
+    o370a g3 实证:BY watchdog 211s no_placement 卡在不换锚死等
+    (O370-④a 阈值 ≥1 让首次失败即走默认槽,O357 换锚重选被
+    短路;默认槽同样是 solver 黑格时永循环)。调用方改序:首次
+    no_placement 立即走 O357 换锚重选;连续 ≥threshold 次
+    no_placement(换锚无候选/黑名单不涨时 streak 兜底)再走
+    O369-④ 默认 placement 回退。
+    """
+    return streak >= threshold
 
 
 def evac_return_gas_stop_remark(worker_tag: int, gas_stopped_tags) -> bool:

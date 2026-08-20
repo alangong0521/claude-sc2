@@ -176,6 +176,9 @@ from bot.production_plans import (
     nexus_repin_loop_forced,
     fb_rescue_expansion_bypass,
     cyber_core_build_allowed,
+    expansion_defense_guard_active,
+    timing_defense_chain_active,
+    cyber_core_np_default_fallback,
     stargate_pin_retry_needed,
     sg_gap_pin_needed,
     new_base_f2_cannon_floor,
@@ -513,6 +516,9 @@ class ProductionManager(Manager):
         self._o365_yield_log_ts: float = 0.0
         # O365-⑤a(o364a g2 实证):BY 芯核 watchdog 事件 30s 节流时刻。
         self._o365_cyber_wd_ts: float = 0.0
+        # O371-⑤(o370a g3 实证):BY watchdog 连续 no_placement 计数
+        # (≥2 走 O369-④ 默认 placement 回退;非 no_placement 即清零)。
+        self._o371_cyber_np_streak: int = 0
         # O365-⑤c(o364b g3 实证):手工锚点 per-base 上次重试时刻
         # (持续重试簿记;原 _o364_anchor_attempts 只记次数)。
         self._o364_anchor_last: dict = {}
@@ -987,9 +993,28 @@ class ProductionManager(Manager):
             self._structure_present_or_pending(UnitID.CYBERNETICSCORE),
             _o370_runner_core_ahead,
         ):
+            # O371-⑤(o370a g3 实证):watchdog no_placement 改序 ——
+            # g3 的 211s no_placement 卡在不换锚死等(O370-④a 阈值
+            # ≥1 让首次失败即走默认槽,O357 换锚重选被短路,默认槽
+            # 同样是 solver 黑格时永循环)。fallback_threshold=2:
+            # 首次 no_placement 立即走 O357 换锚重选(派工每帧在跑,
+            # 不等任何节流);watchdog 侧连续 2 次 no_placement(换锚
+            # 无候选/黑名单不涨时 streak 兜底)再走 O369-④ 默认
+            # placement 回退(cyber_core_np_default_fallback)。
             _cy_rc = self._dispatch_pin_reanchor(
-                UnitID.CYBERNETICSCORE, self.ai.start_location
+                UnitID.CYBERNETICSCORE, self.ai.start_location,
+                fallback_threshold=2,
             )
+            if _cy_rc == "no_placement":
+                self._o371_cyber_np_streak += 1
+                if cyber_core_np_default_fallback(self._o371_cyber_np_streak):
+                    _cy_rc2 = self._dispatch_structure(
+                        UnitID.CYBERNETICSCORE, self.ai.start_location,
+                        critical=True,
+                    )
+                    _cy_rc = f"{_cy_rc}+O371默认回退:{_cy_rc2}"
+            else:
+                self._o371_cyber_np_streak = 0
             if event_throttle_ok(self.ai.time, self._o365_cyber_wd_ts):
                 self._o365_cyber_wd_ts = self.ai.time
                 self.ai._events.append({
@@ -1025,7 +1050,12 @@ class ProductionManager(Manager):
         # fb_fund_exempt,o363a g1 塔被基金窗压到落成后 272s 实证),
         # 资金紧张也至少 1 塔走 critical。
         _th_now = self.ai.townhalls.amount
-        if self._opp_race == "zerg" and self._ai_build in ("timing", "rush"):
+        # O371-①a(o370b Terran Power 0/3 尸检):守卫块去 zerg 门 ——
+        # o370b 三局三矿落成后裸奔 60-80s 被 ~495-510s 首波(25-30
+        # supply M&M+坦克)准点收走(O337/O363 事件全 0)。terran 全
+        # build 生效;zerg timing/rush 经 expansion_defense_guard_active
+        # 返回值与原门完全一致,分支内部逻辑一行未动 = zerg 行为不变。
+        if expansion_defense_guard_active(self._opp_race, self._ai_build):
             for _exp_th in self.ai.townhalls:
                 if _exp_th.position.distance_to(self.ai.start_location) <= 5.0:
                     continue
@@ -1297,8 +1327,10 @@ class ProductionManager(Manager):
         # (否则塔工在分矿干等 forge 落成 80s+,暴露窗太长);落成时的
         # O323-③ 触发会再补第二塔(不重复补电,守卫已在)。
         if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            # O371-①b(o370b 尸检):O329 预置塔链同去门 —— o370b 该链
+            # 事件 7→0,Terran 局分矿裸奔共犯。zerg timing 返回值与原
+            # 门一致(行为不变),terran 全 build 生效。
+            timing_defense_chain_active(self._opp_race, self._ai_build)
             and self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
             and self._structure_present_or_pending(UnitID.FORGE)
             and not getattr(self, "_o329_predef_fired", False)
@@ -4997,8 +5029,11 @@ class ProductionManager(Manager):
         # pending(派工)≠ placed(放置):判据改吃实体(含在建),
         # 放置前 forge 不抢 opener 资金;兜底 t≥75 且矿 ≥200 不变。
         if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            # O371-①c(o370b 尸检):forge 钉点去门 —— o370b Terran 局
+            # forge 晚至 168-217s(vs zerg 局 92s),分矿塔链 tech_not_ready
+            # 静默。zerg timing 返回值与原门一致(行为不变),terran
+            # 全 build 生效(门内 zt_forge_pin_gate/资金门不变)。
+            timing_defense_chain_active(self._opp_race, self._ai_build)
             and zt_forge_pin_gate(
                 gateway_placed=bool(
                     self.manager_mediator.get_own_structures_dict[UnitID.GATEWAY]
@@ -5140,8 +5175,9 @@ class ProductionManager(Manager):
         # >60s 未落成 → 清条目 + 钉点重派(带电自救),30s 节流
         # (O324 runner 看门狗同构)。
         if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            # O371-①c:forge 停滞看门狗同去门(o370b Terran 局 forge
+            # 钉点失败无人清扫的兜底);zerg timing 行为不变。
+            timing_defense_chain_active(self._opp_race, self._ai_build)
             and not any(
                 s.is_ready
                 for s in self.manager_mediator.get_own_structures_dict[UnitID.FORGE]
@@ -5170,8 +5206,10 @@ class ProductionManager(Manager):
         # 零收入死锁不再可能。
         self._pin_deadlock_sweep()
         if (
-            self._opp_race == "zerg"
-            and self._ai_build == "timing"
+            # O371-①c(o370b 尸检):GW2 钉点去门 —— o370b Terran 局
+            # GW2 静默、零地面填线,M&M 波到脸无兵可填(GW2 对 M&M
+            # 填线是命根)。zerg timing 行为不变,terran 全 build 生效。
+            timing_defense_chain_active(self._opp_race, self._ai_build)
             and self.ai.townhalls.amount >= 2
             and (
                 len(
@@ -9175,7 +9213,9 @@ class ProductionManager(Manager):
         )
         return "dispatched"
 
-    def _dispatch_pin_reanchor(self, sid, base_location) -> str:
+    def _dispatch_pin_reanchor(
+        self, sid, base_location, fallback_threshold: int = 1
+    ) -> str:
         """O357-①(o356 尸检):死槽拉黑换锚派工 —— _dispatch_structure
         的钉点包装:critical 派工;no_placement 即把当前锚点(坐标
         取整)加进拉黑集,并在该基地空闲 3x3 槽中按「带电优先、离
@@ -9196,6 +9236,11 @@ class ProductionManager(Manager):
         60s 放弃 critical 钉点(避免每 30s 节流空转刷屏+占调度,
         g2 958.6s 换锚×5 → 986.9/1123.5s 仍失败实证),冷却期
         返回 "cooldown",60s 后重试(槽位随建筑落成释放)。
+        O371-⑤(o370a g3 实证):fallback_threshold 参数 —— O369-④
+        默认槽回退的黑名单阈值(默认 1 = O370-④a 原行为,其他
+        调用方不变);BY watchdog 传 2 = 首次 no_placement 先走
+        O357 换锚重选,二连黑才回退默认槽(修「默认槽黑格时
+        换锚被阈值 1 短路、永不换锚死等」)。
         """
         st = self._o357_reanchor.setdefault(
             sid, {"anchor": None, "blacklist": [], "cooldown_until": 0.0}
@@ -9227,7 +9272,11 @@ class ProductionManager(Manager):
         # 二连黑后进冷却拖到 221s,237s 狗毒爆破塔时没活到 SG;
         # 60s 冷却对 opener 关键链是死等(科技链全停)。forge 已有
         # O351 主基锚、机械台非 opener 关键链,维持原冷却。
-        if reanchor_fallback_default(sid.name, len(st["blacklist"])):
+        # O371-⑤:阈值经 fallback_threshold 传入(默认 1=O370-④a;
+        # BY watchdog 传 2 = 先换锚重选、二连黑才回退)。
+        if reanchor_fallback_default(
+            sid.name, len(st["blacklist"]), threshold=fallback_threshold
+        ):
             _rc2 = self._dispatch_structure(sid, base_location, critical=True)
             if _rc2 == "dispatched":
                 self.ai._events.append({
@@ -9542,8 +9591,13 @@ class ProductionManager(Manager):
             )
             for x, y, free in self._free_3x3_slots_at(self.ai.start_location)
         ]
+        # O371-④(o370a g3 实证):occupied_fallback=True —— 无带电
+        # 空闲槽时降级到带电非空闲槽(force place 尝试),FB 整局
+        # 悬空(O110 自救 ×8 全落空)不得再发生;全无带电槽仍 None
+        # (退回默认落位,原语义)。
         _anchor = fb_safe_anchor(
-            _slots, (_ramp.top_center.x, _ramp.top_center.y)
+            _slots, (_ramp.top_center.x, _ramp.top_center.y),
+            occupied_fallback=True,
         )
         return Point2(_anchor) if _anchor is not None else None
 

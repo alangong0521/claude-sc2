@@ -144,6 +144,10 @@ from bot.production_plans import (  # noqa: E402
     nexus_repin_loop_forced,
     fb_rescue_expansion_bypass,
     cyber_core_build_allowed,
+    expansion_defense_guard_active,
+    timing_defense_chain_active,
+    push_enemy_army_gate,
+    cyber_core_np_default_fallback,
     stargate_pin_retry_needed,
     sg_gap_pin_needed,
     new_base_f2_cannon_floor,
@@ -4763,12 +4767,15 @@ class TestO365Fixes(unittest.TestCase):
         self.assertTrue(fb_latch_pin_allowed(True, False))
 
     def test_nexus_repin_loop_forced(self):
-        # O370-②b:消失→重钉循环 >3 轮 → 强制直钉(o369a g3 的
-        # 8 次循环 9 分钟无二矿档)
+        # O371-③(o370a g3 实证):默认阈 3→1 —— 第 2 轮消失即强制
+        # 直钉(旧阈第 4 轮才强制,4 轮死循环 130s 超验收 ≤60s)
         self.assertFalse(nexus_repin_loop_forced(0))
-        self.assertFalse(nexus_repin_loop_forced(3))
-        self.assertTrue(nexus_repin_loop_forced(4))
+        self.assertFalse(nexus_repin_loop_forced(1))
+        self.assertTrue(nexus_repin_loop_forced(2))
         self.assertTrue(nexus_repin_loop_forced(8))
+        # 显式 max_rounds=3 保留 O370-②b 原语义(o369a g3 档)
+        self.assertFalse(nexus_repin_loop_forced(3, max_rounds=3))
+        self.assertTrue(nexus_repin_loop_forced(4, max_rounds=3))
 
     def test_fb_rescue_expansion_bypass(self):
         # O370-③a:FB 禁用「分矿试建」旁路(o369a g2 无塔分矿
@@ -4941,6 +4948,74 @@ class TestO365Fixes(unittest.TestCase):
             fb_safe_anchor([(10.0, 10.0, True, False)], (0.0, 0.0))
         )
         self.assertIsNone(fb_safe_anchor([], (0.0, 0.0)))
+        # O371-④(o370a g3 FB 整局悬空实证):occupied_fallback 降级
+        # —— 无带电空闲槽时选带电非空闲槽(离坡口最远)
+        occupied = [
+            (10.0, 10.0, False, True),   # 带电被占,离坡口近
+            (45.0, 45.0, False, True),   # 带电被占,离坡口最远
+            (60.0, 60.0, True, False),   # 空闲不带电 → 不选
+        ]
+        self.assertEqual(
+            fb_safe_anchor(occupied, (0.0, 0.0), occupied_fallback=True),
+            (45.0, 45.0),
+        )
+        # 有带电空闲槽时 fallback 不改变原优选
+        self.assertEqual(
+            fb_safe_anchor(slots, (0.0, 0.0), occupied_fallback=True),
+            (40.0, 40.0),
+        )
+        # 全开 fallback 仍无带电槽 → None
+        self.assertIsNone(
+            fb_safe_anchor(
+                [(10.0, 10.0, True, False)], (0.0, 0.0),
+                occupied_fallback=True,
+            )
+        )
+
+    def test_expansion_defense_guard_active(self):
+        # O371-①a(o370b 三局裸奔实证):分矿防御守卫去 zerg 门
+        # zerg timing/rush 与原门完全一致(行为不变)
+        self.assertTrue(expansion_defense_guard_active("zerg", "timing"))
+        self.assertTrue(expansion_defense_guard_active("zerg", "rush"))
+        self.assertFalse(expansion_defense_guard_active("zerg", "power"))
+        # terran 全 build 生效(o370b 死因 = 本门)
+        self.assertTrue(expansion_defense_guard_active("terran", "power"))
+        self.assertTrue(expansion_defense_guard_active("terran", "timing"))
+        # protoss/未知无证据,不放宽
+        self.assertFalse(expansion_defense_guard_active("protoss", "timing"))
+        self.assertFalse(expansion_defense_guard_active("", ""))
+
+    def test_timing_defense_chain_active(self):
+        # O371-①b/c:O329 预置塔链/O333 forge/O349 看门狗/O338 GW2 的门
+        # zerg timing 与原门一致;zerg rush 不放宽(原门本就不含)
+        self.assertTrue(timing_defense_chain_active("zerg", "timing"))
+        self.assertFalse(timing_defense_chain_active("zerg", "rush"))
+        # terran 全 build 生效(forge 168-217s/GW2 静默是 o370b 共犯)
+        self.assertTrue(timing_defense_chain_active("terran", "power"))
+        self.assertTrue(timing_defense_chain_active("terran", "timing"))
+        self.assertFalse(timing_defense_chain_active("protoss", "timing"))
+
+    def test_push_enemy_army_gate(self):
+        # O371-②:敌可见 supply ≤ 我方 ×1.5 且 敌硬对空 <4 才推
+        # o370b g3 档:fleet=4(army ~20)撞敌 47 supply → 否决
+        self.assertFalse(push_enemy_army_gate(20.0, 47.0, 0))
+        # 量级达标 + 对空稀薄 → 放行
+        self.assertTrue(push_enemy_army_gate(40.0, 47.0, 3))
+        # o370b g2 档:敌 11 维京 vs 我 5 风暴 → 对空闸否决
+        self.assertFalse(push_enemy_army_gate(40.0, 30.0, 11))
+        self.assertFalse(push_enemy_army_gate(40.0, 30.0, 4))
+        # 敌可见 0(被榨干/迷雾收割)→ 自然过闸
+        self.assertTrue(push_enemy_army_gate(10.0, 0.0, 0))
+
+    def test_cyber_core_np_default_fallback(self):
+        # O371-⑤:首次 no_placement 先换锚(不回退),连续 ≥2 次才
+        # 走 O369-④ 默认 placement 回退(o370a g3 不换锚死等档)
+        self.assertFalse(cyber_core_np_default_fallback(0))
+        self.assertFalse(cyber_core_np_default_fallback(1))
+        self.assertTrue(cyber_core_np_default_fallback(2))
+        self.assertTrue(cyber_core_np_default_fallback(5))
+        # 自定义阈
+        self.assertTrue(cyber_core_np_default_fallback(1, threshold=1))
 
     def test_fb_arrival_guard_active(self):
         # O366-①c:FB 在建 + 敌地面 >8 → 增防

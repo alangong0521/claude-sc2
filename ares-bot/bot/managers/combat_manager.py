@@ -38,6 +38,7 @@ from bot.production_plans import (
     rally_min_for_verdict,
     rush_defend_base,
     should_push_advantage,
+    push_enemy_army_gate,
     two_base_guard_point,
     main_defense_first,
     zt_golden_window_push,
@@ -571,25 +572,55 @@ class CombatManager(Manager):
                         f"腐化{sum(1 for u in self.ai.enemy_units if u.type_id == UnitID.CORRUPTOR)})"
                     ),
                 })
+            # O371-②(o370b 尸检):推进加敌军校验闸 —— o370b g3 以
+            # fleet=4 对敌 47 supply 主动推进(569.5s)纯送;g1 900s
+            # 损失风暴×2、g2 敌 11 维京 vs 我 5 风暴(维京 ≥4 风暴
+            # 被点名)。「优势推/满人口全攻」路径必须敌可见 supply ≤
+            # 我方 army supply ×1.5 且 敌硬对空 <4;不满足 → 不推进,
+            # 走下方既有热点回防/蹲守锚点(O63/O37 后撤逻辑,不发明
+            # 新分支)。两处豁免:① _force_push(O164/O241 舰队成型
+            # +timeout 强推,蹲=必输的兜底,g3 的 fleet=4 本就走不到
+            # 这条);② zerg 全局(O302 黄金窗是胜局实证的主动压出,
+            # zerg 侧行为一行不变)。
+            _own_army = self.ai.supply_used - self.ai.supply_workers
+            _enemy_vis = self.ai.production_manager._visible_enemy_army_supply()
+            _opp_is_zerg = (
+                _pm_o227 is not None
+                and getattr(_pm_o227, "_opp_race", "") == "zerg"
+            )
+            _army_gate_ok = _opp_is_zerg or push_enemy_army_gate(
+                _own_army, _enemy_vis, _hard_aa
+            )
             if not (
                 (
                     _force_push
-                    or should_push_advantage(
-                        self.ai.supply_used - self.ai.supply_workers,
-                        self.ai.production_manager._visible_enemy_army_supply(),
-                        # O59(o58 实证):航母 ≥6(临界质量)后均势即推 —— 龟到对面
-                        # 也满人口(98 supply)就是 max-vs-max 必输局;
-                        # 趁我方舰队成型、对面未满(60-75 supply)时打。
-                        # O60:临界线按舰队合计(航母+暴风 ≥8)
-                        # O227:临界线随 _push_fleet_need(Zerg Timing 6,其余 8)
-                        margin=0.0 if _fleet_count >= _push_fleet_need else 15.0,
-                    )
-                    # O70(司令观察,t≈1740 实证):接近满人口(≥95%)+存款充足
-                    # (≥1500) → 全力进攻,跳过 supply 优势检查 —— 满人口攒不出
-                    # 更多兵,蹲是纯亏;5000+ 存款换血永远我方赚(对面死一个少一个)。
-                    # 硬对空安全线不动:舰队是产能瓶颈,存款买不回重建时间。
-                    or full_pop_all_in(
-                        self.ai.supply_used, self.ai.supply_cap, self.ai.minerals
+                    or (
+                        _army_gate_ok
+                        and (
+                            should_push_advantage(
+                                _own_army,
+                                _enemy_vis,
+                                # O59(o58 实证):航母 ≥6(临界质量)后均势即推 —— 龟到对面
+                                # 也满人口(98 supply)就是 max-vs-max 必输局;
+                                # 趁我方舰队成型、对面未满(60-75 supply)时打。
+                                # O60:临界线按舰队合计(航母+暴风 ≥8)
+                                # O227:临界线随 _push_fleet_need(Zerg Timing 6,其余 8)
+                                margin=(
+                                    0.0
+                                    if _fleet_count >= _push_fleet_need
+                                    else 15.0
+                                ),
+                            )
+                            # O70(司令观察,t≈1740 实证):接近满人口(≥95%)+存款充足
+                            # (≥1500) → 全力进攻,跳过 supply 优势检查 —— 满人口攒不出
+                            # 更多兵,蹲是纯亏;5000+ 存款换血永远我方赚(对面死一个少一个)。
+                            # 硬对空安全线不动:舰队是产能瓶颈,存款买不回重建时间。
+                            or full_pop_all_in(
+                                self.ai.supply_used,
+                                self.ai.supply_cap,
+                                self.ai.minerals,
+                            )
+                        )
                     )
                 )
                 and carrier_push_safe(_fleet_count, _hard_aa)

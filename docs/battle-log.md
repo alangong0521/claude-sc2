@@ -10363,3 +10363,60 @@ Nexus/FB);③ SG ≤300s;④ 停气触发后 30s 内气增长压
 - 双 BY 只收编 bot 层钉点侧;runner 自身在 bot 已建 BY 后仍执行 core 步的残余风险靠 building_counter 感知兜底。
 - latch 仲裁与 O364 hold 的事件序列需 bench 核对。
 - Rush 胜局首航母系统性偏晚(803-952s)+对手 0 腐化因素,配方余量不大,打穿结论待 Terran 战线铺开后再回归确认。
+
+
+## o370 结果(VH Zerg Timing 0/3,累计 0/30 **终审封存** + VH Terran Power 首测 0/3)+ O370 五验收判定 + O371(分矿防御守卫去 zerg 门 + O302 推进闸敌军校验 + 强制直钉提前 + FB 保底落点 + BY watchdog 立即换锚)
+
+**日期**:2026-08-20
+
+### o370 结果
+
+- o370a carrier vs VH Zerg Timing:0/3(累计 0/30)。
+- o370b carrier vs VH Terran Power:0/3(新战线首测)。
+- **总目标盘点**:VH Zerg Power 打穿(5/6)、VH Zerg Rush 打穿(3/5);Zerg Timing 终审封存;Terran 战线开辟中。
+
+### O370 五验收判定(本轮验证对象)
+
+- O370-① 塔投资闸重做 → **验收① 过**(误触发 6/6→0;g2 两次触发均真实腐化 ≥4)。
+- O370-② latch×Nexus 仲裁+死循环 → **互误消除 ✓**(g3 latch 341s 正确排队让位 Nexus);**死循环收敛超时**(4 轮 130s,验收 ≤60s;强制直钉第 4 轮才来)。
+- O370-③ FB 选址收口 → **过**(g2 FB 470s 落成且存活,对比 o369a g2 落成 35s 被拆);副作用:g3 分矿试建禁用后 FB 整局悬空(O110 自救 ×8 全落空)。
+- O370-④ BY 提速 → **未过**(156.7/152.7/217.0s;watchdog 名义 150s 实际 233/261s 才 fire,起算点可疑)。
+- **验收⑤ Timing 舰队 ≥8:0/3(峰值 1/6/0);验收⑥ Terran 首测数据 ✓**。
+- O370 零新回归。
+
+### Timing 终审判决(0/30,封存)
+
+- 最后一刀三个修复全部验证兑现(塔闸/仲裁/选址),g1 FB 325.4s 复刻最佳,舰队峰值仍只有 1。
+- 死因不在被修机制,在结构性量级差:~525-550s 首波 10-20 地面强制防御支出,配方需要 72 农实际只有 45/45/38,经济永远爬不到喂饱舰队的水位;2 矿 45 农是舰队天花板。
+- **按预定规则(最后一刀修复通了还 0/3 即封存)执行:Timing 战线封存,Zerg 战线以 Power+Rush 两个打穿组合收官**。
+
+### o370b Terran 首测评估(底子最好的 lane)
+
+- **底子**:农峰 53-62(比 Timing 高一档)、BY 120-128s、FB 257-293s 全部早落、首航母 458s、O370 仲裁在 g2/g3 正确触发——经济链和 carrier 链在 Terran 局都成立。
+- **zerg 特化门实锤(三局同一死因)**:production_manager.py:1035 分矿防御守卫(O323/O337/O363)+O329 全包在 zerg+(timing,rush) 门,打 Terran 整体静默(O337 26→0、O363 19→0、O329 7→0、O118 26→0);三局三矿落成后裸奔 60-80s 被 ~495-510s 首波(25-30 supply M&M+坦克)准点收走;O98 forge 兜底静默(forge 168-217s vs zerg 92s)、O338 GW2 静默(零地面填线)。
+- 敌构成:~495-510s 首波 M&M+坦克;~820-900s 第二波加坦克架+维京+渡鸦;维京专杀风暴(g2 敌 11 维京 vs 我 5 风暴)。
+- O302 送死实证:g3 以 fleet=4 对 47 supply 主动推进(569.5s)。
+- 形态差异:Terran 局是「先富后死」,Zerg Timing 局是「从没富过」。
+
+### O371 落地(下一轮验证对象,五项,单测 791→795 绿,冒烟过)
+
+1. **分矿防御守卫去 zerg 门**:expansion_defense_guard_active(zerg∈(timing,rush) or terran)+timing_defense_chain_active(zerg==timing or terran);5 处去门(:1053 守卫块/:1330 O329/:5032 forge 钉点/:5178 forge 看门狗/:5209 GW2);zerg 行为不变(纯函数布尔等值,单测断言)。
+2. **O302 推进闸加敌军校验**:push_enemy_army_gate(敌 supply ≤ 我 ×1.5 且 敌硬对空 <4);只闸 advantage(O44)+full_pop(O70) 路径,force_push(O164/O241 timeout 兜底)和 zerg 全局(O302 黄金窗是胜局实证打法)豁免。
+3. **强制直钉提前**:nexus_repin_loop_forced max_rounds 3→1(第 2 轮消失即强制,收敛 ~60s)。
+4. **FB 保底落点**:fb_safe_anchor 加 occupied_fallback(无空闲槽降级带电非空闲槽,force place 尝试)。
+5. **BY watchdog 立即换锚**:cyber_core_np_default_fallback(首次 no_placement 走 O357 换锚不被阈值 1 短路去默认黑格,连续 2 次走默认回退)。
+
+### 本轮 bench 验收口径
+
+① Terran 局分矿防御事件可见+新矿 60s 内 ≥1 塔;② 零 fleet<6 撞敌 2× 推进;③ 二矿死循环 ≤60s;④ FB 零整局悬空;⑤ VH Terran Power 至少 1 胜;⑥ Zerg Rush 回归 ≥1/3。
+
+### 下轮安排
+
+- lane1 o371a:VH Terran Power×3(去门验证)。
+- lane2 o371b:VH Zerg Rush×3(回归保险+打穿确认)。
+
+**遗留风险(记入)**:
+
+- O371-② 的 _force_push 豁免可能在 Terran 长局放出 fleet≥8 的莽推(闸只挡 advantage/full_pop 路径)。
+- O370-④ BY watchdog 起算点问题(名义 150s 实际 233-261s)未根治。
+- Timing 封存是战略决定,若司令有不同意见可重启(机制链全部保留在代码里)。
