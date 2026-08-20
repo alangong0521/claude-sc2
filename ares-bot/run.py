@@ -149,10 +149,17 @@ def main():
 
         replay_path = None
         if SAVE_REPLAY:
-            replay_dir = path.join(path.abspath("."), "replays")
+            replay_override = os.environ.get("REPLAY_PATH")
+            replay_dir = (
+                path.dirname(replay_override)
+                if replay_override
+                else path.join(path.abspath("."), "replays")
+            )
             os.makedirs(replay_dir, exist_ok=True)
             # absolute path so it lands where we expect; double-click in SC2 to review
-            replay_path = path.join(replay_dir, f"{chosen_map}_vs_{difficulty.name}.SC2Replay")
+            replay_path = replay_override or path.join(
+                replay_dir, f"{chosen_map}_vs_{difficulty.name}.SC2Replay"
+            )
 
         # 1 = 1v1；>1 = 多人混战（1 个我方 bot + N 个内置电脑，全员互殴）
         players = [bot1] + [

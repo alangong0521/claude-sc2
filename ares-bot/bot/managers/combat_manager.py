@@ -52,6 +52,7 @@ from bot.production_plans import (
     push_fleet_floor_ok,
     recipe_push_exempt,
     desperation_push_window,
+    terran_economic_strike_window,
     two_base_guard_point,
     main_defense_first,
     zt_golden_window_push,
@@ -134,6 +135,8 @@ class CombatManager(Manager):
         # O380-⑤:舰队长期未成型时的一次 60s 豁命推进窗。
         self._o380_desperation_used: bool = False
         self._o380_desperation_until: float = 0.0
+        # O382-④:Terran 制空后打分矿窗的边沿簿记。
+        self._o382_economic_strike_active: bool = False
         # O226:残敌清剿 3s 收尾滞回(防 attack_target 每帧翻转 yo-yo)
         self._intruder_last_seen: float | None = None
         self._intruder_last_target: Point2 | None = None
@@ -665,6 +668,39 @@ class CombatManager(Manager):
                 _pm_o227 is not None
                 and getattr(_pm_o227, "_opp_race", "") == "zerg"
             )
+            # O382-④(司令观察/o381b g1):Terran 空中部队已清零、
+            # 场上只剩坦克等地面部队时，已成型的暴风+航母不应
+            # 继续打「最近敌建筑」的低价值消耗。仅在现有出击闸最终
+            # 放行后，把目标改为最外围已知分矿；主力级压家召回、
+            # 维京/解放者等对空重评与硬安全线仍由原链统一处理。
+            _opp_is_terran = (
+                _pm_o227 is not None
+                and getattr(_pm_o227, "_opp_race", "") == "terran"
+            )
+            _visible_enemy_air_combat = sum(
+                1
+                for u in self.ai.enemy_units
+                if u.is_flying and is_combat_type(u.type_id)
+            )
+            _known_terran_bases = ()
+            if (
+                _opp_is_terran
+                and self.ai.time >= 720.0
+                and _fleet_count >= 8
+                and _visible_enemy_air_combat == 0
+                and _hard_aa == 0
+            ):
+                _known_terran_bases = self._known_enemy_townhalls()
+            _economic_strike_target = None
+            if terran_economic_strike_window(
+                opp_race="terran" if _opp_is_terran else "",
+                now=self.ai.time,
+                fleet_count=_fleet_count,
+                visible_enemy_air_combat=_visible_enemy_air_combat,
+                visible_hard_aa=_hard_aa,
+                known_enemy_bases=len(_known_terran_bases),
+            ):
+                _economic_strike_target = _known_terran_bases[-1].position
             # O374-②(o373b g2/o373a g1 尸检):zerg 出发豁免收窄 —
             # 旧「zerg 全局豁免」使出发闸在 zerg lane 形同虚设
             # (o373b g2 顶波团灭、o373a g1 出击 6s 后被抄家);敌可见
@@ -941,6 +977,20 @@ class CombatManager(Manager):
                         ),
                     })
             self._push_committed = True
+            if _economic_strike_target is not None:
+                if not getattr(self, "_o382_economic_strike_active", False):
+                    _evs = getattr(self.ai, "_events", None)
+                    if _evs is not None:
+                        _evs.append({
+                            "t": round(self.ai.time, 1),
+                            "msg": (
+                                "O382:Terran制空后主动斩断分矿"
+                                f"(fleet={_fleet_count},已知基地={len(_known_terran_bases)})"
+                            ),
+                        })
+                self._o382_economic_strike_active = True
+                return _economic_strike_target
+            self._o382_economic_strike_active = False
 
         # —— 默认逻辑（无命令时）：最近敌建筑 → 轮巡分矿 ——
         if self.ai.enemy_structures:

@@ -19,6 +19,7 @@ headless 不稳或观战排查时的降级，不是默认模式。
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import subprocess
@@ -27,6 +28,7 @@ import time
 from pathlib import Path
 
 _AREAS = Path(__file__).resolve().parent  # ares-bot/
+_SC2_LAUNCH_LOCK = Path("/tmp/claude-sc2-launch.lock")
 
 # 本机 .zshrc 导出的代理会毒化 SC2 本地连接,子进程环境必须全剥(大小写都剥)
 _PROXY_KEYS = (
@@ -354,6 +356,11 @@ def _game_env(args: argparse.Namespace, game_dir: Path, map_name: str) -> dict:
         "STEER_RECORD": str(game_dir),   # 军力曲线(state_<time>.json)
         "BENCH_DIR": str(game_dir),      # on_end 结果 JSON(game_<uuid>.json)
         "SAVE_REPLAY": "1" if args.replay else "0",  # 每局存回放(双击可看全战况)
+        # O382-②:双 lane 不能共写 replays/<map>_vs_<diff>.SC2Replay；
+        # 直接写各自 game_dir，避免长局/短局交错时互相覆盖或搬错录像。
+        "REPLAY_PATH": str(
+            game_dir / f"replay_{game_dir.name.removeprefix('game_')}.SC2Replay"
+        ),
     })
     if args.carrier_combat:  # E4 双通道对照:覆盖 CARRIER 的 combat 类
         env["CARRIER_COMBAT"] = args.carrier_combat
@@ -383,6 +390,12 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
     log_path = game_dir / "run.log"
     with log_path.open("w", encoding="utf-8") as logf:
         _apply_graphics_settings()  # Q5:开局前重设 720P+全低(SC2 退出会回写)
+        # O382-②(司令观察/o381a g1 首次启动实证):两条 lane 同秒拉起
+        # SC2 时偶发「核心:访问许可错误」，run.log 只留下 Blizzard Error +
+        # TimeoutError(Websocket)，180s 后才重试。跨 bench 进程只串行化
+        # 「启动→首个 state」阶段；进入游戏后立即释放，正式对局仍双 lane 并行。
+        launch_lock = _SC2_LAUNCH_LOCK.open("a+")
+        fcntl.flock(launch_lock.fileno(), fcntl.LOCK_EX)
         proc = subprocess.Popen(
             ["poetry", "run", "python", "run.py"],
             cwd=_AREAS,
@@ -400,16 +413,38 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
         # O180:SC2 启动/健康检查
         sc2_pid: str | None = None
         startup_deadline = t0 + 60.0
-        while proc.poll() is None and sc2_pid is None:
-            sc2_pid = _sc2_pid_for(proc.pid)
-            if sc2_pid is None:
+        try:
+            while proc.poll() is None and sc2_pid is None:
+                sc2_pid = _sc2_pid_for(proc.pid)
+                if sc2_pid is None:
+                    if time.time() > startup_deadline:
+                        print(f"[bench] game {i:02d} SC2 未在 60s 内启动", flush=True)
+                        proc.kill()
+                        return None
+                    time.sleep(0.5)
+            if proc.poll() is not None:
+                return None
+            # 仅有 SC2 pid 还不够：许可错误实例同样能短暂出现进程，
+            # 但永远连不上 websocket。首个 state 才证明已真正进入对局。
+            while proc.poll() is None and not list(game_dir.glob("state_*.json")):
                 if time.time() > startup_deadline:
-                    print(f"[bench] game {i:02d} SC2 未在 60s 内启动", flush=True)
+                    print(
+                        f"[bench] game {i:02d} SC2 60s 内未进入对局(许可/websocket失败)",
+                        flush=True,
+                    )
                     proc.kill()
+                    if sc2_pid is not None:
+                        try:
+                            os.kill(int(sc2_pid), 9)
+                        except OSError:
+                            pass
                     return None
                 time.sleep(0.5)
-        if proc.poll() is not None:
-            return None
+            if proc.poll() is not None:
+                return None
+        finally:
+            fcntl.flock(launch_lock.fileno(), fcntl.LOCK_UN)
+            launch_lock.close()
         # 状态快照停滞检测:90s 无新 snapshot → SC2 卡死/websocket 断链
         last_state_count = len(list(game_dir.glob("state_*.json")))
         last_state_time = time.time()
@@ -499,6 +534,8 @@ def _play_one(i: int, args: argparse.Namespace, series_dir: Path) -> dict | None
                 raise subprocess.TimeoutExpired(proc.args, args.timeout)
             time.sleep(2)
     if args.replay:
+        if list(game_dir.glob("replay_*.SC2Replay")):
+            return _read_result(game_dir)
         # run.py 把回放写到 ares-bot/replays/(固定文件名,每局覆盖) → 挪进本局目录
         replays = sorted(
             (_AREAS / "replays").glob("*.SC2Replay"),

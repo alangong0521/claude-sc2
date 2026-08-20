@@ -6016,11 +6016,11 @@ def nexus_priority_fund_active(
     current_bases: int,
     peak_bases: int,
     target_bases: int | None,
-    first_expand_arm_at: float = 250.0,
+    first_expand_arm_at: float = 220.0,
 ) -> str | None:
     """O381-①/②:首扩硬截止与分矿损失恢复共用的 Nexus 独占基金。
 
-    第一性原理:基地是矿物收入的生产资料。单矿在 300s 后仍未开始扩张，
+    第一性原理:基地是矿物收入的生产资料。单矿在 220s 后仍未开始扩张，
     或已拥有的分矿被摧毁后仍拿钱造兵/升级，都会让后续每一分钟收入永久
     低于对手，资源差按时间积分滚雪球。调用方在基金期暂停非生存开销并
     强制注册 ExpansionController，直到 Nexus 实体出现（townhalls 会计入
@@ -6062,12 +6062,38 @@ def nexus_fund_probe_hard_floor(
     return False
 
 
+def nexus_fund_should_cut_build_runner(
+    fund_active: bool,
+    build_completed: bool,
+) -> bool:
+    """O382-①:基地基金启动时终止仍在消费的独立开局执行器。
+
+    ares ``BuildOrderRunner`` 在 ProductionManager/MacroPlan 之外运行；只暂停
+    SpawnController/科技链并不能阻止它继续下叉、探机、水晶、核心和星门。
+    基金启动后剩余开局步骤由常态生产层在 Nexus 成交后接管。
+    """
+    return fund_active and not build_completed
+
+
 def healthy_mining_base_target(
     workers: int,
     high_worker_threshold: int = 45,
 ) -> int:
     """O381-③:实时健康矿区目标——中盘 2 片，45+ 农后 3 片。"""
     return 3 if workers >= high_worker_threshold else 2
+
+
+def mineral_patch_worker_slots(
+    mineral_patch_count: int,
+    workers_per_patch: int = 2,
+) -> int:
+    """O382-③:矿区剩余实时采矿位。
+
+    ``ideal_harvesters`` 在矿物节点上为 0，不能用来计算矿区容量；
+    python-sc2 会在矿点采干后将它从 ``mineral_field`` 移除，因此实时
+    矿点数 × 2 就是稳定的剩余采矿位口径。
+    """
+    return max(0, mineral_patch_count) * max(0, workers_per_patch)
 
 
 def healthy_mining_expand_needed(
@@ -6088,6 +6114,34 @@ def healthy_mining_expand_needed(
     if bases < 2 or bases >= max_bases or nexus_pending:
         return False
     return healthy_ready_bases < healthy_mining_base_target(workers)
+
+
+def terran_economic_strike_window(
+    *,
+    opp_race: str,
+    now: float,
+    fleet_count: int,
+    visible_enemy_air_combat: int,
+    visible_hard_aa: int,
+    known_enemy_bases: int,
+    min_time: float = 720.0,
+    min_fleet: int = 8,
+) -> bool:
+    """O382-④:Terran 制空后主动斩断分矿的经济打击窗。
+
+    只在已有成型暴风/航母、当帧可见敌空中作战单位和硬对空都已
+    清零，且至少侦察到两座敌基地时开启。调用方仍保留基地主力级威胁
+    召回，窗只把已放行的舰队目标从「最近敌建筑」改为「最外围已知
+    分矿」，把经济优势转化为对手产能损失。
+    """
+    return (
+        opp_race == "terran"
+        and now >= min_time
+        and fleet_count >= min_fleet
+        and visible_enemy_air_combat == 0
+        and visible_hard_aa == 0
+        and known_enemy_bases >= 2
+    )
 
 
 def desperation_push_window(
@@ -6124,6 +6178,17 @@ def cannon_global_capped(
     cannon_capped 管舰队期,本判据管全期总投资。
     """
     return cannons >= cap and not threat_active
+
+
+def cannon_absolute_capped(cannons: int, cap: int = 18) -> bool:
+    """O382-⑤:静态防御绝对投资上限。
+
+    o381b g1 胜局塔峰 25 座（3750 矿），同期舰队已到 29 艘且终局
+    存款 7645；慢性 threat latch 让旧软顶全程豁免，不能防止非边际
+    塔继续吃矿。绝对顶不读 threat；调用方仅对「新矿零塔的首座
+    生存塔」保留豁免，把钱从第 19+ 座塔转回舰队/基地。
+    """
+    return cannons >= cap
 
 
 def gas_to_minerals_released(

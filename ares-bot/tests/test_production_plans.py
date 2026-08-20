@@ -75,6 +75,7 @@ from bot.production_plans import (  # noqa: E402
     fb_fund_cannon_blocked,
     fb_fund_upgrade_kept,
     cannon_global_capped,
+    cannon_absolute_capped,
     mothership_economy_ok,
     mothership_window_open,
     ms_window_probe_yield,
@@ -201,8 +202,11 @@ from bot.production_plans import (  # noqa: E402
     new_base_cannon_fund_needed,
     nexus_priority_fund_active,
     nexus_fund_probe_hard_floor,
+    nexus_fund_should_cut_build_runner,
+    mineral_patch_worker_slots,
     healthy_mining_base_target,
     healthy_mining_expand_needed,
+    terran_economic_strike_window,
     desperation_push_window,
     anchor_buildable,
     main_defense_bank_fuse,
@@ -4374,6 +4378,11 @@ class TestO360MidGameEconomy(unittest.TestCase):
         self.assertFalse(cannon_global_capped(11, False))
         self.assertFalse(cannon_global_capped(0, False))
 
+    def test_cannon_absolute_capped(self):
+        self.assertFalse(cannon_absolute_capped(17))
+        self.assertTrue(cannon_absolute_capped(18))
+        self.assertTrue(cannon_absolute_capped(25))
+
     def test_gas_to_minerals_released(self):
         # O363-④b:纯气压滞回 —— 气 <250 才复采
         self.assertTrue(gas_to_minerals_released(249.9, 100.0))
@@ -5943,9 +5952,9 @@ class TestO381Plans(unittest.TestCase):
     """O381:首扩硬基金、分矿恢复基金、健康矿区驱动扩张。"""
 
     def test_nexus_priority_fund_first_expand_deadline(self):
-        self.assertIsNone(nexus_priority_fund_active(249.9, 1, 1, 6))
+        self.assertIsNone(nexus_priority_fund_active(219.9, 1, 1, 6))
         self.assertEqual(
-            nexus_priority_fund_active(250.0, 1, 1, 6), "first_expand"
+            nexus_priority_fund_active(220.0, 1, 1, 6), "first_expand"
         )
         # Nexus 实体出现（含在建）后 current_bases=2，基金成交自灭。
         self.assertIsNone(nexus_priority_fund_active(280.0, 2, 2, 6))
@@ -5975,10 +5984,21 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(nexus_fund_probe_hard_floor(39, "lost_base"))
         self.assertFalse(nexus_fund_probe_hard_floor(0, None))
 
+    def test_nexus_fund_should_cut_build_runner(self):
+        self.assertTrue(nexus_fund_should_cut_build_runner(True, False))
+        self.assertFalse(nexus_fund_should_cut_build_runner(True, True))
+        self.assertFalse(nexus_fund_should_cut_build_runner(False, False))
+
     def test_healthy_mining_base_target(self):
         self.assertEqual(healthy_mining_base_target(44), 2)
         self.assertEqual(healthy_mining_base_target(45), 3)
         self.assertEqual(healthy_mining_base_target(70), 3)
+
+    def test_mineral_patch_worker_slots(self):
+        self.assertEqual(mineral_patch_worker_slots(8), 16)
+        self.assertEqual(mineral_patch_worker_slots(7), 14)
+        self.assertEqual(mineral_patch_worker_slots(0), 0)
+        self.assertEqual(mineral_patch_worker_slots(-2), 0)
 
     def test_healthy_mining_expand_needed(self):
         base = dict(
@@ -6015,6 +6035,31 @@ class TestO381Plans(unittest.TestCase):
                 healthy_ready_bases=0, nexus_pending=0,
                 bases=1, max_bases=6, workers=22,
             )
+        )
+
+    def test_terran_economic_strike_window(self):
+        base = dict(
+            opp_race="terran",
+            now=900.0,
+            fleet_count=12,
+            visible_enemy_air_combat=0,
+            visible_hard_aa=0,
+            known_enemy_bases=3,
+        )
+        self.assertTrue(terran_economic_strike_window(**base))
+        self.assertFalse(
+            terran_economic_strike_window(
+                **{**base, "visible_enemy_air_combat": 1}
+            )
+        )
+        self.assertFalse(
+            terran_economic_strike_window(**{**base, "visible_hard_aa": 1})
+        )
+        self.assertFalse(
+            terran_economic_strike_window(**{**base, "known_enemy_bases": 1})
+        )
+        self.assertFalse(
+            terran_economic_strike_window(**{**base, "fleet_count": 7})
         )
 
 

@@ -111,6 +111,7 @@ from bot.production_plans import (
     fb_fund_cannon_blocked,
     fb_fund_upgrade_kept,
     cannon_global_capped,
+    cannon_absolute_capped,
     holding_abort_keep_first_expand,
     mothership_economy_ok,
     mothership_window_open,
@@ -213,6 +214,8 @@ from bot.production_plans import (
     new_base_cannon_fund_needed,
     nexus_priority_fund_active,
     nexus_fund_probe_hard_floor,
+    nexus_fund_should_cut_build_runner,
+    mineral_patch_worker_slots,
     healthy_mining_expand_needed,
     anchor_buildable,
     pylon_ring_fallback_anchor,
@@ -794,6 +797,7 @@ class ProductionManager(Manager):
         self._o381_nexus_fund_active: bool = False
         # O381-③:健康矿区不足触发扩张的事件节流。
         self._o381_healthy_expand_log_ts: float = 0.0
+        self._o381_healthy_expand_active: bool = False
         # B4③ 停气台账:rush 期间被拉下气矿的农民 tag(role 归 _GAS_STOP_ROLE),
         # rush 解除后统一归 GATHERING 回气(ares 记账不动,见 _rush_gas_stop)。
         self._gas_stopped_tags: set[int] = set()
@@ -869,7 +873,7 @@ class ProductionManager(Manager):
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
                     "msg": (
-                        "O381:首扩250s硬基金启动(300s前Nexus必须落地)"
+                        "O382:首扩220s硬基金启动(270s前Nexus必须落地)"
                         if _o381_reason == "first_expand"
                         else (
                             f"O381:分矿损失基地恢复基金启动"
@@ -883,6 +887,26 @@ class ProductionManager(Manager):
                     "msg": "O381:Nexus实体出现,基地基金成交恢复运营",
                 })
             self._o381_nexus_fund_reason = _o381_reason
+
+        # O382-①(o381a g1 局终尸检):基金虽在 250.0s 启动，ares 的
+        # BuildOrderRunner 却在 ProductionManager 之外继续执行到 312s，
+        # 依次花钱下叉/探机/水晶/BY/SG，Nexus 被拖到 368.2s。基金
+        # 启动即截断剩余 opener；set_build_completed 同时释放持久建造工，
+        # 未完成的核心科技待 Nexus 成交后由常态生产层补齐。
+        _o382_bor = getattr(self.ai, "build_order_runner", None)
+        if (
+            _o382_bor is not None
+            and nexus_fund_should_cut_build_runner(
+                self._o381_nexus_fund_active,
+                _o382_bor.build_completed,
+            )
+        ):
+            _o382_step = getattr(_o382_bor, "build_step", -1)
+            _o382_bor.set_build_completed()
+            self.ai._events.append({
+                "t": round(self.ai.time, 1),
+                "msg": f"O382:基地基金截断开局runner(停在step#{_o382_step})",
+            })
 
         # O132-③:炮塔峰值 latch(每帧)——兵营链各闸吃峰值不吃实时值,
         # 塔被 wave 拆掉不再反锁 GW 链(见 __init__ 台账注释)
@@ -988,7 +1012,10 @@ class ProductionManager(Manager):
             self._expand_holding_since = self._expand_holding_since or self.ai.time
         else:
             self._expand_holding_since = None
-        if not self._o381_nexus_fund_active and expand_holding_should_abort(
+        if not (
+            self._o381_nexus_fund_active
+            or self._o381_healthy_expand_active
+        ) and expand_holding_should_abort(
             self.ai.time - (self._expand_holding_since or self.ai.time),
             self.ai.not_started_but_in_building_tracker(UnitID.NEXUS),
             self.ai.can_afford(UnitID.NEXUS),
@@ -1150,7 +1177,7 @@ class ProductionManager(Manager):
                 for _step in _o370_bor.build_order[_o370_bor.build_step:]
             )
         )
-        if cyber_core_watchdog(
+        if not self._o381_nexus_fund_active and cyber_core_watchdog(
             self.ai.time,
             self._structure_present_or_pending(UnitID.CYBERNETICSCORE),
         ) and cyber_core_build_allowed(
@@ -5275,7 +5302,8 @@ class ProductionManager(Manager):
         # O93-B3:FB 建造停滞自救(买得起+有就绪星门却始终无 FB 实体 →
         # 落位静默失败/tracker 泄漏,见方法注释)。_fleet_starved 豁免只管注册,
         # 不管"注册了但永远建不出来"。
-        self._fleet_stall_watchdog(structures_dict)
+        if not self._o381_nexus_fund_active:
+            self._fleet_stall_watchdog(structures_dict)
         # O357-②(o356b g2/o355a g2 实证):O264 母舰块前移到 O239 航母块
         # 之前 —— 旧序 O239 在前,ms_window 判据是「矿<400」,矿一跨
         # 400 窗关、O239 同帧先花 350 矿点航母(o356b g2:747.3→749.9、
@@ -9282,14 +9310,13 @@ class ProductionManager(Manager):
         """O381-③:就绪 Nexus 周围剩余矿工位 >=min_slots 的矿区数。
 
         只数 ready townhall；在建 Nexus 不提前冒充收入。矿点消失时
-        python-sc2 会从 mineral_field 移除，按每片 ideal_harvesters
-        （普通矿默认为 2）求剩余实时采矿位。
+        python-sc2 会从 mineral_field 移除；矿点本身的
+        ideal_harvesters 实测为 0，因此按实时剩余矿点数×2求位数。
         """
         healthy = 0
         for th in self.ai.townhalls.ready:
-            slots = sum(
-                max(0, int(getattr(mf, "ideal_harvesters", 2)))
-                for mf in self.ai.mineral_field.closer_than(10.0, th.position)
+            slots = mineral_patch_worker_slots(
+                self.ai.mineral_field.closer_than(10.0, th.position).amount
             )
             if slots >= min_slots:
                 healthy += 1
@@ -9299,6 +9326,7 @@ class ProductionManager(Manager):
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
         self._zt_pocket_expand_debug()  # O283d:激活判据节流记账(排查期)
+        self._o381_healthy_expand_active = False
         # O381-③(司令观察):名义三矿不等于健康经济。主矿采干、二矿
         # 只剩 4 个矿工位时，即使 fleet/mineral/saturation 旧门不满足，
         # 也必须提前开四/五矿，维持 2-3 片各 >=15 矿位的就绪矿区。
@@ -9317,6 +9345,7 @@ class ProductionManager(Manager):
                 healthy_ready_bases=_healthy,
                 workers=self.ai.supply_workers,
             ):
+                self._o381_healthy_expand_active = True
                 if event_throttle_ok(
                     self.ai.time, self._o381_healthy_expand_log_ts, 30.0
                 ):
@@ -9871,6 +9900,17 @@ class ProductionManager(Manager):
         借出即从 _gas_stopped_tags 摘除,防 rush 解除的回气循环把建造工
         从建造点拽走)。失败环节由调用方写事件(下轮尸检直接读)。
         """
+        # O382-①:基地基金的统一结构漏口。critical 只代表调用方想抢
+        # 普通优先级，不代表可以抢 Nexus；基金期仅保基地本身和生存级
+        # 静态防御链，BY/SG/FB/GW/Robo/Twilight/气矿等全部返回让位。
+        if self._o381_nexus_fund_active and sid not in (
+            UnitID.NEXUS,
+            UnitID.PYLON,
+            UnitID.FORGE,
+            UnitID.PHOTONCANNON,
+            UnitID.SHIELDBATTERY,
+        ):
+            return "nexus_fund"
         # O373-③b(o372b g3 实证):仲裁判让位期堵 FB 非 latch 通道
         # —— O370 判了让位,FB 仍经 O110 自救/O360 超时强制等非
         # latch 通道落地(全部过本函数);入口统一读仲裁旗标
@@ -9900,6 +9940,11 @@ class ProductionManager(Manager):
                     UnitID.PHOTONCANNON
                 ]
             )
+            # O382-⑤(o381b g1 塔峰25):慢性 threat/rush latch 不再
+            # 让全局塔无上限增长。本块已由 not survival_exempt 包住，
+            # 新矿零塔的首座保命塔仍可突破 18 座绝对顶。
+            if cannon_absolute_capped(_cannons_now):
+                return "capped"
             if cannon_capped(
                 now=self.ai.time,
                 fleet_count=(
@@ -10598,6 +10643,8 @@ class ProductionManager(Manager):
         structure_id : UnitTypeId
             What we want to build
         """
+        if self._o381_nexus_fund_active:
+            return
         # O216i(o216h-lane2 game_01 实证):Zerg Timing 前期(300s 前)主基 2 塔
         # 未就绪时 STARGATE/FLEETBEACON 让位塔链 —— SG 在 0 塔窗口抢走 150 矿,
         # 306s 波到脸时 0 塔被推平;舰队科技晚 ~60s 不影响成型窗。

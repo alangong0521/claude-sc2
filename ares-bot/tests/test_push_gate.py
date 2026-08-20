@@ -52,10 +52,10 @@ class _OwnStructList(list):
         self.ready = list(ready)
 
 
-def _enemy(tag, type_id, pos=None):
+def _enemy(tag, type_id, pos=None, is_flying=True):
     return SimpleNamespace(
         tag=tag, type_id=type_id, position=pos or Point2((150.0, 150.0)),
-        is_structure=False, is_flying=True,
+        is_structure=False, is_flying=is_flying,
     )
 
 
@@ -114,6 +114,7 @@ class TestCarrierPushGate(unittest.TestCase):
             _o378_aa_last_credited=0,
             _o380_desperation_used=False,
             _o380_desperation_until=0.0,
+            _o382_economic_strike_active=False,
             manager_mediator=SimpleNamespace(
                 get_own_unit_count=lambda unit_type_id, include_pending=True: (
                     counts.get(unit_type_id, 0)
@@ -153,6 +154,44 @@ class TestCarrierPushGate(unittest.TestCase):
         target = CombatManager.attack_target.fget(mgr)
         self.assertEqual(target, enemy_base.position)  # 推进到敌建筑
         self.assertTrue(mgr._push_committed)  # O65:闸全开 → 推进承诺(行军模式)
+
+    def test_terran_air_cleared_targets_outer_economy(self):
+        # O382-④:维京/空中作战单位已清零，只剩坦克时，
+        # 成型舰队跳过近处兵营，直接打最外围已知分矿断经济。
+        tank = _enemy(10, UnitID.SIEGETANKSIEGED, is_flying=False)
+        mgr = self._fake(12, [tank], 120.0)
+        mgr.ai.time = 900.0
+        mgr.ai.production_manager._opp_race = "terran"
+        nearest = _estruct(UnitID.BARRACKS, Point2((80.0, 80.0)))
+        mgr.ai.enemy_structures = _StructList([nearest], closest=nearest)
+        known = [
+            _estruct(UnitID.ORBITALCOMMAND, Point2((150.0, 150.0))),
+            _estruct(UnitID.COMMANDCENTER, Point2((135.0, 125.0))),
+            _estruct(UnitID.COMMANDCENTER, Point2((118.0, 105.0))),
+        ]
+        mgr._known_enemy_townhalls = lambda: known
+
+        target = CombatManager.attack_target.fget(mgr)
+
+        self.assertEqual(target, known[-1].position)
+        self.assertTrue(mgr._push_committed)
+        self.assertTrue(mgr._o382_economic_strike_active)
+
+    def test_terran_visible_air_keeps_normal_targeting(self):
+        mgr = self._fake(12, [_enemy(11, UnitID.LIBERATOR)], 20.0)
+        mgr.ai.time = 900.0
+        mgr.ai.production_manager._opp_race = "terran"
+        nearest = _estruct(UnitID.BARRACKS, Point2((80.0, 80.0)))
+        mgr.ai.enemy_structures = _StructList([nearest], closest=nearest)
+        mgr._known_enemy_townhalls = lambda: [
+            _estruct(UnitID.ORBITALCOMMAND, Point2((150.0, 150.0))),
+            _estruct(UnitID.COMMANDCENTER, Point2((118.0, 105.0))),
+        ]
+
+        target = CombatManager.attack_target.fget(mgr)
+
+        self.assertEqual(target, nearest.position)
+        self.assertFalse(mgr._o382_economic_strike_active)
 
     def test_hard_aa_holds_fleet(self):
         # 30 腐化 ≥ 14×1.5 → 蹲锚点(主基,即便 supply 优势)
