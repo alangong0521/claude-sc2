@@ -229,6 +229,7 @@ from bot.production_plans import (
     terran_rush_robo_needed,
     terran_rush_immortal_needed,
     timing_carrier_transition_allowed,
+    terran_timing_third_before_immortal_blocked,
     zerg_rush_late_stalker_escort_needed,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -9558,6 +9559,23 @@ class ProductionManager(Manager):
             # O387-①(o386b g1):四矿510s落成、死亡球537s到脸，
             # 27s连首塔都来不及完成。三矿先把400矿转舰队/机械台，
             # 接触兑现后立即恢复健康/常态扩张。
+            self._o383_healthy_expand_from_bases = None
+            self._o381_healthy_expand_active = False
+            return False
+        if terran_timing_third_before_immortal_blocked(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            current_bases=self.ai.townhalls.amount,
+            fleet_beacon_present=self._structure_present_or_pending(
+                UnitID.FLEETBEACON
+            ),
+            immortals_or_pending=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.IMMORTAL
+                )
+                + cy_unit_pending(self.ai, UnitID.IMMORTAL)
+            ),
+        ):
             self._o383_healthy_expand_from_bases = None
             self._o381_healthy_expand_active = False
             return False

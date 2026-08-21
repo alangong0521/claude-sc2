@@ -6411,11 +6411,13 @@ def terran_rush_robo_needed(
     fleet_gate: int = 4,
 ) -> bool:
     """O387/O394:Terran Rush/Timing 压力波前预置机械台。"""
+    effective_min_time = 340.0 if ai_build == "timing" else min_time
+    effective_min_bases = 2 if ai_build == "timing" else min_bases
     return (
         opp_race == "terran"
         and ai_build in ("rush", "timing")
-        and now >= min_time
-        and bases >= min_bases
+        and now >= effective_min_time
+        and bases >= effective_min_bases
         and fleet_count < fleet_gate
         and fleet_beacon_present
         and not robo_present
@@ -6437,6 +6439,24 @@ def terran_rush_immortal_needed(
     if ai_build == "timing" and immortals < 1:
         return True
     return visible_armored_ground >= trigger and immortals < cap
+
+
+def terran_timing_third_before_immortal_blocked(
+    *,
+    opp_race: str,
+    ai_build: str,
+    current_bases: int,
+    fleet_beacon_present: bool,
+    immortals_or_pending: int,
+) -> bool:
+    """O396:Terran Timing 第一只不朽下单前，400矿三矿让位。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "timing"
+        and current_bases >= 2
+        and fleet_beacon_present
+        and immortals_or_pending < 1
+    )
 
 
 def timing_carrier_transition_allowed(

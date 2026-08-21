@@ -228,6 +228,7 @@ from bot.production_plans import (  # noqa: E402
     terran_rush_robo_needed,
     terran_rush_immortal_needed,
     timing_carrier_transition_allowed,
+    terran_timing_third_before_immortal_blocked,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -6335,7 +6336,31 @@ class TestO381Plans(unittest.TestCase):
             terran_rush_robo_needed(**{**base, "robo_present": True})
         )
         self.assertTrue(
-            terran_rush_robo_needed(**{**base, "ai_build": "timing"})
+            terran_rush_robo_needed(
+                **{
+                    **base,
+                    "ai_build": "timing",
+                    "now": 340.0,
+                    "bases": 2,
+                }
+            )
+        )
+
+    def test_terran_timing_third_before_immortal_blocked(self):
+        base = dict(
+            opp_race="terran", ai_build="timing", current_bases=2,
+            fleet_beacon_present=True, immortals_or_pending=0,
+        )
+        self.assertTrue(terran_timing_third_before_immortal_blocked(**base))
+        self.assertFalse(
+            terran_timing_third_before_immortal_blocked(
+                **{**base, "immortals_or_pending": 1}
+            )
+        )
+        self.assertFalse(
+            terran_timing_third_before_immortal_blocked(
+                **{**base, "fleet_beacon_present": False}
+            )
         )
 
     def test_terran_rush_immortal_needed(self):
