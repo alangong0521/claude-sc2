@@ -11505,3 +11505,29 @@ Nexus/FB);③ SG ≤300s;④ 停气触发后 30s 内气增长压
 - Terran Rush：最新5个有效样本仍约 **2/5**；O390b/O391a已两连胜态样本，
   下一局若胜会把更旧败局挤出窗口，接近/达到3/5，需按实际顺序复核。
 - 下一局只跑Terran Rush，验收唯一Cyber Core=1、首暴风≤500s、塔峰≤24。
+
+### 司令后续路线指令（2026-08-21）
+
+- Terran Timing 完成攻坚后，解除 Terran Power 封存并继续攻坚。
+- “very harder”按SC2有效难度枚举暂解释为 **VeryHard Terran Power**；若司令
+  指的是Harder则再修订。此前3/24封存判决保留为历史基线，不再作为停止理由。
+
+### O392 Terran Rush 双 lane（2胜0负，正式打穿）
+
+- `o392a game_01`：Victory 907.1s。二矿237.1s、三矿401.8s、四矿590.6s；
+  终局16暴风+3航母+2追猎+1不朽，塔峰24，唯一Cyber Core=1。
+- `o392b game_01`：Victory 1580.7s。二矿257.1s、三矿405.8s、四矿671.0s；
+  终局24暴风+4航母，唯一Cyber Core=1。经历多轮重兵仍保持经济并持续斩分矿。
+- O392防重验证通过：两条lane全程`CYBERNETICSCORE=1`，未重现o391b双BY；
+  首暴风分别约450s/466s，恢复到胜局节奏。
+- Terran Rush最新5个有效样本为o390b胜、o391b负、o391a胜、o392a胜、
+  o392b胜，即 **4/5，正式打穿**。
+- 工程债：塔硬顶在o392a峰24正常，但o392b后期仍峰42；越顶来自PSD/main_siege
+  台账外在途通道，不阻塞已认证胜率，转Terran Timing前记录待收口。
+
+### 当前路线（O392后）
+
+1. Zerg Power、Zerg Rush、Terran Rush已打穿。
+2. 下一主线：VeryHard Terran Timing。
+3. Terran Timing完成后，按司令指令重启VeryHard Terran Power攻坚。
+4. Zerg Timing继续封存；Protoss/Macro/Air暂不扩展。
