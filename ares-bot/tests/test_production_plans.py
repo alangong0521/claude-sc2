@@ -6355,6 +6355,26 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(
             terran_rush_immortal_needed(**{**base, "ai_build": "timing"})
         )
+        self.assertTrue(
+            terran_rush_immortal_needed(
+                **{
+                    **base,
+                    "ai_build": "timing",
+                    "visible_armored_ground": 0,
+                    "immortals": 0,
+                }
+            )
+        )
+        self.assertFalse(
+            terran_rush_immortal_needed(
+                **{
+                    **base,
+                    "ai_build": "timing",
+                    "visible_armored_ground": 0,
+                    "immortals": 1,
+                }
+            )
+        )
 
     def test_timing_carrier_transition_allowed(self):
         self.assertFalse(timing_carrier_transition_allowed("timing", 0))

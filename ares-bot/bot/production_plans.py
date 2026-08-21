@@ -6432,12 +6432,11 @@ def terran_rush_immortal_needed(
     cap: int = 2,
 ) -> bool:
     """O387/O394:Terran Rush/Timing 重甲波出现时直产最多2个不朽。"""
-    return (
-        opp_race == "terran"
-        and ai_build in ("rush", "timing")
-        and visible_armored_ground >= trigger
-        and immortals < cap
-    )
+    if opp_race != "terran" or ai_build not in ("rush", "timing"):
+        return False
+    if ai_build == "timing" and immortals < 1:
+        return True
+    return visible_armored_ground >= trigger and immortals < cap
 
 
 def timing_carrier_transition_allowed(
