@@ -7065,6 +7065,16 @@ def cyber_core_build_allowed(
     return not present_or_pending and not runner_core_ahead
 
 
+def build_runner_owns_unique_core(
+    *,
+    runner_present: bool,
+    build_completed: bool,
+    runner_stalled: bool,
+) -> bool:
+    """O392:Runner活跃且未卡死时独占BY等唯一核心建筑注册权。"""
+    return runner_present and not build_completed and not runner_stalled
+
+
 def expansion_defense_guard_active(opp_race: str, ai_build: str) -> bool:
     """O371-①a(o370b Terran Power 0/3 尸检):分矿防御持续守卫
     (O323/O337/O363 整块)的种族门。纯逻辑,可单测。

@@ -176,6 +176,7 @@ from bot.production_plans import (
     nexus_repin_loop_forced,
     fb_rescue_expansion_bypass,
     cyber_core_build_allowed,
+    build_runner_owns_unique_core,
     expansion_defense_guard_active,
     timing_defense_chain_active,
     cyber_core_np_default_fallback,
@@ -1210,14 +1211,12 @@ class ProductionManager(Manager):
         # 钉点重复一座)时跳过;runner 步卡死(O324 看门狗,bot 层
         # 接管)则放行兜底。
         _o370_bor = getattr(self.ai, "build_order_runner", None)
-        _o370_runner_core_ahead = bool(
-            _o370_bor is not None
-            and not _o370_bor.build_completed
-            and not getattr(self, "_o324_runner_stalled", False)
-            and any(
-                _step.command == UnitID.CYBERNETICSCORE
-                for _step in _o370_bor.build_order[_o370_bor.build_step:]
-            )
+        _o370_runner_core_ahead = build_runner_owns_unique_core(
+            runner_present=_o370_bor is not None,
+            build_completed=(
+                _o370_bor.build_completed if _o370_bor is not None else True
+            ),
+            runner_stalled=getattr(self, "_o324_runner_stalled", False),
         )
         if not self._o381_nexus_fund_active and cyber_core_watchdog(
             self.ai.time,

@@ -153,6 +153,7 @@ from bot.production_plans import (  # noqa: E402
     nexus_repin_loop_forced,
     fb_rescue_expansion_bypass,
     cyber_core_build_allowed,
+    build_runner_owns_unique_core,
     expansion_defense_guard_active,
     timing_defense_chain_active,
     push_enemy_army_gate,
@@ -4742,6 +4743,29 @@ class TestO365Fixes(unittest.TestCase):
         self.assertFalse(cyber_core_build_allowed(True, False))
         # runner 后续步排着 core(runner 会自己建)→ 跳过
         self.assertFalse(cyber_core_build_allowed(False, True))
+
+    def test_build_runner_owns_unique_core(self):
+        self.assertTrue(
+            build_runner_owns_unique_core(
+                runner_present=True,
+                build_completed=False,
+                runner_stalled=False,
+            )
+        )
+        self.assertFalse(
+            build_runner_owns_unique_core(
+                runner_present=True,
+                build_completed=True,
+                runner_stalled=False,
+            )
+        )
+        self.assertFalse(
+            build_runner_owns_unique_core(
+                runner_present=True,
+                build_completed=False,
+                runner_stalled=True,
+            )
+        )
 
     def test_evac_return_gas_stop_remark(self):
         # O365-⑤b:停气台账在册者归队即重标,不在册者归 GATHERING
