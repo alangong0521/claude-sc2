@@ -229,7 +229,7 @@ from bot.production_plans import (
     terran_rush_robo_needed,
     terran_rush_immortal_needed,
     timing_carrier_transition_allowed,
-    terran_timing_third_before_immortal_blocked,
+    terran_timing_third_before_immortals_blocked,
     zerg_rush_late_stalker_escort_needed,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -9562,7 +9562,7 @@ class ProductionManager(Manager):
             self._o383_healthy_expand_from_bases = None
             self._o381_healthy_expand_active = False
             return False
-        if terran_timing_third_before_immortal_blocked(
+        if terran_timing_third_before_immortals_blocked(
             opp_race=self._opp_race,
             ai_build=self._ai_build,
             current_bases=self.ai.townhalls.amount,

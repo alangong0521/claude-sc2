@@ -6413,12 +6413,13 @@ def terran_rush_robo_needed(
     """O387/O394:Terran Rush/Timing 压力波前预置机械台。"""
     effective_min_time = 340.0 if ai_build == "timing" else min_time
     effective_min_bases = 2 if ai_build == "timing" else min_bases
+    effective_fleet_gate = 8 if ai_build == "timing" else fleet_gate
     return (
         opp_race == "terran"
         and ai_build in ("rush", "timing")
         and now >= effective_min_time
         and bases >= effective_min_bases
-        and fleet_count < fleet_gate
+        and fleet_count < effective_fleet_gate
         and fleet_beacon_present
         and not robo_present
     )
@@ -6436,12 +6437,12 @@ def terran_rush_immortal_needed(
     """O387/O394:Terran Rush/Timing 重甲波出现时直产最多2个不朽。"""
     if opp_race != "terran" or ai_build not in ("rush", "timing"):
         return False
-    if ai_build == "timing" and immortals < 1:
+    if ai_build == "timing" and immortals < 2:
         return True
     return visible_armored_ground >= trigger and immortals < cap
 
 
-def terran_timing_third_before_immortal_blocked(
+def terran_timing_third_before_immortals_blocked(
     *,
     opp_race: str,
     ai_build: str,
@@ -6449,13 +6450,13 @@ def terran_timing_third_before_immortal_blocked(
     fleet_beacon_present: bool,
     immortals_or_pending: int,
 ) -> bool:
-    """O396:Terran Timing 第一只不朽下单前，400矿三矿让位。"""
+    """O396/O397:Terran Timing 两只不朽下单前，400矿三矿让位。"""
     return (
         opp_race == "terran"
         and ai_build == "timing"
         and current_bases >= 2
         and fleet_beacon_present
-        and immortals_or_pending < 1
+        and immortals_or_pending < 2
     )
 
 
