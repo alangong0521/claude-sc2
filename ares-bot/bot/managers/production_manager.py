@@ -4114,12 +4114,19 @@ class ProductionManager(Manager):
             # ≥18(全通道硬账,cannon_hard_cap_active)时豁免截止、
             # 总帽恢复钳制;o376b 两胜局塔峰 17/21,17 在顶内不动、
             # 21 超顶被钳。硬顶同时关 main_siege 加强通道(下方)。
-            _o377_cn_ready_total = sum(
-                1
-                for s in self.ai.structures.ready
-                if s.type_id == UnitID.PHOTONCANNON
+            # O391(o390双胜尸检):只数ready会让同帧在途批量越顶，
+            # o390a/o390b塔峰仍达26/35；改为实体+tracker在途硬账。
+            _o377_cn_total = (
+                len(
+                    self.manager_mediator.get_own_structures_dict[
+                        UnitID.PHOTONCANNON
+                    ]
+                )
+                + self.manager_mediator.get_building_counter[
+                    UnitID.PHOTONCANNON
+                ]
             )
-            _o377_hard_capped = cannon_hard_cap_active(_o377_cn_ready_total)
+            _o377_hard_capped = cannon_hard_cap_active(_o377_cn_total)
             cannons, _cannons_expansion = f2_global_cannon_cap(
                 cannons,
                 _cannons_expansion,

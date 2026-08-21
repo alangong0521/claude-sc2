@@ -6145,7 +6145,8 @@ class TestO381Plans(unittest.TestCase):
         )
 
     def test_survival_cannon_absolute_capped(self):
-        self.assertFalse(survival_cannon_absolute_capped(23))
+        self.assertFalse(survival_cannon_absolute_capped(22))
+        self.assertTrue(survival_cannon_absolute_capped(23))
         self.assertTrue(survival_cannon_absolute_capped(24))
         self.assertTrue(survival_cannon_absolute_capped(35))
 

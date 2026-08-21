@@ -6215,9 +6215,9 @@ def economic_strike_ground_holds_home(
 
 def survival_cannon_absolute_capped(
     cannons: int,
-    cap: int = 24,
+    cap: int = 23,
 ) -> bool:
-    """O390-③:新矿首塔豁免也不能把全局塔继续堆过24。"""
+    """O391:新矿首塔豁免预扣1座并发余量，实峰不超过24。"""
     return cannons >= cap
 
 
