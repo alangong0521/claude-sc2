@@ -227,6 +227,7 @@ from bot.production_plans import (  # noqa: E402
     terran_rush_fourth_before_contact_blocked,
     terran_rush_robo_needed,
     terran_rush_immortal_needed,
+    timing_carrier_transition_allowed,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -6333,6 +6334,9 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             terran_rush_robo_needed(**{**base, "robo_present": True})
         )
+        self.assertTrue(
+            terran_rush_robo_needed(**{**base, "ai_build": "timing"})
+        )
 
     def test_terran_rush_immortal_needed(self):
         base = dict(
@@ -6348,6 +6352,14 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             terran_rush_immortal_needed(**{**base, "immortals": 2})
         )
+        self.assertTrue(
+            terran_rush_immortal_needed(**{**base, "ai_build": "timing"})
+        )
+
+    def test_timing_carrier_transition_allowed(self):
+        self.assertFalse(timing_carrier_transition_allowed("timing", 0))
+        self.assertTrue(timing_carrier_transition_allowed("timing", 1))
+        self.assertTrue(timing_carrier_transition_allowed("rush", 0))
 
     def test_pick_safest_rebuild_expansion(self):
         home = Point2((0.0, 0.0))

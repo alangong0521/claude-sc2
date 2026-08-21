@@ -27,7 +27,8 @@ from bot.managers.production_manager import ProductionManager  # noqa: E402
 
 
 def _pm(verdict, flow_name="carrier", time=200.0, tempest_count=0,
-        transitioned=False, opp_race="", fb_completed_at=None):
+        transitioned=False, opp_race="", fb_completed_at=None,
+        ai_build=""):
     """不走 ares Manager.__init__,直接构造最小可用实例。"""
     pm = ProductionManager.__new__(ProductionManager)
     pm._flow = SimpleNamespace(name=flow_name)
@@ -37,9 +38,10 @@ def _pm(verdict, flow_name="carrier", time=200.0, tempest_count=0,
     pm._o374_tank_seen = False
     # O377-②:E10 时间盒输入(__init__ 初始化的实例属性,fake 同补)
     pm._opp_race = opp_race
+    pm._ai_build = ai_build
     pm._fb_completed_at = fb_completed_at
     pm.manager_mediator = SimpleNamespace(
-        get_own_unit_count=lambda unit_type_id: tempest_count
+        get_own_unit_count=lambda unit_type_id, include_pending=True: tempest_count
     )
     pm.ai = SimpleNamespace(
         time=time,
@@ -99,6 +101,19 @@ class TestPivotTempestModeWiring(unittest.TestCase):
         self.assertFalse(pm._pivot_tempest_mode())
         self.assertTrue(pm._pivot_transitioned)
         self.assertTrue(any("E10" in e["msg"] for e in pm.ai._events))
+
+    def test_terran_timing_waits_for_first_tempest(self):
+        pm = _pm(
+            "greedy", time=650.0, opp_race="terran",
+            ai_build="timing", tempest_count=0,
+        )
+        self.assertTrue(pm._pivot_tempest_mode())
+        self.assertFalse(pm._pivot_transitioned)
+        pm.manager_mediator.get_own_unit_count = (
+            lambda unit_type_id, include_pending=True: 1
+        )
+        self.assertFalse(pm._pivot_tempest_mode())
+        self.assertTrue(pm._pivot_transitioned)
 
     def test_terran_time_box_fb_delay(self):
         # O377-②:FB 落成 +150s 先到先转(300+150=450 <480 硬顶)

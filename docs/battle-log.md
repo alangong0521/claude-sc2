@@ -11531,3 +11531,38 @@ Nexus/FB);③ SG ≤300s;④ 停气触发后 30s 内气增长压
 2. 下一主线：VeryHard Terran Timing。
 3. Terran Timing完成后，按司令指令重启VeryHard Terran Power攻坚。
 4. Zerg Timing继续封存；Protoss/Macro/Air暂不扩展。
+
+## O393 Terran Timing 首测（0/2）
+
+### o393a game_01（Defeat 791.4s）
+
+1. 二矿265.2s、三矿450.0s、农峰63，经济不是首因；558s首波约
+   10 Marauder+9 Marine+Ghost+Tank+Medivac到场时，仅1暴风、无Robo/不朽。
+2. 全局再次出现`CYBERNETICSCORE=2`：O392只封了watchdog与Runner，Timing的
+   `_build_flow_structures→_build_core_structure`仍可与Runner同帧双注册。
+3. 480s舰队仍为0却触发`E10:风暴压制转航母终结`，昂贵航母配方抢走首批暴风
+   产出窗；582s才1暴风，随后连续掉矿并在791s败。
+
+### o393b game_01（Defeat 981.8s）
+
+1. 唯一BY正常，二矿285.3s、三矿429.9s；首波532s时仍仅0-1暴风，3叉+塔只能
+   短暂拖延，594/638s连续掉矿。
+2. 687-775s恢复到三矿、银行一度1125矿/829气，但Nexus恢复基金长期冻结产兵，
+   舰队只恢复到2-3；833s第二波44 supply、845s后升级为47地面，最终981s败。
+3. Timing敌形态与Rush同为Marauder/Tank重甲核心，且首波更早集中；Robo/Immortal
+   不能继续只挂`ai_build==rush`。
+
+### O394 已落地
+
+1. `_build_core_structure(CYBERNETICSCORE)`也读取Runner独占权，封住flow与Runner
+   双BY第二入口。
+2. Terran Robo/Immortal预置从Rush扩到Rush+Timing：t≥420、三矿、FB存在、舰队<4
+   即建Robo；可见Marauder/Tank重甲≥6直产最多2不朽。
+3. Terran Timing的E10转航母增加“首暴风真实在场>0”硬门；0舰队时480s时间盒、
+   坦克首现和地面35 supply都不能提前转航母。
+
+### O394 下一局验收
+
+- 全程BY=1；首暴风目标≤500s，首波时至少2暴风或1暴风+1不朽。
+- 480s零舰队时不得出现E10转航母；首暴风出场后再按原时间盒转型。
+- 首波后农民不跌破40、基地不低于2；优先建立首个有效胜局，再谈3/5。

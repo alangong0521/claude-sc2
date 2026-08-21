@@ -6410,10 +6410,10 @@ def terran_rush_robo_needed(
     min_bases: int = 3,
     fleet_gate: int = 4,
 ) -> bool:
-    """O387-②:Terran Rush 死亡球前预置机械台，给重甲反制留产线。"""
+    """O387/O394:Terran Rush/Timing 压力波前预置机械台。"""
     return (
         opp_race == "terran"
-        and ai_build == "rush"
+        and ai_build in ("rush", "timing")
         and now >= min_time
         and bases >= min_bases
         and fleet_count < fleet_gate
@@ -6431,13 +6431,21 @@ def terran_rush_immortal_needed(
     trigger: int = 6,
     cap: int = 2,
 ) -> bool:
-    """O387-③:Marauder/Tank 重甲死亡球出现时直产最多2个不朽。"""
+    """O387/O394:Terran Rush/Timing 重甲波出现时直产最多2个不朽。"""
     return (
         opp_race == "terran"
-        and ai_build == "rush"
+        and ai_build in ("rush", "timing")
         and visible_armored_ground >= trigger
         and immortals < cap
     )
+
+
+def timing_carrier_transition_allowed(
+    ai_build: str,
+    tempest_count: int,
+) -> bool:
+    """O394:Terran Timing 首暴风真实出场前禁止E10转航母。"""
+    return ai_build != "timing" or tempest_count > 0
 
 
 def pick_safest_rebuild_expansion(

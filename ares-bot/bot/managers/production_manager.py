@@ -228,6 +228,7 @@ from bot.production_plans import (
     terran_rush_fourth_before_contact_blocked,
     terran_rush_robo_needed,
     terran_rush_immortal_needed,
+    timing_carrier_transition_allowed,
     zerg_rush_late_stalker_escort_needed,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -9018,25 +9019,30 @@ class ProductionManager(Manager):
                 "t": round(self.ai.time, 1),
                 "msg": "O374:敌坦克首现,航母转型点提前(E10)",
             })
-        if carrier_transition_ready(
-            self.ai.time,
-            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST),
-            enemy_ground_supply=sum(
-                self.ai.calculate_supply_cost(u.type_id)
-                for u in self.ai.enemy_units
-                if not u.is_structure
-                and not u.is_flying
-                and is_combat_type(u.type_id)
-            ),
-            tank_seen=self._o374_tank_seen,
-        ) or carrier_transition_time_box(
-            # O377-②(o376a 三局 0/3 尸检):vs Terran 时间盒硬转 ——
-            # 「等坦克首现」被动扳机下首航母 498-671 vs 胜局配方
-            # 454;FB 落成 +150s 或 t≥480 硬转(坦克扳机保留为更
-            # 早的提前条件,不再是必要条件)。非 terran 恒 False。
-            self.ai.time,
-            self._fb_completed_at,
-            self._opp_race,
+        _tempests_for_transition = self.manager_mediator.get_own_unit_count(
+            unit_type_id=UnitID.TEMPEST, include_pending=False
+        )
+        if timing_carrier_transition_allowed(
+            self._ai_build, _tempests_for_transition
+        ) and (
+            carrier_transition_ready(
+                self.ai.time,
+                _tempests_for_transition,
+                enemy_ground_supply=sum(
+                    self.ai.calculate_supply_cost(u.type_id)
+                    for u in self.ai.enemy_units
+                    if not u.is_structure
+                    and not u.is_flying
+                    and is_combat_type(u.type_id)
+                ),
+                tank_seen=self._o374_tank_seen,
+            )
+            or carrier_transition_time_box(
+                # O377-②(o376a 三局 0/3 尸检):vs Terran 时间盒硬转。
+                self.ai.time,
+                self._fb_completed_at,
+                self._opp_race,
+            )
         ):
             self._pivot_transitioned = True
             # O378-②(o377a 三局尸检):转型点/时间盒触发即钉 SG2 —
@@ -10957,6 +10963,18 @@ class ProductionManager(Manager):
         """
         if self._o381_nexus_fund_active:
             return
+        if structure_id == UnitID.CYBERNETICSCORE:
+            _runner = getattr(self.ai, "build_order_runner", None)
+            if build_runner_owns_unique_core(
+                runner_present=_runner is not None,
+                build_completed=(
+                    _runner.build_completed if _runner is not None else True
+                ),
+                runner_stalled=getattr(self, "_o324_runner_stalled", False),
+            ):
+                # O394(o393a):Timing flow科技链与Runner同帧各注册一座BY。
+                # Runner未完成/未卡死时由Runner独占唯一BY。
+                return
         # O216i(o216h-lane2 game_01 实证):Zerg Timing 前期(300s 前)主基 2 塔
         # 未就绪时 STARGATE/FLEETBEACON 让位塔链 —— SG 在 0 塔窗口抢走 150 矿,
         # 306s 波到脸时 0 塔被推平;舰队科技晚 ~60s 不影响成型窗。
