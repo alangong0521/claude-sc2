@@ -6220,6 +6220,71 @@ def economic_strike_fleet_keeps_strategic_target(
     )
 
 
+def carrier_fleet_keeps_strategic_target(
+    *,
+    is_fleet_air: bool,
+    air_recall_active: bool,
+    economic_strike_active: bool,
+    small_intruder_active: bool,
+    fleet_count: int,
+    ground_defenders: int,
+    min_fleet: int = 8,
+    min_ground_defenders: int = 3,
+) -> bool:
+    """O388-①:成型舰队不为可由地面守军清掉的1-5残敌全体折返。"""
+    if not is_fleet_air or air_recall_active:
+        return False
+    return economic_strike_active or (
+        small_intruder_active
+        and fleet_count >= min_fleet
+        and ground_defenders >= min_ground_defenders
+    )
+
+
+def zerg_rush_late_stalker_escort_needed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    now: float,
+    fleet_count: int,
+    stalkers: int,
+    min_time: float = 900.0,
+    min_fleet: int = 8,
+    stalker_floor: int = 8,
+) -> bool:
+    """O388-②:Zerg Rush 后期腐化转型前补足8追猎护航。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "rush"
+        and now >= min_time
+        and fleet_count >= min_fleet
+        and stalkers < stalker_floor
+    )
+
+
+def zerg_rush_late_expand_blocked(
+    *,
+    opp_race: str,
+    ai_build: str,
+    now: float,
+    current_bases: int,
+    enemy_army_supply_credited: float,
+    own_army_supply: float,
+    min_time: float = 900.0,
+    min_bases: int = 3,
+    enemy_floor: float = 80.0,
+) -> bool:
+    """O388-③:敌后期信用兵力领先时不把400矿投入裸四矿。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "rush"
+        and now >= min_time
+        and current_bases >= min_bases
+        and enemy_army_supply_credited >= enemy_floor
+        and enemy_army_supply_credited > own_army_supply
+    )
+
+
 def terran_precontact_cannon_capped(
     *,
     opp_race: str,
@@ -6274,11 +6339,71 @@ def terran_precontact_local_defense_targets(
     )
 
 
+def terran_rush_fourth_before_contact_blocked(
+    *,
+    opp_race: str,
+    ai_build: str,
+    current_bases: int,
+    contact_seen: bool,
+    max_precontact_bases: int = 3,
+) -> bool:
+    """O387-①:Terran Rush 首接触前最多三矿，四矿等敌形态兑现。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "rush"
+        and not contact_seen
+        and current_bases >= max_precontact_bases
+    )
+
+
+def terran_rush_robo_needed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    now: float,
+    bases: int,
+    fleet_count: int,
+    fleet_beacon_present: bool,
+    robo_present: bool,
+    min_time: float = 420.0,
+    min_bases: int = 3,
+    fleet_gate: int = 4,
+) -> bool:
+    """O387-②:Terran Rush 死亡球前预置机械台，给重甲反制留产线。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "rush"
+        and now >= min_time
+        and bases >= min_bases
+        and fleet_count < fleet_gate
+        and fleet_beacon_present
+        and not robo_present
+    )
+
+
+def terran_rush_immortal_needed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    visible_armored_ground: int,
+    immortals: int,
+    trigger: int = 6,
+    cap: int = 2,
+) -> bool:
+    """O387-③:Marauder/Tank 重甲死亡球出现时直产最多2个不朽。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "rush"
+        and visible_armored_ground >= trigger
+        and immortals < cap
+    )
+
+
 def pick_safest_rebuild_expansion(
     free_expansions,
     visible_enemy_ground_positions,
     home,
-    max_home_distance: float = 80.0,
+    max_home_distance: float = 65.0,
     home_weight: float = 0.5,
 ):
     """O383-②:丢矿急性窗选离当前敌地面主力最远的扩张点。

@@ -54,7 +54,7 @@ from bot.production_plans import (
     desperation_push_window,
     terran_economic_strike_window,
     enemy_townhall_matches_focused_start,
-    economic_strike_fleet_keeps_strategic_target,
+    carrier_fleet_keeps_strategic_target,
     economic_strike_recall_threshold,
     two_base_guard_point,
     main_defense_first,
@@ -1162,6 +1162,23 @@ class CombatManager(Manager):
         _air_recall = self._air_fleet_recall_target(
             min_threat=_air_recall_threshold
         )
+        _ground_defenders = sum(
+            self.manager_mediator.get_own_unit_count(
+                unit_type_id=uid, include_pending=False
+            )
+            for uid in (
+                UnitID.ZEALOT,
+                UnitID.STALKER,
+                UnitID.IMMORTAL,
+                UnitID.ARCHON,
+            )
+        )
+        _fleet_onfield_for_split = sum(
+            self.manager_mediator.get_own_unit_count(
+                unit_type_id=uid, include_pending=False
+            )
+            for uid in (UnitID.TEMPEST, UnitID.CARRIER)
+        )
         _strike_split = (
             _economic_strike_active
             and _air_recall is None
@@ -1192,10 +1209,13 @@ class CombatManager(Manager):
                 _is_fleet_air = unit_id in self._FLEET_AIR_TYPES
                 if _air_recall is not None and _is_fleet_air:
                     _unit_attack_target = _air_recall
-                elif economic_strike_fleet_keeps_strategic_target(
+                elif carrier_fleet_keeps_strategic_target(
                     is_fleet_air=_is_fleet_air,
-                    economic_strike_active=_economic_strike_active,
                     air_recall_active=False,
+                    economic_strike_active=_economic_strike_active,
+                    small_intruder_active=_intruder is not None,
+                    fleet_count=_fleet_onfield_for_split,
+                    ground_defenders=_ground_defenders,
                 ):
                     _unit_attack_target = _strategic_attack_target
                 else:

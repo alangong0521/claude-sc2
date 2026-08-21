@@ -214,9 +214,15 @@ from bot.production_plans import (  # noqa: E402
     terran_economic_strike_window,
     enemy_townhall_matches_focused_start,
     economic_strike_fleet_keeps_strategic_target,
+    carrier_fleet_keeps_strategic_target,
+    zerg_rush_late_stalker_escort_needed,
+    zerg_rush_late_expand_blocked,
     terran_precontact_cannon_capped,
     terran_precontact_ground_pause,
     terran_precontact_local_defense_targets,
+    terran_rush_fourth_before_contact_blocked,
+    terran_rush_robo_needed,
+    terran_rush_immortal_needed,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -6150,6 +6156,58 @@ class TestO381Plans(unittest.TestCase):
             )
         )
 
+    def test_carrier_fleet_keeps_strategic_target(self):
+        base = dict(
+            is_fleet_air=True,
+            air_recall_active=False,
+            economic_strike_active=False,
+            small_intruder_active=True,
+            fleet_count=12,
+            ground_defenders=7,
+        )
+        self.assertTrue(carrier_fleet_keeps_strategic_target(**base))
+        self.assertFalse(
+            carrier_fleet_keeps_strategic_target(
+                **{**base, "ground_defenders": 2}
+            )
+        )
+        self.assertFalse(
+            carrier_fleet_keeps_strategic_target(
+                **{**base, "air_recall_active": True}
+            )
+        )
+
+    def test_zerg_rush_late_stalker_escort_needed(self):
+        base = dict(
+            opp_race="zerg", ai_build="rush", now=900.0,
+            fleet_count=12, stalkers=3,
+        )
+        self.assertTrue(zerg_rush_late_stalker_escort_needed(**base))
+        self.assertFalse(
+            zerg_rush_late_stalker_escort_needed(**{**base, "stalkers": 8})
+        )
+        self.assertFalse(
+            zerg_rush_late_stalker_escort_needed(**{**base, "now": 899.9})
+        )
+
+    def test_zerg_rush_late_expand_blocked(self):
+        base = dict(
+            opp_race="zerg", ai_build="rush", now=945.0,
+            current_bases=3, enemy_army_supply_credited=86.0,
+            own_army_supply=67.0,
+        )
+        self.assertTrue(zerg_rush_late_expand_blocked(**base))
+        self.assertFalse(
+            zerg_rush_late_expand_blocked(
+                **{**base, "enemy_army_supply_credited": 60.0}
+            )
+        )
+        self.assertFalse(
+            zerg_rush_late_expand_blocked(
+                **{**base, "own_army_supply": 90.0}
+            )
+        )
+
     def test_terran_precontact_caps(self):
         base = dict(
             opp_race="terran",
@@ -6174,6 +6232,58 @@ class TestO381Plans(unittest.TestCase):
         self.assertEqual(
             terran_precontact_local_defense_targets(3, 4, 2),
             (1, 1, 1),
+        )
+
+    def test_terran_rush_fourth_waits_for_contact(self):
+        self.assertTrue(
+            terran_rush_fourth_before_contact_blocked(
+                opp_race="terran", ai_build="rush",
+                current_bases=3, contact_seen=False,
+            )
+        )
+        self.assertFalse(
+            terran_rush_fourth_before_contact_blocked(
+                opp_race="terran", ai_build="rush",
+                current_bases=3, contact_seen=True,
+            )
+        )
+        self.assertFalse(
+            terran_rush_fourth_before_contact_blocked(
+                opp_race="terran", ai_build="rush",
+                current_bases=2, contact_seen=False,
+            )
+        )
+
+    def test_terran_rush_robo_needed(self):
+        base = dict(
+            opp_race="terran", ai_build="rush", now=420.0,
+            bases=3, fleet_count=3, fleet_beacon_present=True,
+            robo_present=False,
+        )
+        self.assertTrue(terran_rush_robo_needed(**base))
+        self.assertFalse(
+            terran_rush_robo_needed(**{**base, "fleet_count": 4})
+        )
+        self.assertFalse(
+            terran_rush_robo_needed(**{**base, "fleet_beacon_present": False})
+        )
+        self.assertFalse(
+            terran_rush_robo_needed(**{**base, "robo_present": True})
+        )
+
+    def test_terran_rush_immortal_needed(self):
+        base = dict(
+            opp_race="terran", ai_build="rush",
+            visible_armored_ground=11, immortals=0,
+        )
+        self.assertTrue(terran_rush_immortal_needed(**base))
+        self.assertFalse(
+            terran_rush_immortal_needed(
+                **{**base, "visible_armored_ground": 5}
+            )
+        )
+        self.assertFalse(
+            terran_rush_immortal_needed(**{**base, "immortals": 2})
         )
 
     def test_pick_safest_rebuild_expansion(self):
@@ -6202,6 +6312,16 @@ class TestO381Plans(unittest.TestCase):
                 [safe_pocket, far_corner], [hot_enemy], home
             ),
             safe_pocket,
+        )
+        near_rebuild = Point2((20.0, 0.0))
+        far_but_safe = Point2((0.0, 75.0))
+        self.assertEqual(
+            pick_safest_rebuild_expansion(
+                [near_rebuild, far_but_safe],
+                [Point2((50.0, 0.0))],
+                home,
+            ),
+            near_rebuild,
         )
 
     def test_terran_post_rebuild_recovery_active(self):

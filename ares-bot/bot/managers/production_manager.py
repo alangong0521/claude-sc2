@@ -223,6 +223,11 @@ from bot.production_plans import (
     terran_precontact_cannon_capped,
     terran_precontact_ground_pause,
     terran_precontact_local_defense_targets,
+    terran_rush_fourth_before_contact_blocked,
+    terran_rush_robo_needed,
+    terran_rush_immortal_needed,
+    zerg_rush_late_stalker_escort_needed,
+    zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -813,6 +818,7 @@ class ProductionManager(Manager):
         self._o383_terran_contact_seen: bool = False
         self._o383_post_rebuild_until: float = 0.0
         self._o383_healthy_expand_from_bases: int | None = None
+        self._o387_terran_robo_logged: bool = False
         # B4③ 停气台账:rush 期间被拉下气矿的农民 tag(role 归 _GAS_STOP_ROLE),
         # rush 解除后统一归 GATHERING 回气(ares 记账不动,见 _rush_gas_stop)。
         self._gas_stopped_tags: set[int] = set()
@@ -6330,12 +6336,36 @@ class ProductionManager(Manager):
         # O257-②(o256 尸检):360s 太晚 —— 波 305-315s 已可见(敌地面 ≥6),
         # 360 才排 → 首不朽 ~450s,波 2-6(350-660s 连续)已把经济磨穿;
         # 降到 280(敌地面 ≥6 前提不变,无形早排风险)。
-        if (
+        _robo_present = self._structure_present_or_pending(
+            UnitID.ROBOTICSFACILITY
+        )
+        _terran_rush_robo = terran_rush_robo_needed(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            now=self.ai.time,
+            bases=self.ai.townhalls.amount,
+            fleet_count=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER
+                )
+            ),
+            fleet_beacon_present=self._structure_present_or_pending(
+                UnitID.FLEETBEACON
+            ),
+            robo_present=_robo_present,
+        )
+        _zerg_timing_robo = (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
             and (self._fleet_transitioned or self.ai.time >= 280.0)
             and self._visible_enemy_army_count() >= 6
-            and not self._structure_present_or_pending(UnitID.ROBOTICSFACILITY)
+        )
+        if (
+            (_zerg_timing_robo or _terran_rush_robo)
+            and not _robo_present
             # O364-①:Nexus 资金窗独占期 Robo 钉点 hold(300 矿同台
             # 竞争 Nexus 400 矿窗;threat 豁免在判据内,急性威胁不锁)
             and not (
@@ -6368,7 +6398,13 @@ class ProductionManager(Manager):
                     "t": round(self.ai.time, 1),
                     "msg": f"O245:建台派工失败={_robo_result}",
                 })
-            if not getattr(self, "_o245_logged", False):
+            if _terran_rush_robo and not self._o387_terran_robo_logged:
+                self._o387_terran_robo_logged = True
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O387:Terran死亡球前预置机械台(不朽者反重甲)",
+                })
+            elif _zerg_timing_robo and not getattr(self, "_o245_logged", False):
                 self._o245_logged = True
                 self.ai._events.append({
                     "t": round(self.ai.time, 1),
@@ -6380,17 +6416,39 @@ class ProductionManager(Manager):
         # 买不起时由 spawn_pause_reason 的 immortal_reserve 攒钱。
         # O297-②(o296b game_02 实证):舰队基建已活后不朽 275 矿/个与暴风
         # 抢矿(2 不朽 ≈ 3 暴风的矿,94 人口杂牌军被 82 波碾)——让位舰队。
-        if (
+        _immortals_now = (
+            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.IMMORTAL)
+            + cy_unit_pending(self.ai, UnitID.IMMORTAL)
+        )
+        _visible_terran_armored_ground = sum(
+            1
+            for u in self.ai.enemy_units
+            if not u.is_structure
+            and not u.is_flying
+            and u.type_id in {
+                UnitID.MARAUDER,
+                UnitID.SIEGETANK,
+                UnitID.SIEGETANKSIEGED,
+                UnitID.THOR,
+            }
+        )
+        _terran_rush_immortal = terran_rush_immortal_needed(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            visible_armored_ground=_visible_terran_armored_ground,
+            immortals=_immortals_now,
+        )
+        _zerg_timing_immortal = (
             self._opp_race == "zerg"
             and self._ai_build == "timing"
-            and not self._o381_nexus_fund_active
             and self._visible_enemy_army_count() >= 6
             and not self._zt_fleet_infra_live()
+            and _immortals_now < 4
+        )
+        if (
+            not self._o381_nexus_fund_active
+            and (_zerg_timing_immortal or _terran_rush_immortal)
             and self.ai.can_afford(UnitID.IMMORTAL)
-            and (
-                self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.IMMORTAL)
-                + cy_unit_pending(self.ai, UnitID.IMMORTAL)
-            ) < 4
         ):
             for _robo in self.manager_mediator.get_own_structures_dict[
                 UnitID.ROBOTICSFACILITY
@@ -6399,7 +6457,11 @@ class ProductionManager(Manager):
                     _robo.train(UnitID.IMMORTAL)
                     self.ai._events.append({
                         "t": round(self.ai.time, 1),
-                        "msg": "O245e:机械台直产不朽",
+                        "msg": (
+                            "O387:机械台直产不朽反Marauder/Tank"
+                            if _terran_rush_immortal
+                            else "O245e:机械台直产不朽"
+                        ),
                     })
                     break
         if not self._o381_nexus_fund_active:
@@ -8757,6 +8819,30 @@ class ProductionManager(Manager):
         # rush/unknown/未判定 → 不 pivot(保守默认,绝不按 Macro 打)。
         if self._pivot_tempest_mode():
             spawn = tempest_primary_spawn(spawn, UnitID.CARRIER, UnitID.TEMPEST)
+        _fleet_for_escort = (
+            self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.TEMPEST, include_pending=False
+            )
+            + self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.CARRIER, include_pending=False
+            )
+        )
+        _stalkers_for_escort = self.manager_mediator.get_own_unit_count(
+            unit_type_id=UnitID.STALKER
+        )
+        if zerg_rush_late_stalker_escort_needed(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            now=self.ai.time,
+            fleet_count=_fleet_for_escort,
+            stalkers=_stalkers_for_escort,
+        ):
+            # O388-②:两座Gateway从900s起补到8追猎后自灭；同优先级
+            # 放在舰队配方前，确保腐化19条显形前已有地面对空护航。
+            spawn = {
+                UnitID.STALKER: {"proportion": 0.2, "priority": 0},
+                **spawn,
+            }
         # 反空军 pivot:敌可见空军主力 ≥ trigger → 混入对空兵种
         air_threat = sum(
             1 for u in self.ai.enemy_units
@@ -9450,6 +9536,31 @@ class ProductionManager(Manager):
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
         self._zt_pocket_expand_debug()  # O283d:激活判据节流记账(排查期)
+        if terran_rush_fourth_before_contact_blocked(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            current_bases=self.ai.townhalls.amount,
+            contact_seen=self._o383_terran_contact_seen,
+        ):
+            # O387-①(o386b g1):四矿510s落成、死亡球537s到脸，
+            # 27s连首塔都来不及完成。三矿先把400矿转舰队/机械台，
+            # 接触兑现后立即恢复健康/常态扩张。
+            self._o383_healthy_expand_from_bases = None
+            self._o381_healthy_expand_active = False
+            return False
+        if zerg_rush_late_expand_blocked(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            now=self.ai.time,
+            current_bases=self.ai.townhalls.amount,
+            enemy_army_supply_credited=self._enemy_army_supply_credited(),
+            own_army_supply=self.ai.supply_used - self.ai.supply_workers,
+        ):
+            # O388-③(o386a g1):945s敌信用86>我军67仍开裸四矿，
+            # 400矿+首塔基金恰好撞上1044s腐化/大龙死亡球。
+            self._o383_healthy_expand_from_bases = None
+            self._o381_healthy_expand_active = False
+            return False
         if self._o383_healthy_expand_from_bases is not None:
             if not healthy_expand_latch_active(
                 self._o383_healthy_expand_from_bases,
