@@ -6180,6 +6180,46 @@ def terran_economic_strike_window(
     )
 
 
+def enemy_townhall_matches_focused_start(
+    position: tuple[float, float],
+    focused_start: tuple[float, float],
+    enemy_starts: list[tuple[float, float]],
+) -> bool:
+    """O386-①:把已知敌基地归到当前焦点敌人，不用固定80格半径裁剪。
+
+    1v1 的所有敌基地都属于唯一敌人，即使电脑已扩到地图远端；多人局则
+    按离哪个敌方出生点最近做 Voronoi 归属，避免把另一名敌人的基地纳入
+    当前经济打击目标。
+    """
+    if len(enemy_starts) <= 1:
+        return True
+
+    px, py = position
+    nearest = min(
+        enemy_starts,
+        key=lambda start: (px - start[0]) ** 2 + (py - start[1]) ** 2,
+    )
+    return nearest == focused_start
+
+
+def economic_strike_fleet_keeps_strategic_target(
+    *,
+    is_fleet_air: bool,
+    economic_strike_active: bool,
+    air_recall_active: bool,
+) -> bool:
+    """O386-②:经济打击舰队仅在真正达到召回门时让位基地战术目标。
+
+    O217 的1-5残敌与 O219 的6-9地面威胁仍由地面守军处理；暴风/航母
+    继续斩经济。达到经济打击召回门（当前10）后，空军照常回防。
+    """
+    return (
+        is_fleet_air
+        and economic_strike_active
+        and not air_recall_active
+    )
+
+
 def terran_precontact_cannon_capped(
     *,
     opp_race: str,

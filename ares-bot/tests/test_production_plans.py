@@ -212,6 +212,8 @@ from bot.production_plans import (  # noqa: E402
     healthy_mining_base_target,
     healthy_mining_expand_needed,
     terran_economic_strike_window,
+    enemy_townhall_matches_focused_start,
+    economic_strike_fleet_keeps_strategic_target,
     terran_precontact_cannon_capped,
     terran_precontact_ground_pause,
     terran_precontact_local_defense_targets,
@@ -6101,6 +6103,51 @@ class TestO381Plans(unittest.TestCase):
         )
         self.assertFalse(
             terran_economic_strike_window(**{**base, "fleet_count": 7})
+        )
+
+    def test_enemy_townhall_matches_focused_start(self):
+        # 1v1 不再用距敌主基80格裁剪：远端偷矿仍属于唯一敌人。
+        self.assertTrue(
+            enemy_townhall_matches_focused_start(
+                (128.0, 127.0),
+                (38.0, 122.0),
+                [(38.0, 122.0)],
+            )
+        )
+        # 多人按最近出生点归属，不能吸入另一名敌人的基地。
+        starts = [(20.0, 20.0), (180.0, 180.0)]
+        self.assertTrue(
+            enemy_townhall_matches_focused_start(
+                (35.0, 30.0), starts[0], starts
+            )
+        )
+        self.assertFalse(
+            enemy_townhall_matches_focused_start(
+                (170.0, 165.0), starts[0], starts
+            )
+        )
+
+    def test_economic_strike_fleet_keeps_strategic_target(self):
+        self.assertTrue(
+            economic_strike_fleet_keeps_strategic_target(
+                is_fleet_air=True,
+                economic_strike_active=True,
+                air_recall_active=False,
+            )
+        )
+        self.assertFalse(
+            economic_strike_fleet_keeps_strategic_target(
+                is_fleet_air=False,
+                economic_strike_active=True,
+                air_recall_active=False,
+            )
+        )
+        self.assertFalse(
+            economic_strike_fleet_keeps_strategic_target(
+                is_fleet_air=True,
+                economic_strike_active=True,
+                air_recall_active=True,
+            )
         )
 
     def test_terran_precontact_caps(self):

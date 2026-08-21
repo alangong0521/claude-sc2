@@ -53,6 +53,8 @@ from bot.production_plans import (
     recipe_push_exempt,
     desperation_push_window,
     terran_economic_strike_window,
+    enemy_townhall_matches_focused_start,
+    economic_strike_fleet_keeps_strategic_target,
     economic_strike_recall_threshold,
     two_base_guard_point,
     main_defense_first,
@@ -138,6 +140,8 @@ class CombatManager(Manager):
         self._o380_desperation_until: float = 0.0
         # O382-④:Terran 制空后打分矿窗的边沿簿记。
         self._o382_economic_strike_active: bool = False
+        # O386-②:经济打击时地面守军清抄家、舰队继续斩经济的分流边沿。
+        self._o386_strike_split_active: bool = False
         # O226:残敌清剿 3s 收尾滞回(防 attack_target 每帧翻转 yo-yo)
         self._intruder_last_seen: float | None = None
         self._intruder_last_target: Point2 | None = None
@@ -302,11 +306,12 @@ class CombatManager(Manager):
         UnitID.MOTHERSHIP,
     }
 
-    def _air_fleet_recall_target(self) -> Point2 | None:
-        """O205:任一 Nexus 15 格内 ≥6 敌地面 → 空军回防该基地,保留 10s 滞回。
+    def _air_fleet_recall_target(self, min_threat: int = 6) -> Point2 | None:
+        """O205:任一 Nexus 15 格内达到门限 → 空军回防,保留 10s 滞回。
 
         与 E6 工人撤离联动:触发 E6 的基地(阈值 4)与这里(阈值 6)部分重叠,
         大波(≥6)时空军同步回防。优先回防距主基最近的受威胁基地(主战方向)。
+        O386 起经济打击期传入10，避免 O205 把 O384 的10人召回门旁路回6。
         """
         now = getattr(self.ai, "time", 0.0)
         if now < self._fleet_recall_until and self._fleet_recall_target is not None:
@@ -326,7 +331,7 @@ class CombatManager(Manager):
         target = fleet_recall_target(
             [(th.position.x, th.position.y) for th in ths],
             enemies,
-            min_threat=6,
+            min_threat=min_threat,
             radius=15.0,
         )
         if target is not None:
@@ -431,8 +436,16 @@ class CombatManager(Manager):
             UnitID.HIVE,
         }
         focus = self.ai.focused_enemy_start()
+        enemy_starts = list(self.ai.enemy_start_locations)
         candidates = self.ai.enemy_structures.filter(
-            lambda s: s.type_id in townhall_types and s.position.distance_to(focus) < 80
+            lambda s: (
+                s.type_id in townhall_types
+                and enemy_townhall_matches_focused_start(
+                    (s.position.x, s.position.y),
+                    (focus.x, focus.y),
+                    [(start.x, start.y) for start in enemy_starts],
+                )
+            )
         )
         return candidates.sorted(lambda s: s.position.distance_to(focus))
 
@@ -1088,6 +1101,9 @@ class CombatManager(Manager):
             attack_target = self.attack_target
         # B3 can_win_fight 接战刹车:模拟器判负 → 目标改为撤回主基地(只当一票否决)
         attack_target = self._apply_combat_sim_brake(attack_target)
+        # O386-②:保留 O302/O382 算出的战略目标。下面 O217/O219 仍可把
+        # 地面守军改派回家，但经济打击舰队只在真正达到10人召回门时让位。
+        _strategic_attack_target = attack_target
         # O217(司令观察):基地内残敌清剿 —— 大战后敌小股(1-5)滞留基地拆建筑,
         # 攻击目标改为残敌位置,先清再推(≥6 的大波走 O205/_hot_base_anchor)。
         _intruder = self._base_intruder_target()
@@ -1108,7 +1124,8 @@ class CombatManager(Manager):
         # 集结期/对空攒兵/蹲守 → 主基或最暴露分矿;transition → 坡口/两矿中点;
         # 结果大波打二矿时只有空军回防(O205),地面守军蹲主基看戏,空军孤立阵亡、
         # 二矿被推平。统一盖到所有分支(含 sim 刹车/残敌清剿)之后,主力优先。
-        if (hot_all := self._hot_base_anchor(min_threat=6)) is not None:
+        hot_all = self._hot_base_anchor(min_threat=6)
+        if hot_all is not None:
             attack_target = hot_all
         # B6 Squad 化:主力 squad 中心做散兵归队锚点(拿不到 → None 降级现状)
         regroup_center = self._main_squad_center()
@@ -1134,7 +1151,33 @@ class CombatManager(Manager):
                 _retreat_point = min(
                     _cover, key=lambda s: s.distance_to(self.ai.start_location)
                 ).position
-        _air_recall = self._air_fleet_recall_target()
+        _economic_strike_active = getattr(
+            self, "_o382_economic_strike_active", False
+        )
+        _air_recall_threshold = 6
+        if _economic_strike_active:
+            _air_recall_threshold = economic_strike_recall_threshold(
+                fleet_no_recall_threshold(_fleet_now)
+            )
+        _air_recall = self._air_fleet_recall_target(
+            min_threat=_air_recall_threshold
+        )
+        _strike_split = (
+            _economic_strike_active
+            and _air_recall is None
+            and (_intruder is not None or hot_all is not None)
+        )
+        if _strike_split and not self._o386_strike_split_active:
+            events = getattr(self.ai, "_events", None)
+            if events is not None:
+                events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        "O386:经济打击兵力分流"
+                        f"(舰队继续斩经济,地面守军回防,舰队召回门={_air_recall_threshold})"
+                    ),
+                })
+        self._o386_strike_split_active = _strike_split
         for spec in self._army.by_role("ATTACKING"):
             combat = self._combat_dispatch.get(spec.combat)
             if combat is None:
@@ -1146,11 +1189,17 @@ class CombatManager(Manager):
                 role=UnitRole.ATTACKING, unit_type=unit_id
             ):
                 # O205:空军基地遇袭回防 —— 仅对空军生效,地面仍按原 attack_target
-                _unit_attack_target = (
-                    _air_recall
-                    if _air_recall is not None and unit_id in self._FLEET_AIR_TYPES
-                    else attack_target
-                )
+                _is_fleet_air = unit_id in self._FLEET_AIR_TYPES
+                if _air_recall is not None and _is_fleet_air:
+                    _unit_attack_target = _air_recall
+                elif economic_strike_fleet_keeps_strategic_target(
+                    is_fleet_air=_is_fleet_air,
+                    economic_strike_active=_economic_strike_active,
+                    air_recall_active=False,
+                ):
+                    _unit_attack_target = _strategic_attack_target
+                else:
+                    _unit_attack_target = attack_target
                 combat.execute(
                     units,
                     attack_target=_unit_attack_target,
