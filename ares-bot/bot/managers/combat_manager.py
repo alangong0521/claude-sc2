@@ -53,6 +53,8 @@ from bot.production_plans import (
     recipe_push_exempt,
     desperation_push_window,
     terran_economic_strike_window,
+    zerg_rush_economic_strike_window,
+    economic_strike_ground_holds_home,
     enemy_townhall_matches_focused_start,
     carrier_fleet_keeps_strategic_target,
     economic_strike_recall_threshold,
@@ -696,25 +698,43 @@ class CombatManager(Manager):
                 for u in self.ai.enemy_units
                 if u.is_flying and is_combat_type(u.type_id)
             )
-            _known_terran_bases = ()
+            _opp_is_zerg_rush = (
+                _opp_is_zerg
+                and _pm_o227 is not None
+                and getattr(_pm_o227, "_ai_build", "") == "rush"
+            )
+            _known_economic_bases = ()
             if (
-                _opp_is_terran
+                (_opp_is_terran or _opp_is_zerg_rush)
                 and self.ai.time >= 720.0
                 and _fleet_count >= 8
                 and _visible_enemy_air_combat == 0
                 and _hard_aa == 0
             ):
-                _known_terran_bases = self._known_enemy_townhalls()
+                _known_economic_bases = self._known_enemy_townhalls()
             _economic_strike_target = None
+            _economic_strike_race = ""
             if terran_economic_strike_window(
                 opp_race="terran" if _opp_is_terran else "",
                 now=self.ai.time,
                 fleet_count=_fleet_count,
                 visible_enemy_air_combat=_visible_enemy_air_combat,
                 visible_hard_aa=_hard_aa,
-                known_enemy_bases=len(_known_terran_bases),
+                known_enemy_bases=len(_known_economic_bases),
             ):
-                _economic_strike_target = _known_terran_bases[-1].position
+                _economic_strike_race = "terran"
+                _economic_strike_target = _known_economic_bases[-1].position
+            elif zerg_rush_economic_strike_window(
+                opp_race="zerg" if _opp_is_zerg_rush else "",
+                ai_build="rush" if _opp_is_zerg_rush else "",
+                now=self.ai.time,
+                fleet_count=_fleet_count,
+                visible_enemy_air_combat=_visible_enemy_air_combat,
+                visible_hard_aa=_hard_aa,
+                known_enemy_bases=len(_known_economic_bases),
+            ):
+                _economic_strike_race = "zerg"
+                _economic_strike_target = _known_economic_bases[-1].position
             # O374-②(o373b g2/o373a g1 尸检):zerg 出发豁免收窄 —
             # 旧「zerg 全局豁免」使出发闸在 zerg lane 形同虚设
             # (o373b g2 顶波团灭、o373a g1 出击 6s 后被抄家);敌可见
@@ -1007,8 +1027,12 @@ class CombatManager(Manager):
                         _evs.append({
                             "t": round(self.ai.time, 1),
                             "msg": (
-                                "O382:Terran制空后主动斩断分矿"
-                                f"(fleet={_fleet_count},已知基地={len(_known_terran_bases)})"
+                                (
+                                    "O382:Terran制空后主动斩断分矿"
+                                    if _economic_strike_race == "terran"
+                                    else "O390:Zerg波间隙主动斩断分矿"
+                                )
+                                + f"(fleet={_fleet_count},已知基地={len(_known_economic_bases)})"
                             ),
                         })
                 self._o382_economic_strike_active = True
@@ -1209,6 +1233,11 @@ class CombatManager(Manager):
                 _is_fleet_air = unit_id in self._FLEET_AIR_TYPES
                 if _air_recall is not None and _is_fleet_air:
                     _unit_attack_target = _air_recall
+                elif economic_strike_ground_holds_home(
+                    is_fleet_air=_is_fleet_air,
+                    economic_strike_active=_economic_strike_active,
+                ):
+                    _unit_attack_target = self._defend_anchor()
                 elif carrier_fleet_keeps_strategic_target(
                     is_fleet_air=_is_fleet_air,
                     air_recall_active=False,

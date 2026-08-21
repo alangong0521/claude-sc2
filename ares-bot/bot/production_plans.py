@@ -6180,6 +6180,47 @@ def terran_economic_strike_window(
     )
 
 
+def zerg_rush_economic_strike_window(
+    *,
+    opp_race: str,
+    ai_build: str,
+    now: float,
+    fleet_count: int,
+    visible_enemy_air_combat: int,
+    visible_hard_aa: int,
+    known_enemy_bases: int,
+    min_time: float = 720.0,
+    min_fleet: int = 8,
+) -> bool:
+    """O390-①:Zerg Rush 清空腐化的波间隙主动斩最外围经济。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "rush"
+        and now >= min_time
+        and fleet_count >= min_fleet
+        and visible_enemy_air_combat == 0
+        and visible_hard_aa == 0
+        and known_enemy_bases >= 2
+    )
+
+
+def economic_strike_ground_holds_home(
+    *,
+    is_fleet_air: bool,
+    economic_strike_active: bool,
+) -> bool:
+    """O390-②:经济打击只派舰队，追猎/不朽等地面军留守收入点。"""
+    return economic_strike_active and not is_fleet_air
+
+
+def survival_cannon_absolute_capped(
+    cannons: int,
+    cap: int = 24,
+) -> bool:
+    """O390-③:新矿首塔豁免也不能把全局塔继续堆过24。"""
+    return cannons >= cap
+
+
 def enemy_townhall_matches_focused_start(
     position: tuple[float, float],
     focused_start: tuple[float, float],

@@ -213,6 +213,7 @@ from bot.production_plans import (
     gas_hard_stop_required,
     new_base_cannon_fund_needed,
     cannon_fund_nonmoney_release_due,
+    survival_cannon_absolute_capped,
     local_defense_pylon_capped,
     healthy_mining_sufficient_to_stop_extra,
     nexus_priority_fund_active,
@@ -10207,6 +10208,19 @@ class ProductionManager(Manager):
         # (TEMPEST+CARRIER)≥4 且全局塔 ≥8 → 不再新钉塔(返回 "capped");
         # rush/threat 激活豁免(被骑脸时该补还得补)。集中在本入口,
         # 覆盖 O337 分矿守卫/预置塔链/F2 手动钉点全部塔派工路径。
+        if sid == UnitID.PHOTONCANNON and survival_exempt:
+            _survival_cannons_now = (
+                len(
+                    self.manager_mediator.get_own_structures_dict[
+                        UnitID.PHOTONCANNON
+                    ]
+                )
+                + self.manager_mediator.get_building_counter[
+                    UnitID.PHOTONCANNON
+                ]
+            )
+            if survival_cannon_absolute_capped(_survival_cannons_now):
+                return "capped"
         if sid == UnitID.PHOTONCANNON and not survival_exempt:
             # O367-⑤a:survival_exempt(新落成基地首座保命塔)豁免下方
             # cannon_capped/cannon_global_capped/fb_fund 三道闸 ——

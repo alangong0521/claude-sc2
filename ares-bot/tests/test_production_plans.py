@@ -212,6 +212,9 @@ from bot.production_plans import (  # noqa: E402
     healthy_mining_base_target,
     healthy_mining_expand_needed,
     terran_economic_strike_window,
+    zerg_rush_economic_strike_window,
+    economic_strike_ground_holds_home,
+    survival_cannon_absolute_capped,
     enemy_townhall_matches_focused_start,
     economic_strike_fleet_keeps_strategic_target,
     carrier_fleet_keeps_strategic_target,
@@ -6110,6 +6113,41 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             terran_economic_strike_window(**{**base, "fleet_count": 7})
         )
+
+    def test_zerg_rush_economic_strike_window(self):
+        base = dict(
+            opp_race="zerg", ai_build="rush", now=900.0,
+            fleet_count=12, visible_enemy_air_combat=0,
+            visible_hard_aa=0, known_enemy_bases=4,
+        )
+        self.assertTrue(zerg_rush_economic_strike_window(**base))
+        self.assertFalse(
+            zerg_rush_economic_strike_window(
+                **{**base, "visible_hard_aa": 1}
+            )
+        )
+        self.assertFalse(
+            zerg_rush_economic_strike_window(
+                **{**base, "known_enemy_bases": 1}
+            )
+        )
+
+    def test_economic_strike_ground_holds_home(self):
+        self.assertTrue(
+            economic_strike_ground_holds_home(
+                is_fleet_air=False, economic_strike_active=True
+            )
+        )
+        self.assertFalse(
+            economic_strike_ground_holds_home(
+                is_fleet_air=True, economic_strike_active=True
+            )
+        )
+
+    def test_survival_cannon_absolute_capped(self):
+        self.assertFalse(survival_cannon_absolute_capped(23))
+        self.assertTrue(survival_cannon_absolute_capped(24))
+        self.assertTrue(survival_cannon_absolute_capped(35))
 
     def test_enemy_townhall_matches_focused_start(self):
         # 1v1 不再用距敌主基80格裁剪：远端偷矿仍属于唯一敌人。
