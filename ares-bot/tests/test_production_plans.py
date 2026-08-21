@@ -203,6 +203,8 @@ from bot.production_plans import (  # noqa: E402
     gas_hard_stop_required,
     new_base_cannon_fund_needed,
     cannon_fund_nonmoney_release_due,
+    local_defense_pylon_capped,
+    healthy_mining_sufficient_to_stop_extra,
     nexus_priority_fund_active,
     nexus_fund_probe_hard_floor,
     nexus_fund_should_cut_build_runner,
@@ -6016,6 +6018,28 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(cannon_fund_nonmoney_release_due(15.0, True, False))
         self.assertFalse(cannon_fund_nonmoney_release_due(30.0, False, False))
         self.assertFalse(cannon_fund_nonmoney_release_due(30.0, True, True))
+
+    def test_local_defense_pylon_capped(self):
+        self.assertFalse(local_defense_pylon_capped(2))
+        self.assertTrue(local_defense_pylon_capped(3))
+        self.assertTrue(local_defense_pylon_capped(5))
+
+    def test_healthy_mining_sufficient_to_stop_extra(self):
+        self.assertTrue(
+            healthy_mining_sufficient_to_stop_extra(
+                bases=4, healthy_ready_bases=3, workers=60
+            )
+        )
+        self.assertFalse(
+            healthy_mining_sufficient_to_stop_extra(
+                bases=4, healthy_ready_bases=2, workers=60
+            )
+        )
+        self.assertFalse(
+            healthy_mining_sufficient_to_stop_extra(
+                bases=3, healthy_ready_bases=3, workers=60
+            )
+        )
 
     def test_healthy_mining_expand_needed(self):
         base = dict(

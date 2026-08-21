@@ -213,6 +213,8 @@ from bot.production_plans import (
     gas_hard_stop_required,
     new_base_cannon_fund_needed,
     cannon_fund_nonmoney_release_due,
+    local_defense_pylon_capped,
+    healthy_mining_sufficient_to_stop_extra,
     nexus_priority_fund_active,
     nexus_fund_probe_hard_floor,
     nexus_fund_should_cut_build_runner,
@@ -1296,6 +1298,13 @@ class ProductionManager(Manager):
         ):
             _nonmoney_key = self._o380_cannon_fund_key
             self._o380_cannon_fund_retry_after[_nonmoney_key] = self.ai.time + 15.0
+            # O385-①(o385a g1):释放基金后若不认账失败，15s后
+            # 仍从同一扇形锚点重试，二矿首塔仍拖到~394s。
+            # 非资金失败直接累计该基地锚点重试次数，达3次后
+            # O379 链跳扇形走水晶环带 fallback。
+            self._o364_anchor_attempts[_nonmoney_key] = (
+                self._o364_anchor_attempts.get(_nonmoney_key, 0) + 1
+            )
             self._o380_cannon_fund_key = None
             self._o380_cannon_fund_since = 0.0
             self.ai._events.append({
@@ -9488,6 +9497,15 @@ class ProductionManager(Manager):
                         ),
                     })
                 return True
+            if healthy_mining_sufficient_to_stop_extra(
+                bases=self.ai.townhalls.amount,
+                healthy_ready_bases=_healthy,
+                workers=self.ai.supply_workers,
+            ):
+                # 四矿且实时仍有2-3片健康矿区时，不再因常态
+                # workers/saturation 门追五矿；旧矿采干导致健康不足时
+                # 上方健康分支仍会立即开五/六矿。
+                return False
         # O369-①a(o368a g2 实证):FB fund-first latch 期三矿+让位 ——
         # g2 矿 5-756 反复被 Nexus/塔/电池/虚空抢走,FB 连钉 12 次
         # 落成 0 次。二矿未成交豁免(Timing 经济命脉,o368a g3 二矿
@@ -10040,6 +10058,19 @@ class ProductionManager(Manager):
             UnitID.SHIELDBATTERY,
         ):
             return "nexus_fund"
+        if (
+            sid == UnitID.PYLON
+            and critical
+            and base_location is not None
+            and base_location.distance_to(self.ai.start_location) > 5.0
+        ):
+            _local_pylons = sum(
+                1
+                for p in self.manager_mediator.get_own_structures_dict[UnitID.PYLON]
+                if p.position.distance_to(base_location) < 15.0
+            ) + self._in_flight_near(UnitID.PYLON, base_location, radius=15.0)
+            if local_defense_pylon_capped(_local_pylons):
+                return "pylon_local_cap"
         # O383-③(o382d g1):Nexus 成交后的120s先重建核心产能。
         # 新矿零塔的 survival_exempt 首塔保留，第2+塔/电池与研究
         # 让位 BY→SG→FB，防止 47 农+1000气却 0 SG/0 舰队。

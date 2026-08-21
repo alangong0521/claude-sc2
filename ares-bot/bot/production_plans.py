@@ -6025,6 +6025,28 @@ def cannon_fund_nonmoney_release_due(
     )
 
 
+def local_defense_pylon_capped(
+    pylons_near_base: int,
+    cap: int = 3,
+) -> bool:
+    """O385-①:分矿防御供电自救局部最多3根水晶。"""
+    return pylons_near_base >= cap
+
+
+def healthy_mining_sufficient_to_stop_extra(
+    *,
+    bases: int,
+    healthy_ready_bases: int,
+    workers: int,
+    normal_expand_floor: int = 4,
+) -> bool:
+    """O385-②:四矿后健康矿区已达标则停正常饱和扩张。"""
+    return (
+        bases >= normal_expand_floor
+        and healthy_ready_bases >= healthy_mining_base_target(workers)
+    )
+
+
 def nexus_priority_fund_active(
     now: float,
     current_bases: int,
