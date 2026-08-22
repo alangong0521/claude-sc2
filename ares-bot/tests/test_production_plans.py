@@ -156,6 +156,7 @@ from bot.production_plans import (  # noqa: E402
     fb_rescue_expansion_bypass,
     cyber_core_build_allowed,
     build_runner_owns_unique_core,
+    build_runner_step_stalled,
     expansion_defense_guard_active,
     timing_defense_chain_active,
     push_enemy_army_gate,
@@ -4912,6 +4913,23 @@ class TestO365Fixes(unittest.TestCase):
             )
         )
 
+    def test_build_runner_step_stalled(self):
+        self.assertTrue(
+            build_runner_step_stalled(
+                build_completed=False, stalled_age=45.0
+            )
+        )
+        self.assertFalse(
+            build_runner_step_stalled(
+                build_completed=False, stalled_age=44.9
+            )
+        )
+        self.assertFalse(
+            build_runner_step_stalled(
+                build_completed=True, stalled_age=300.0
+            )
+        )
+
     def test_evac_return_gas_stop_remark(self):
         # O365-⑤b:停气台账在册者归队即重标,不在册者归 GATHERING
         self.assertTrue(evac_return_gas_stop_remark(42, {42, 43}))
@@ -6436,6 +6454,18 @@ class TestO381Plans(unittest.TestCase):
             zerg_macro_cannon_capped(
                 opp_race="zerg", ai_build="macro",
                 fleet_onfield=11, cannons=25,
+            )
+        )
+        self.assertTrue(
+            zerg_macro_cannon_capped(
+                opp_race="zerg", ai_build="macro",
+                fleet_onfield=0, cannons=10,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_cannon_capped(
+                opp_race="zerg", ai_build="macro",
+                fleet_onfield=0, cannons=9,
             )
         )
 

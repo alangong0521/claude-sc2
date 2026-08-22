@@ -180,6 +180,7 @@ from bot.production_plans import (
     fb_rescue_expansion_bypass,
     cyber_core_build_allowed,
     build_runner_owns_unique_core,
+    build_runner_step_stalled,
     expansion_defense_guard_active,
     timing_defense_chain_active,
     cyber_core_np_default_fallback,
@@ -900,6 +901,7 @@ class ProductionManager(Manager):
         # O210:O189 强制开矿旗标每帧由 _want_dynamic_expand 重算,
         # update 头部先清零,避免 _rebuild_nexus 分支跳过导致旧值残留。
         self._o189_forced_expand = False
+        self._update_carrier_build_runner_watchdog()
 
         # O383-①:Terran Rush 实测首个作战单位 500s+ 才到；
         # 接触前只需窄域保底，不能因一座兵营把4塔+6叉
@@ -10750,7 +10752,7 @@ class ProductionManager(Manager):
                     )
                 ),
                 cannons=_macro_cannons_now,
-            ):
+            ) and not survival_exempt:
                 return "zerg_macro_capped"
         # O383-③(o382d g1):Nexus 成交后的120s先重建核心产能。
         # 新矿零塔的 survival_exempt 首塔保留，第2+塔/电池与研究
@@ -12951,6 +12953,39 @@ class ProductionManager(Manager):
         )
         return attackers >= 2
 
+    def _update_carrier_build_runner_watchdog(self) -> None:
+        """O419:carrier opening卡步45s后交棒，经济 opener 同时终止runner。"""
+        if self._flow.name != "carrier":
+            return
+        bor = getattr(self.ai, "build_order_runner", None)
+        if bor is None or bor.build_completed:
+            return
+        step = bor.build_step
+        last_step, since = getattr(
+            self, "_o324_runner_watch", (None, self.ai.time)
+        )
+        if step != last_step:
+            self._o324_runner_watch = (step, self.ai.time)
+            return
+        if getattr(self, "_o324_runner_stalled", False):
+            return
+        if not build_runner_step_stalled(
+            build_completed=bor.build_completed,
+            stalled_age=self.ai.time - since,
+        ):
+            return
+        self._o324_runner_stalled = True
+        opening = getattr(bor, "chosen_opening", "")
+        if opening == "CarrierOpener":
+            bor.set_build_completed()
+            msg = (
+                f"O419:经济opener步#{step}卡死>45s,"
+                "终止runner并交棒bot科技链"
+            )
+        else:
+            msg = f"O324:runner步#{step}卡死>45s,bot层接管防御链"
+        self.ai._events.append({"t": round(self.ai.time, 1), "msg": msg})
+
     def _carrier_rush_opener_early(self) -> bool:
         """O202:判断当前是否为 CarrierOpenerZergRush 早期。
 
@@ -12973,22 +13008,6 @@ class ProductionManager(Manager):
             "CarrierOpenerZergTiming",
         ):
             return False
-        # O324-①(o323b game_01/o321b game_02 实证):runner 步卡死看门狗 ——
-        # forge 步放置失败空转 200s+(银行 960-1340、塔 0、波到脸裸接),
-        # build_step 45s 不前进 → 噤声永久解除,bot 层接管(电力自救/
-        # 手动防链都在 bot 层,runner 放不了的电 bot 层能补)。
-        _step = bor.build_step
-        _last_step, _since = getattr(self, "_o324_runner_watch", (None, 0.0))
-        if _step != _last_step:
-            self._o324_runner_watch = (_step, self.ai.time)
-        elif self.ai.time - _since > 45.0 and not getattr(
-            self, "_o324_runner_stalled", False
-        ):
-            self._o324_runner_stalled = True
-            self.ai._events.append({
-                "t": round(self.ai.time, 1),
-                "msg": f"O324:runner步#{_step}卡死>45s,bot层接管防御链",
-            })
         if getattr(self, "_o324_runner_stalled", False):
             return False
         if bor.chosen_opening == "CarrierOpenerZergTiming":

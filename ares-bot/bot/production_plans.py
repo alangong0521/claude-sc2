@@ -6440,13 +6440,17 @@ def zerg_macro_cannon_capped(
     cannons: int,
     min_fleet: int = 12,
     cap: int = 20,
+    first_fleet: int = 4,
+    pre_fleet_cap: int = 10,
 ) -> bool:
-    """O416:Zerg Macro舰队12后全局炮塔硬顶20。"""
+    """O416/O419:Zerg Macro首批舰队前硬顶10，舰队12后硬顶20。"""
     return (
         opp_race == "zerg"
         and ai_build == "macro"
-        and fleet_onfield >= min_fleet
-        and cannons >= cap
+        and (
+            (fleet_onfield < first_fleet and cannons >= pre_fleet_cap)
+            or (fleet_onfield >= min_fleet and cannons >= cap)
+        )
     )
 
 
@@ -7535,6 +7539,16 @@ def build_runner_owns_unique_core(
 ) -> bool:
     """O392:Runner活跃且未卡死时独占BY等唯一核心建筑注册权。"""
     return runner_present and not build_completed and not runner_stalled
+
+
+def build_runner_step_stalled(
+    *,
+    build_completed: bool,
+    stalled_age: float,
+    timeout: float = 45.0,
+) -> bool:
+    """O419:opening同一步超过45s未前进时交棒bot生产层。"""
+    return not build_completed and stalled_age >= timeout
 
 
 def expansion_defense_guard_active(opp_race: str, ai_build: str) -> bool:

@@ -45,6 +45,22 @@ class TestLoadBuiltinFlows(unittest.TestCase):
             self.assertTrue(fc.spawn, f"{name} spawn 为空")
             self.assertTrue(fc.core_structures, f"{name} 科技链为空")
 
+    def test_carrier_opener_has_no_late_worker_tail(self):
+        _yaml_or_skip(self)
+        import yaml
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "protoss_builds.yml"), encoding="utf-8") as f:
+            order = yaml.safe_load(f)["Builds"]["CarrierOpener"][
+                "OpeningBuildOrder"
+            ]
+        cutoff = order.index("16 supply")
+        self.assertFalse(
+            [step for step in order[cutoff + 1:] if step.endswith(" worker")]
+        )
+        self.assertIn("18 core", order[cutoff + 1:])
+        self.assertIn("22 stargate", order[cutoff + 1:])
+
 
 class TestValidation(unittest.TestCase):
     """from_dict 校验(纯逻辑,不读文件)。"""

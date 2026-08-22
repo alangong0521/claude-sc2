@@ -12147,3 +12147,39 @@ Terran Macro：
    **923 passed, 1 skipped**；生产模块import smoke通过。下一局验收：舰队
    <4/<12/<16时基地≤3/4/5、16前零并发Nexus、舰队<4星门≤3、舰队<16零
    `O390`，以及基地≥2/舰队≥6时零`rebuild_nexus`产兵暂停。
+
+## O419 Zerg Macro 第六轮（Defeat 1102.2s；opener双生产者死锁）
+
+- 正式有效 **Defeat 1102.2s**。录像中电脑二矿103.1s、我方148.1s，三矿
+  308.8s；O418分阶段基地帽生效，本局总基地峰值始终为3，未再发生四/五/
+  六矿并发。舰队<4时星门峰值也严格为3，且全局无`O390`主动斩矿事件。
+- 失败来自更上游科技断链：394/450/506/562s均为0 Cyber、0 SG、0舰队，
+  但塔从13→17、矿物145→1770→4610→7445，气体1160→1504→1856→2196。
+  618s银行已8825矿/2540气仍无科技；自动复盘判定`stall(停产301s)`、
+  峰值存款8945。首SG到约700s，首暴风831.7s，已错过中局波次窗。
+- 基础设施账证明CarrierOpener卡在`build_step#13`。该步是`16 worker`：
+  ProductionManager已持续占用Nexus补农（本局峰值68农），BuildOrderRunner
+  无法亲自排入这只探机，因此不能把worker步标记started/complete；后续18 supply
+  Core与22 supply SG永久不执行。bot层BY watchdog又因runner“仍活跃”而让位，
+  两个生产者互相等待，构成闭环死锁。
+- 608.6s丢三矿后恢复基金才截断runner；此时主因已经持续约300s。重建后BY/
+  SG/FB于675-759s才补齐，835s敌波到家时仅1暴风；1012s舰队归零，终局
+  1基地、0农民、0军队。新认证序列为
+  **负→胜→胜→负→负→负**，滚动最近5局仍 **2胜3负**、连胜0。
+
+### O419 已落地（有效败局的3项优化）
+
+1. **删除CarrierOpener后段worker尾巴**：保留开局到15农的已验证步骤；16 supply
+   之后只保留Core/水晶/SG结构步，探机完全交给ProductionManager。配置测试
+   明确断言16 supply之后不存在`worker`步骤且`18 core`/`22 stargate`仍在。
+2. **经济opener卡步45s强制交棒**：carrier runner每帧记录`build_step`；同一步
+   ≥45s未前进即标记stalled。对`CarrierOpener`同时调用`set_build_completed()`，
+   释放持久建造工并让bot层BY watchdog/常态科技链接管；Rush/Timing沿用原O324
+   防御接管语义。纯函数覆盖44.9/45.0s与completed边界。
+3. **首批舰队前塔帽10**：Zerg Macro真实舰队<4时全局炮塔硬顶10，舰队≥12
+   后原20顶保持；新矿零塔的首座`survival_exempt`仍可越过派工帽。目标是把
+   o419的第11-17座塔（1050矿）和建造槽让给BY→SG→FB→首批暴风。
+4. 验证门：`py_compile`通过；生产/配置定向 **625 passed**；完整项目测试
+   **925 passed, 1 skipped**；生产模块import smoke通过。下一局重点验收：
+   runner不再停在worker步；BY/SG/FB与首暴风时点回到约300/400/450s级；
+   舰队<4时常规塔≤10且生存首塔仍可落地。

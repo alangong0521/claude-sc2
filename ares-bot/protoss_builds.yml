@@ -60,7 +60,10 @@ Builds:
         # O165:本机 SC2 环境 Protoss 开局只有 8 农民(非标准 12),原 build order
         # 从 supply 12 起触发,chrono 拖到 45s、stargate 拖到 6:33。全部阈值 -4,
         # 让 chrono/农民/建筑节奏对齐原本设计,保证 fleet 能成型。
-        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 supply', '11 worker', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '16 worker', '17 worker', '18 core', '19 worker', '20 supply', '20 worker', '21 worker', '22 stargate', '23 worker', '24 supply', '24 worker', '25 worker', '26 worker', '27 worker', '28 supply', '28 worker', '29 worker', '30 worker']
+        # O419:16 supply 后删掉显式 worker 尾巴。ProductionManager 已持续占用
+        # Nexus 补农，本局到68农，但 runner 卡在 step#13 的“16 worker”301s，
+        # 后续 core/SG 全部无法执行。结构步保留原 supply 门，由 bot 补农自然解锁。
+        OpeningBuildOrder: ['8 chrono @ nexus', '8 worker', '9 worker', '10 worker', '11 supply', '11 worker', '12 worker', '13 gate', '14 worker', '15 worker', '16 supply', '18 core', '20 supply', '22 stargate', '24 supply', '28 supply']
 
     # O189:Zerg Timing/Rush 专用开局。O185 把 Stargate 写在 build order 末尾，
     # 结果 30 supply 的星门在单矿经济中吸走 150/150，二矿永远攒不出。
