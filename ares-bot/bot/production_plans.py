@@ -802,6 +802,20 @@ def gas_to_minerals_needed(
     return vespene > vespene_threshold and minerals < mineral_threshold
 
 
+def terran_timing_gas_stop_blocked(
+    opp_race: str,
+    ai_build: str,
+    fleet_onfield: int,
+    min_fleet: int = 8,
+) -> bool:
+    """O411:Terran Timing舰队8前不把气农全拉回矿线。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "timing"
+        and fleet_onfield < min_fleet
+    )
+
+
 def gas_pull_thresholds(
     zerg_timing: bool, now: float, early_until: float = 360.0
 ) -> tuple[float, float]:
@@ -1403,6 +1417,24 @@ def expansion_max_pending(
     if minerals > rich_threshold and headroom > 1:
         return min(rich_pending, headroom)
     return 1
+
+
+def terran_timing_multi_expand_cap(
+    pending: int,
+    *,
+    opp_race: str,
+    ai_build: str,
+    fleet_onfield: int,
+    min_fleet: int = 12,
+) -> int:
+    """O411:Terran Timing舰队12前扩张严格逐矿串行。"""
+    if (
+        opp_race == "terran"
+        and ai_build == "timing"
+        and fleet_onfield < min_fleet
+    ):
+        return min(pending, 1)
+    return pending
 
 
 def builder_is_waiting(in_tracker: bool, is_idle: bool, exempt_role: bool) -> bool:
@@ -5858,6 +5890,18 @@ def enemy_supply_credited(visible_supply: float, sticky_peak: float) -> float:
     正撞 60s 侦察空窗实证);AA 粘滞窗不动(60s 已验证)。
     """
     return max(visible_supply, sticky_peak)
+
+
+def terran_timing_supply_sticky_window(
+    opp_race: str,
+    ai_build: str,
+    default_window: float = 120.0,
+    timing_window: float = 240.0,
+) -> float:
+    """O411:Terran Timing约206s波次间隔使用240s敌军信用窗。"""
+    if opp_race == "terran" and ai_build == "timing":
+        return timing_window
+    return default_window
 
 
 def wave_cannon_floor_trigger(

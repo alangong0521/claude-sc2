@@ -142,12 +142,20 @@ SC2 bot（神族 Aristaeus），基于 [ares-sc2](ares-bot/ares-sc2/) 框架。�
 
 ## 对局后检查（每次对局结束必做，司令指令 2026-07-23）
 
-> **迭代纪律（司令 2026-08-17 拍板）**：**每局对战结束后，立马分析失败日志，
-> 提炼出至少 3 项优化点，改进迭代到下一次对局中，并验证优化方向。**
-> 闭环 = 尸检（`scripts/autopsy_summary.py bench/<tag>/game_XX` + state 快照
-> 逐帧核对）→ ≥3 个有据改进点 → 落地代码（纯函数+单测）→ py_compile +
-> 单测全绿 → 双 lane bench 验证 → battle-log 三段式记账（改动/结果/改进点）
-> → commit+push。验证不过就回退或继续修，不允许带未验证的改动开下一轮。
+> **迭代纪律（司令 2026-08-17 拍板；2026-08-22 加严）**：**任何有效对局
+> （Victory / Defeat / Tie）结束后，都必须立刻分析日志、state 快照和录像；
+> 胜局与败局执行完全相同的尸检纪律，不得因为获胜而跳过。每个有效样本必须
+> 提炼至少 3 项有数据依据、彼此可区分的优化点，并把这 3 项优化实际落地到
+> 代码/配置及相应测试中，在下一局新启动的对决中验证效果。** SC2 崩溃、启动
+> 失败等无有效结果样本不计入此硬门，但仍需记录基础设施问题。
+>
+> **下一局启动硬门**：闭环 = `scripts/autopsy_summary.py` + state 逐帧核对 +
+> `scripts/replay_bases.py` 录像/经济对照 → ≥3 个有据优化点（每项都要有明确
+> 落地点；可合并在同一提交，但只写文档/工程债不算落地）→ 代码/配置改动 +
+> 纯函数/单测 → py_compile + 全量单测 + import smoke → battle-log 记账 →
+> commit+push → 才能启动下一局。验证不过就回退或继续修，不允许带未验证的
+> 改动开下一轮。双 lane 中已经并行启动的另一局可以自然结束，但它归属旧版本，
+> 不能冒充新优化的验证；在闭环完成前不得再启动任何新 lane。
 > **import 冒烟必做（o314 实证）**：`poetry run python -c "import sys;
 > sys.path.insert(0,'ares-sc2/src'); import bot.managers.production_manager,
 > bot.main"` —— py_compile 不查 import 解析、单测不 import 生产模块，

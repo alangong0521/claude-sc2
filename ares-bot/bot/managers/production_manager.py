@@ -77,6 +77,7 @@ from bot.production_plans import (
     expansion_cannon_count,
     expansion_cannon_min_dynamic,
     expansion_max_pending,
+    terran_timing_multi_expand_cap,
     expansion_blocked,
     f2_dispatch_guard_bypassed,
     extra_production_mineral_gate,
@@ -103,6 +104,7 @@ from bot.production_plans import (
     fb_saving_window,
     forge_pin_affordable,
     gas_to_minerals_needed,
+    terran_timing_gas_stop_blocked,
     gas_to_minerals_released,
     gas_pull_window_expired,
     townhall_skips_placement,
@@ -193,6 +195,7 @@ from bot.production_plans import (
     wave_cannon_floor_active,
     wave_cannon_floor_trigger,
     enemy_supply_credited,
+    terran_timing_supply_sticky_window,
     aa_peak_sticky,
     fb_latch_pin_afford_ok,
     sg2_pre_fb_pin_needed,
@@ -2540,6 +2543,19 @@ class ProductionManager(Manager):
             )
             _pending = expansion_max_pending(
                 self.ai.minerals, headroom=max(1, _headroom)
+            )
+            _pending = terran_timing_multi_expand_cap(
+                _pending,
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
             )
             _preposition = dispatch_viable(
                 self.ai.minerals,
@@ -8678,6 +8694,18 @@ class ProductionManager(Manager):
                 self.ai.vespene, self.ai.minerals,
                 vespene_threshold=_gp_vth, mineral_threshold=_gp_mth,
             )
+            and not terran_timing_gas_stop_blocked(
+                self._opp_race,
+                self._ai_build,
+                (
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+            )
             and not _gas_pull_cooling
         ):
             if not self._o358_gas_pull and event_throttle_ok(
@@ -10244,7 +10272,9 @@ class ProductionManager(Manager):
             _vis,
             self._o375_supply_peak,
             self._o375_supply_peak_at,
-            window=120.0,  # O376-③:supply 窗 120s(AA 窗仍 60s)
+            window=terran_timing_supply_sticky_window(
+                self._opp_race, self._ai_build
+            ),
         )
         return enemy_supply_credited(_vis, self._o375_supply_peak)
 

@@ -69,6 +69,7 @@ from bot.production_plans import (  # noqa: E402
     fb_saving_window,
     forge_pin_affordable,
     gas_to_minerals_needed,
+    terran_timing_gas_stop_blocked,
     gas_to_minerals_released,
     gas_pull_window_expired,
     townhall_skips_placement,
@@ -181,6 +182,8 @@ from bot.production_plans import (  # noqa: E402
     wave_cannon_floor_active,
     wave_cannon_floor_trigger,
     enemy_supply_credited,
+    terran_timing_supply_sticky_window,
+    terran_timing_multi_expand_cap,
     fb_latch_pin_afford_ok,
     sg2_pre_fb_pin_needed,
     sg_prefb_voidray_fill,
@@ -2707,6 +2710,41 @@ class TestO358GasToMinerals(unittest.TestCase):
         # 与滞回解除线 350 拉开 150 缓冲防抖动)
         self.assertFalse(gas_to_minerals_needed(500.0, 100.0))
         self.assertFalse(gas_to_minerals_needed(350.0, 50.0))
+
+    def test_terran_timing_keeps_gas_until_eight_fleet(self):
+        self.assertTrue(terran_timing_gas_stop_blocked("terran", "timing", 7))
+        self.assertFalse(terran_timing_gas_stop_blocked("terran", "timing", 8))
+        self.assertFalse(terran_timing_gas_stop_blocked("terran", "power", 3))
+
+
+class TestO411TimingCadence(unittest.TestCase):
+    def test_multi_expand_is_serial_before_twelve_fleet(self):
+        self.assertEqual(
+            terran_timing_multi_expand_cap(
+                3, opp_race="terran", ai_build="timing", fleet_onfield=11
+            ),
+            1,
+        )
+        self.assertEqual(
+            terran_timing_multi_expand_cap(
+                3, opp_race="terran", ai_build="timing", fleet_onfield=12
+            ),
+            3,
+        )
+        self.assertEqual(
+            terran_timing_multi_expand_cap(
+                2, opp_race="zerg", ai_build="timing", fleet_onfield=3
+            ),
+            2,
+        )
+
+    def test_terran_timing_supply_memory_is_240s(self):
+        self.assertEqual(
+            terran_timing_supply_sticky_window("terran", "timing"), 240.0
+        )
+        self.assertEqual(
+            terran_timing_supply_sticky_window("terran", "power"), 120.0
+        )
 
 
 class TestO118FirstCannonRace(unittest.TestCase):
