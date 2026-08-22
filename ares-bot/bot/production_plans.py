@@ -6767,8 +6767,8 @@ def zerg_macro_rebuild_fund_bypassed(
     ai_build: str,
     current_bases: int,
     fleet_onfield: int,
-    min_bases: int = 3,
-    min_fleet: int = 12,
+    min_bases: int = 2,
+    min_fleet: int = 8,
 ) -> bool:
     """O414:Zerg Macro成型后掉矿不以全局停产换基地。"""
     return (
@@ -6776,6 +6776,23 @@ def zerg_macro_rebuild_fund_bypassed(
         and ai_build == "macro"
         and current_bases >= min_bases
         and fleet_onfield >= min_fleet
+    )
+
+
+def zerg_macro_fourth_blocked(
+    *,
+    opp_race: str,
+    ai_build: str,
+    current_bases: int,
+    fleet_onfield: int,
+    min_fleet: int = 4,
+) -> bool:
+    """O417:Zerg Macro真实舰队4前最多三矿。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and current_bases >= 3
+        and fleet_onfield < min_fleet
     )
 
 

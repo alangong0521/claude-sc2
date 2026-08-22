@@ -248,6 +248,7 @@ from bot.production_plans import (  # noqa: E402
     terran_power_stargate_capped,
     terran_pressure_rebuild_fund_bypassed,
     zerg_macro_rebuild_fund_bypassed,
+    zerg_macro_fourth_blocked,
     terran_macro_fourth_blocked,
     terran_macro_sg_recovery_needed,
     pick_safest_rebuild_expansion,
@@ -6684,7 +6685,25 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             zerg_macro_rebuild_fund_bypassed(
                 opp_race="zerg", ai_build="macro",
-                current_bases=2, fleet_onfield=20,
+                current_bases=1, fleet_onfield=20,
+            )
+        )
+        self.assertTrue(
+            zerg_macro_rebuild_fund_bypassed(
+                opp_race="zerg", ai_build="macro",
+                current_bases=2, fleet_onfield=8,
+            )
+        )
+        self.assertTrue(
+            zerg_macro_fourth_blocked(
+                opp_race="zerg", ai_build="macro",
+                current_bases=3, fleet_onfield=3,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_fourth_blocked(
+                opp_race="zerg", ai_build="macro",
+                current_bases=3, fleet_onfield=4,
             )
         )
         macro = dict(

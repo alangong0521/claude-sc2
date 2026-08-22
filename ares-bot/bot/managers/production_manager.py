@@ -245,6 +245,7 @@ from bot.production_plans import (
     terran_power_stargate_capped,
     terran_pressure_rebuild_fund_bypassed,
     zerg_macro_rebuild_fund_bypassed,
+    zerg_macro_fourth_blocked,
     terran_macro_fourth_blocked,
     terran_macro_sg_recovery_needed,
     zerg_rush_late_stalker_escort_needed,
@@ -2696,6 +2697,20 @@ class ProductionManager(Manager):
                     )
                 ),
                 min_local_cannons=self._min_ready_cannons_per_base(),
+            ):
+                _expansion_to = min(_expansion_to, 3)
+            if zerg_macro_fourth_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
             ):
                 _expansion_to = min(_expansion_to, 3)
             if _expansion_to > self.ai.townhalls.amount:
@@ -6749,6 +6764,38 @@ class ProductionManager(Manager):
                         ),
                     })
                     break
+        if (
+            not self._o381_nexus_fund_active
+            and self._ai_build == "macro"
+            and zerg_rush_late_stalker_escort_needed(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                now=self.ai.time,
+                fleet_count=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+                stalkers=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.STALKER
+                    )
+                    + cy_unit_pending(self.ai, UnitID.STALKER)
+                ),
+            )
+            and self.ai.can_afford(UnitID.STALKER)
+        ):
+            for _gw in structures_dict[UnitID.GATEWAY]:
+                if _gw.is_ready and _gw.is_idle:
+                    _gw.train(UnitID.STALKER)
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": "O417:Zerg Macro直产追猎护航",
+                    })
+                    break
         if not self._o381_nexus_fund_active:
             self._rush_gateway_boost()  # E3d:rush 敌兵>叉子时追加 gateway
         self._morph_gateways()
@@ -9986,6 +10033,22 @@ class ProductionManager(Manager):
             self._o383_healthy_expand_from_bases = None
             self._o381_healthy_expand_active = False
             return False
+        if zerg_macro_fourth_blocked(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            current_bases=self.ai.townhalls.amount,
+            fleet_onfield=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
+        ):
+            self._o383_healthy_expand_from_bases = None
+            self._o381_healthy_expand_active = False
+            return False
         if zerg_rush_late_expand_blocked(
             opp_race=self._opp_race,
             ai_build=self._ai_build,
@@ -12630,6 +12693,19 @@ class ProductionManager(Manager):
                     )
                 ),
                 min_local_cannons=self._min_ready_cannons_per_base(),
+            )
+            and not zerg_macro_fourth_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
             )
             # O250(o249-lane game_04/05 实证):O247 首舰前不开矿被 _spend_bank
             # 绕开(存款 800 早到 + SG 未就绪 → fb_missing_starved 永假,
