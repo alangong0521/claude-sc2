@@ -236,6 +236,7 @@ from bot.production_plans import (  # noqa: E402
     terran_timing_opening_defense_targets,
     terran_power_fourth_before_fleet_blocked,
     terran_power_stargate_capped,
+    terran_pressure_rebuild_fund_bypassed,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -6510,6 +6511,28 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             terran_power_stargate_capped(
                 **{**base, "ai_build": "timing"}, stargates=6
+            )
+        )
+
+    def test_terran_pressure_fleet_keeps_producing_after_base_loss(self):
+        base = dict(
+            opp_race="terran", ai_build="timing",
+            current_bases=2, fleet_onfield=4,
+        )
+        self.assertTrue(terran_pressure_rebuild_fund_bypassed(**base))
+        self.assertTrue(
+            terran_pressure_rebuild_fund_bypassed(
+                **{**base, "ai_build": "power"}
+            )
+        )
+        self.assertFalse(
+            terran_pressure_rebuild_fund_bypassed(
+                **{**base, "fleet_onfield": 3}
+            )
+        )
+        self.assertFalse(
+            terran_pressure_rebuild_fund_bypassed(
+                **{**base, "current_bases": 1}
             )
         )
 

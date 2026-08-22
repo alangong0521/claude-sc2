@@ -236,6 +236,7 @@ from bot.production_plans import (
     terran_timing_opening_defense_targets,
     terran_power_fourth_before_fleet_blocked,
     terran_power_stargate_capped,
+    terran_pressure_rebuild_fund_bypassed,
     zerg_rush_late_stalker_escort_needed,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -920,6 +921,23 @@ class ProductionManager(Manager):
                 else 220.0
             ),
         )
+        if (
+            _o381_reason == "lost_base"
+            and terran_pressure_rebuild_fund_bypassed(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+            )
+        ):
+            _o381_reason = None
         self._o381_nexus_fund_active = _o381_reason is not None
         if _o381_reason != self._o381_nexus_fund_reason:
             if _o381_reason is not None:

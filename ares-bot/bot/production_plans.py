@@ -6597,6 +6597,24 @@ def terran_power_stargate_capped(
     )
 
 
+def terran_pressure_rebuild_fund_bypassed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    current_bases: int,
+    fleet_onfield: int,
+    min_bases: int = 2,
+    min_fleet: int = 4,
+) -> bool:
+    """O409:Terran Timing/Power成型舰队不因掉一矿全局停产。"""
+    return (
+        opp_race == "terran"
+        and ai_build in ("timing", "power")
+        and current_bases >= min_bases
+        and fleet_onfield >= min_fleet
+    )
+
+
 def timing_carrier_transition_allowed(
     ai_build: str,
     tempest_count: int,
