@@ -29,6 +29,8 @@ from bot.production_plans import (
     carrier_push_fleet_floor,
     carrier_desperation_push_allowed,
     zerg_macro_golden_window_push,
+    macro_golden_recall_threshold,
+    macro_golden_zealot_holds_home,
     fleet_no_recall_threshold,
     carrier_rally_against_aa,
     defense_anchor_index,
@@ -587,6 +589,7 @@ class CombatManager(Manager):
         # O65:推进承诺标记(commit_push)每帧重算 —— 只有 carrier 推进闸全开
         # (优势+对空安全+无主力级回防)时才置 True,供舰队行为层选择「行军模式」
         self._push_committed = False
+        self._o427_macro_golden_active = False
         stance = order.get("stance")
         if stance == "defend":
             return self._defend_anchor()  # O37:主基塔够 → 蹲最暴露的分矿
@@ -750,7 +753,7 @@ class CombatManager(Manager):
             # 舰队 ≥3 + 追猎 ≥6 + 腐化 ≤4,t≥750 追猎衰减到 4,O354-③),
             # 抢在腐化转型前打死/打残;召回/安全线不变,推不动会被波次
             # 自然叫回家。
-            _golden_push = (
+            _timing_golden_push = (
                 _is_zerg_timing
                 and zt_golden_window_push(
                     getattr(self.ai, "time", 0.0),
@@ -770,7 +773,7 @@ class CombatManager(Manager):
                     ),
                 )
             )
-            _golden_push = _golden_push or (
+            _macro_golden_push = (
                 _is_zerg_macro
                 and zerg_macro_golden_window_push(
                     now=getattr(self.ai, "time", 0.0),
@@ -788,6 +791,8 @@ class CombatManager(Manager):
                     ),
                 )
             )
+            _golden_push = _timing_golden_push or _macro_golden_push
+            self._o427_macro_golden_active = _macro_golden_push
             _force_push = _force_push or _golden_push
             # O325-②:黄金窗 near-miss 簿记(30s 节流)—— 舰队达线但被追猎/
             # 腐化闸挡住的窗口直接可见,下轮尸检不用逐帧重建。
@@ -1151,6 +1156,9 @@ class CombatManager(Manager):
             # 波次喂食局(15-20 地面/波)阈值 14 每波必触发,22-29 暴风
             # 龟缩 500s 靠耗赢;塔+电池能消化的波不召回,换家比回防快
             _recall_threshold = fleet_no_recall_threshold(_carriers + _tempests)
+            _recall_threshold = macro_golden_recall_threshold(
+                _recall_threshold, _macro_golden_push
+            )
             if _economic_strike_target is not None:
                 # O384-②(o383 Terran g2):1064s 斩分矿后，1146s
                 # 10地面抄矿因正常舰队11的召回门14而被忽略，1202s
@@ -1411,6 +1419,13 @@ class CombatManager(Manager):
                 elif economic_strike_ground_holds_home(
                     is_fleet_air=_is_fleet_air,
                     economic_strike_active=_economic_strike_active,
+                ):
+                    _unit_attack_target = self._defend_anchor()
+                elif macro_golden_zealot_holds_home(
+                    active=getattr(
+                        self, "_o427_macro_golden_active", False
+                    ),
+                    unit_name=unit_id.name,
                 ):
                     _unit_attack_target = self._defend_anchor()
                 elif carrier_fleet_keeps_strategic_target(

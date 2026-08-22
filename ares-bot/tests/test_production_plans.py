@@ -27,6 +27,8 @@ from bot.production_plans import (  # noqa: E402
     carrier_push_fleet_floor,
     carrier_desperation_push_allowed,
     zerg_macro_golden_window_push,
+    macro_golden_recall_threshold,
+    macro_golden_zealot_holds_home,
     rebuild_preposition_allowed,
     cover_hold_should_fire,
     tempest_global_aa_retreat_needed,
@@ -6656,7 +6658,24 @@ class TestO381Plans(unittest.TestCase):
         )
         self.assertFalse(
             zerg_macro_golden_window_push(
-                **{**macro_push, "now": 780.1}
+                **{**macro_push, "now": 750.1}
+            )
+        )
+        self.assertTrue(
+            zerg_macro_golden_window_push(
+                **{**macro_push, "now": 750.0}
+            )
+        )
+        self.assertEqual(macro_golden_recall_threshold(25, True), 5)
+        self.assertEqual(macro_golden_recall_threshold(25, False), 25)
+        self.assertTrue(
+            macro_golden_zealot_holds_home(
+                active=True, unit_name="ZEALOT"
+            )
+        )
+        self.assertFalse(
+            macro_golden_zealot_holds_home(
+                active=True, unit_name="STALKER"
             )
         )
         self.assertFalse(

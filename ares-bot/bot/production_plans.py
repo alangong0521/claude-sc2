@@ -6641,7 +6641,7 @@ def zerg_macro_golden_window_push(
     stalkers: int,
     corruptor_credit: int,
     min_time: float = 650.0,
-    max_time: float = 780.0,
+    max_time: float = 750.0,
     min_fleet: int = 8,
     min_stalkers: int = 10,
     max_corruptors: int = 3,
@@ -6653,6 +6653,24 @@ def zerg_macro_golden_window_push(
         and stalkers >= min_stalkers
         and corruptor_credit <= max_corruptors
     )
+
+
+def macro_golden_recall_threshold(
+    normal_threshold: int,
+    active: bool,
+    max_threshold: int = 5,
+) -> int:
+    """O427:Macro黄金骚扰不是all-in，基地5地面即全舰召回。"""
+    return min(normal_threshold, max_threshold) if active else normal_threshold
+
+
+def macro_golden_zealot_holds_home(
+    *,
+    active: bool,
+    unit_name: str,
+) -> bool:
+    """O427:黄金窗只派空军+追猎，狂热者留守矿区挡地面。"""
+    return active and unit_name == "ZEALOT"
 
 
 def rebuild_preposition_allowed(
