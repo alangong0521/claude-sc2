@@ -6537,6 +6537,19 @@ def zerg_macro_gas_stop_blocked(
     )
 
 
+def zerg_macro_corruptor_sticky_window(
+    *,
+    opp_race: str,
+    ai_build: str,
+    default_window: float = 60.0,
+    macro_window: float = 180.0,
+) -> float:
+    """O422:覆盖Macro腐化波约160s的迷雾视野洞。"""
+    if opp_race == "zerg" and ai_build == "macro":
+        return macro_window
+    return default_window
+
+
 def zerg_macro_cannon_capped(
     *,
     opp_race: str,
@@ -6545,7 +6558,7 @@ def zerg_macro_cannon_capped(
     cannons: int,
     min_fleet: int = 12,
     cap: int = 20,
-    first_fleet: int = 4,
+    first_fleet: int = 16,
     pre_fleet_cap: int = 10,
 ) -> bool:
     """O416/O419:Zerg Macro首批舰队前硬顶10，舰队12后硬顶20。"""

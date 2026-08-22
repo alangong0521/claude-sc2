@@ -256,6 +256,7 @@ from bot.production_plans import (
     zerg_macro_escort_gateway_target,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
+    zerg_macro_corruptor_sticky_window,
     zerg_macro_cannon_capped,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -697,6 +698,8 @@ class ProductionManager(Manager):
         # 与出发闸共用;__init__ 初始化。
         self._o375_supply_peak: float = 0.0
         self._o375_supply_peak_at: float = -9999.0
+        self._o422_corruptor_peak: int = 0
+        self._o422_corruptor_peak_at: float = -9999.0
         # O375-③a(o374b 三局尸检):SG1 落成即钉 SG2 的 30s 节流时刻
         # (只节流言不节流钉点,O357-④ 规约);__init__ 初始化。
         self._o375_sg2_last: float = 0.0
@@ -8885,6 +8888,11 @@ class ProductionManager(Manager):
         # 开窗前置一并回退 —— 窗自持帮凶实证(o366b g1):窗开→停气
         # 被禁→气≥400→窗判据(气≥400)续真→窗续开,气 532 淤积、
         # 星门空转 170s;停气转矿按自身判据走,不再看基金窗。
+        _zerg_macro_keep_gas = zerg_macro_gas_stop_blocked(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            visible_corruptors=self._corruptors_credited(),
+        )
         if (
             gas_to_minerals_needed(
                 self.ai.vespene, self.ai.minerals,
@@ -8903,14 +8911,7 @@ class ProductionManager(Manager):
                 ),
                 fleet_tech_ready=self._fb_entities_now > 0,
             )
-            and not zerg_macro_gas_stop_blocked(
-                opp_race=self._opp_race,
-                ai_build=self._ai_build,
-                visible_corruptors=sum(
-                    1 for u in self.ai.enemy_units
-                    if u.type_id == UnitID.CORRUPTOR
-                ),
-            )
+            and not _zerg_macro_keep_gas
             and not _gas_pull_cooling
         ):
             if not self._o358_gas_pull and event_throttle_ok(
@@ -8928,7 +8929,8 @@ class ProductionManager(Manager):
                 self._o358_gas_pull_since = self.ai.time
             self._o358_gas_pull = True
         elif self._o358_gas_pull and (
-            gas_to_minerals_released(
+            _zerg_macro_keep_gas
+            or gas_to_minerals_released(
                 self.ai.vespene, self.ai.minerals,
             )
             or (
@@ -9327,10 +9329,7 @@ class ProductionManager(Manager):
         ):
             spawn = carrier_quota_spawn(spawn, UnitID.CARRIER, UnitID.TEMPEST)
             force_gap = max(force_gap, 250)
-        _visible_corruptors_for_spawn = sum(
-            1 for u in self.ai.enemy_units
-            if u.type_id == UnitID.CORRUPTOR
-        )
+        _visible_corruptors_for_spawn = self._corruptors_credited()
         if zerg_macro_carrier_suppressed(
             opp_race=self._opp_race,
             ai_build=self._ai_build,
@@ -10598,6 +10597,27 @@ class ProductionManager(Manager):
             ),
         )
         return enemy_supply_credited(_vis, self._o375_supply_peak)
+
+    def _corruptors_credited(self) -> int:
+        """O422:生产配方共用180s腐化信用，跨越Macro迷雾视野洞。"""
+        visible = sum(
+            1 for u in self.ai.enemy_units
+            if u.type_id == UnitID.CORRUPTOR
+        )
+        (
+            self._o422_corruptor_peak,
+            self._o422_corruptor_peak_at,
+        ) = aa_peak_sticky(
+            self.ai.time,
+            visible,
+            self._o422_corruptor_peak,
+            self._o422_corruptor_peak_at,
+            window=zerg_macro_corruptor_sticky_window(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+            ),
+        )
+        return max(visible, self._o422_corruptor_peak)
 
     def _visible_enemy_army_count(self) -> int:
         """敌可见作战单位数(E2 分矿塔数估算;口径同 _visible_enemy_army_supply)。"""
@@ -12443,19 +12463,24 @@ class ProductionManager(Manager):
         _escort_gateway_target = zerg_macro_escort_gateway_target(
             opp_race=self._opp_race,
             ai_build=self._ai_build,
-            visible_corruptors=sum(
-                1 for u in self.ai.enemy_units
-                if u.type_id == UnitID.CORRUPTOR
-            ),
+            visible_corruptors=self._corruptors_credited(),
         )
         if (
             _floor_gateways_now < _escort_gateway_target
             and not self._o381_nexus_fund_active
             and self.ai.can_afford(UnitID.GATEWAY)
         ):
-            self.ai.register_behavior(
-                BuildStructure(self.ai.start_location, UnitID.GATEWAY)
+            _escort_rc = self._dispatch_structure(
+                UnitID.GATEWAY, self.ai.start_location, critical=True
             )
+            if _escort_rc == "dispatched":
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        "O422:腐化信用扩追猎产能"
+                        f"(Gateway={_floor_gateways_now}→{_escort_gateway_target})"
+                    ),
+                })
             return
         if (
             self._floor_active

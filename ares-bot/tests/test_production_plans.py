@@ -234,6 +234,7 @@ from bot.production_plans import (  # noqa: E402
     zerg_macro_escort_gateway_target,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
+    zerg_macro_corruptor_sticky_window,
     zerg_macro_cannon_capped,
     zerg_rush_late_expand_blocked,
     terran_precontact_cannon_capped,
@@ -6521,13 +6522,25 @@ class TestO381Plans(unittest.TestCase):
                 opp_race="zerg", ai_build="macro", visible_corruptors=4
             )
         )
+        self.assertEqual(
+            zerg_macro_corruptor_sticky_window(
+                opp_race="zerg", ai_build="macro"
+            ),
+            180.0,
+        )
+        self.assertEqual(
+            zerg_macro_corruptor_sticky_window(
+                opp_race="zerg", ai_build="rush"
+            ),
+            60.0,
+        )
         self.assertTrue(
             zerg_macro_cannon_capped(
                 opp_race="zerg", ai_build="macro",
                 fleet_onfield=12, cannons=20,
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             zerg_macro_cannon_capped(
                 opp_race="zerg", ai_build="macro",
                 fleet_onfield=11, cannons=25,
@@ -6543,6 +6556,12 @@ class TestO381Plans(unittest.TestCase):
             zerg_macro_cannon_capped(
                 opp_race="zerg", ai_build="macro",
                 fleet_onfield=0, cannons=9,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_cannon_capped(
+                opp_race="zerg", ai_build="macro",
+                fleet_onfield=16, cannons=19,
             )
         )
 
