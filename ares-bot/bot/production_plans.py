@@ -2624,6 +2624,34 @@ def full_pop_all_in(
     return supply_used >= supply_cap * min_frac and minerals >= min_bank
 
 
+def terminal_cleanup_active(
+    *,
+    now: float,
+    fleet_count: int,
+    enemy_structures: int,
+    enemy_workers: int,
+    enemy_combat: int,
+    min_time: float = 1200.0,
+    min_fleet: int = 16,
+    max_structures: int = 10,
+    max_workers: int = 12,
+    max_combat: int = 12,
+) -> bool:
+    """O403:大舰队面对残余经济时进入不可被小骚扰打断的清场模式。
+
+    O401c 在1500-2500s长期维持23-33舰队，却被4-15地面骚扰反复召回；
+    电脑持续重建，2700s重新攒出大军并于3012s翻盘。只有敌结构、农民和
+    可见作战单位都已压到残余规模时才激活，正常主战不受影响。
+    """
+    return (
+        now >= min_time
+        and fleet_count >= min_fleet
+        and enemy_structures <= max_structures
+        and enemy_workers <= max_workers
+        and enemy_combat <= max_combat
+    )
+
+
 def tech_yields_to_threat(threat_active: bool, rush_active: bool) -> bool:
     """O67(VeryHard Terran Rush game_01 实证):E9 威胁激活时,追加产能/舰队航标
     让位塔链。纯逻辑,可单测。

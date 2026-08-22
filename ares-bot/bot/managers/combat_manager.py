@@ -61,6 +61,7 @@ from bot.production_plans import (
     two_base_guard_point,
     main_defense_first,
     zt_golden_window_push,
+    terminal_cleanup_active,
 )
 
 if TYPE_CHECKING:
@@ -122,6 +123,7 @@ class CombatManager(Manager):
         self._fleet_recall_target: Point2 | None = None
         # O217:基地残敌清剿事件去抖(激活边沿记一条,清除后复位)
         self._intruder_cleanup_active: bool = False
+        self._o403_cleanup_logged: bool = False
         # O372-⑤(o371a g2 尸检):推进 commit 期 AA 重评簿记 —— 30s
         # 重评时刻与撤蹲旗标(旗标在重评间隔内粘滞,可见性抖动不
         # 反复收放);__init__ 初始化。
@@ -451,6 +453,53 @@ class CombatManager(Manager):
         )
         return candidates.sorted(lambda s: s.position.distance_to(focus))
 
+    def _terminal_cleanup_active(self) -> bool:
+        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        fleet = (
+            self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
+            + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
+        )
+        active = terminal_cleanup_active(
+            now=getattr(self.ai, "time", 0.0),
+            fleet_count=fleet,
+            enemy_structures=self.ai.enemy_structures.amount,
+            enemy_workers=sum(1 for u in self.ai.enemy_units if u.type_id in workers),
+            enemy_combat=sum(
+                1
+                for u in self.ai.enemy_units
+                if not u.is_structure
+                and u.type_id not in workers
+                and is_combat_type(u.type_id)
+            ),
+        )
+        if active and not self._o403_cleanup_logged:
+            self._o403_cleanup_logged = True
+            events = getattr(self.ai, "_events", None)
+            if events is not None:
+                events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": (
+                        f"O403:残敌终结模式(fleet={fleet},"
+                        f"结构={self.ai.enemy_structures.amount})"
+                    ),
+                })
+        elif not active:
+            self._o403_cleanup_logged = False
+        return active
+
+    def _terminal_cleanup_target(self) -> Point2:
+        """O403:残敌结构优先；无结构时直接猎杀可见农民/残兵。"""
+        focus = self.ai.focused_enemy_start()
+        if self.ai.enemy_structures:
+            return self.ai.enemy_structures.closest_to(focus).position
+        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        worker_units = self.ai.enemy_units.filter(lambda u: u.type_id in workers)
+        if worker_units:
+            return worker_units.closest_to(focus).position
+        if self.ai.enemy_units:
+            return self.ai.enemy_units.closest_to(focus).position
+        return self.current_base_target
+
     def _resolve_steer_target(self, key: str) -> Point2 | None:
         """参谋长的语义目标 → Point2（不让司令点坐标）。认不出则 None。
         enemy_* 都相对**焦点敌人**（enemy=E2 切；默认最近 E1；1v1 就是唯一敌人）。"""
@@ -488,6 +537,10 @@ class CombatManager(Manager):
             return self._defend_anchor()  # O37:主基塔够 → 蹲最暴露的分矿
         if stance == "retreat":
             return self.ai.start_location
+        _cleanup_check = getattr(self, "_terminal_cleanup_active", None)
+        if _cleanup_check is not None and _cleanup_check():
+            self._push_committed = True
+            return self._terminal_cleanup_target()
         if getattr(self.ai.production_manager, "_rush_active", False):
             # O40(game_01 实证):rush 守家不再恒守主基 —— 威胁计数最高的分矿
             # 承压 → 全军去救(死守主基 = 二矿落地 45s 被推白送);
@@ -1114,23 +1167,28 @@ class CombatManager(Manager):
             and self.ai.townhalls.amount < 2
             and not (_fleet_now >= 8 and getattr(self.ai, "time", 0.0) > 540.0)
         )
+        _terminal_cleanup = self._terminal_cleanup_active()
         if (
-            (order.get("stance") is None and 0 < self._own_army_count() < _rally)
-            or _aa_hold
-            or _home_guard
+            not _terminal_cleanup
+            and (
+                (order.get("stance") is None and 0 < self._own_army_count() < _rally)
+                or _aa_hold
+                or _home_guard
+            )
         ):
             attack_target = self._defend_anchor()  # O37:守家攒兵蹲最暴露的基地
             self._push_committed = False  # O65:集结/对空攒兵期不算推进承诺
         else:
             attack_target = self.attack_target
         # B3 can_win_fight 接战刹车:模拟器判负 → 目标改为撤回主基地(只当一票否决)
-        attack_target = self._apply_combat_sim_brake(attack_target)
+        if not _terminal_cleanup:
+            attack_target = self._apply_combat_sim_brake(attack_target)
         # O386-②:保留 O302/O382 算出的战略目标。下面 O217/O219 仍可把
         # 地面守军改派回家，但经济打击舰队只在真正达到10人召回门时让位。
         _strategic_attack_target = attack_target
         # O217(司令观察):基地内残敌清剿 —— 大战后敌小股(1-5)滞留基地拆建筑,
         # 攻击目标改为残敌位置,先清再推(≥6 的大波走 O205/_hot_base_anchor)。
-        _intruder = self._base_intruder_target()
+        _intruder = None if _terminal_cleanup else self._base_intruder_target()
         if _intruder is not None:
             if not self._intruder_cleanup_active:
                 self._intruder_cleanup_active = True
@@ -1148,7 +1206,9 @@ class CombatManager(Manager):
         # 集结期/对空攒兵/蹲守 → 主基或最暴露分矿;transition → 坡口/两矿中点;
         # 结果大波打二矿时只有空军回防(O205),地面守军蹲主基看戏,空军孤立阵亡、
         # 二矿被推平。统一盖到所有分支(含 sim 刹车/残敌清剿)之后,主力优先。
-        hot_all = self._hot_base_anchor(min_threat=6)
+        hot_all = self._hot_base_anchor(
+            min_threat=25 if _terminal_cleanup else 6
+        )
         if hot_all is not None:
             attack_target = hot_all
         # B6 Squad 化:主力 squad 中心做散兵归队锚点(拿不到 → None 降级现状)
@@ -1179,7 +1239,9 @@ class CombatManager(Manager):
             self, "_o382_economic_strike_active", False
         )
         _air_recall_threshold = 6
-        if _economic_strike_active:
+        if _terminal_cleanup:
+            _air_recall_threshold = 25
+        elif _economic_strike_active:
             _air_recall_threshold = economic_strike_recall_threshold(
                 fleet_no_recall_threshold(_fleet_now)
             )

@@ -228,6 +228,7 @@ from bot.production_plans import (  # noqa: E402
     terran_rush_robo_needed,
     terran_rush_immortal_needed,
     timing_carrier_transition_allowed,
+    terminal_cleanup_active,
     terran_timing_third_before_immortals_blocked,
     terran_timing_gateway_capped,
     terran_timing_cannon_before_second_blocked,
@@ -1747,6 +1748,29 @@ class TestFullPopAllIn(unittest.TestCase):
 
     def test_zero_cap_safe(self):
         self.assertFalse(full_pop_all_in(199, 0, 5000))
+
+
+class TestTerminalCleanup(unittest.TestCase):
+    def test_residual_enemy_with_large_fleet_activates(self):
+        self.assertTrue(
+            terminal_cleanup_active(
+                now=1800.0, fleet_count=26, enemy_structures=7,
+                enemy_workers=2, enemy_combat=8,
+            )
+        )
+
+    def test_real_army_or_early_game_does_not_activate(self):
+        base = dict(
+            now=1800.0, fleet_count=26, enemy_structures=7,
+            enemy_workers=2, enemy_combat=8,
+        )
+        self.assertFalse(
+            terminal_cleanup_active(**{**base, "enemy_combat": 30})
+        )
+        self.assertFalse(terminal_cleanup_active(**{**base, "now": 900.0}))
+        self.assertFalse(
+            terminal_cleanup_active(**{**base, "fleet_count": 10})
+        )
 
 
 class TestTechYieldsToThreat(unittest.TestCase):
