@@ -1550,6 +1550,51 @@ def carrier_rally_against_aa(
     return carrier_count < gate
 
 
+def carrier_push_fleet_floor(
+    opp_race: str,
+    ai_build: str,
+    default_floor: int = 5,
+    zerg_macro_floor: int = 16,
+) -> int:
+    """O420:Zerg Macro所有普通/强推路径统一等16真实舰队。"""
+    if opp_race == "zerg" and ai_build == "macro":
+        return zerg_macro_floor
+    return default_floor
+
+
+def tempest_global_aa_retreat_needed(
+    *,
+    visible_corruptors: int,
+    visible_vipers: int,
+    corruptor_gate: int = 4,
+) -> bool:
+    """O420:腐化海尚未进入暴风15格圈前就提前撤入掩体。"""
+    return visible_corruptors >= corruptor_gate or visible_vipers > 0
+
+
+def strongest_cover_index(
+    covers: list[tuple[float, float, int]],
+    origin: tuple[float, float],
+    cluster_radius: float = 8.0,
+) -> int | None:
+    """O420:选择局部塔/电池火力最密集的掩体，距离仅作平分项。"""
+    if not covers:
+        return None
+    radius_sq = cluster_radius * cluster_radius
+
+    def key(index: int) -> tuple[int, float]:
+        x, y, _ = covers[index]
+        score = sum(
+            weight
+            for ox, oy, weight in covers
+            if (x - ox) ** 2 + (y - oy) ** 2 <= radius_sq
+        )
+        distance_sq = (x - origin[0]) ** 2 + (y - origin[1]) ** 2
+        return score, -distance_sq
+
+    return max(range(len(covers)), key=key)
+
+
 def dispatch_viable(
     minerals: float,
     income_per_sec: float,
@@ -6421,13 +6466,14 @@ def zerg_rush_late_stalker_escort_needed(
     stalker_floor: int = 8,
 ) -> bool:
     """O388/O414:Zerg Rush/Macro 腐化转型前补追猎护航。"""
-    effective_min_time = 600.0 if ai_build == "macro" else min_time
+    effective_min_time = 500.0 if ai_build == "macro" else min_time
+    effective_min_fleet = 4 if ai_build == "macro" else min_fleet
     effective_floor = 12 if ai_build == "macro" else stalker_floor
     return (
         opp_race == "zerg"
         and ai_build in ("rush", "macro")
         and now >= effective_min_time
-        and fleet_count >= min_fleet
+        and fleet_count >= effective_min_fleet
         and stalkers < effective_floor
     )
 
@@ -6825,9 +6871,9 @@ def zerg_macro_expansion_cap(
     opp_race: str,
     ai_build: str,
     fleet_onfield: int,
-    fourth_fleet: int = 4,
-    fifth_fleet: int = 12,
-    sixth_fleet: int = 16,
+    fourth_fleet: int = 12,
+    fifth_fleet: int = 16,
+    sixth_fleet: int = 20,
 ) -> int | None:
     """O417/O418:Zerg Macro按真实舰队规模分阶段放行总基地数。"""
     if opp_race != "zerg" or ai_build != "macro":

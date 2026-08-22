@@ -24,6 +24,9 @@ from bot.production_plans import (  # noqa: E402
     carrier_quota_active,
     carrier_quota_spawn,
     carrier_rally_against_aa,
+    carrier_push_fleet_floor,
+    tempest_global_aa_retreat_needed,
+    strongest_cover_index,
     carrier_transition_ready,
     carrier_transition_time_box,
     cannon_hard_cap_active,
@@ -1640,6 +1643,38 @@ class TestCarrierRallyAgainstAA(unittest.TestCase):
         # gate 参数化(默认 3,可调)
         self.assertTrue(carrier_rally_against_aa("carrier", 3, 5, gate=5))
         self.assertFalse(carrier_rally_against_aa("carrier", 5, 5, gate=5))
+
+    def test_zerg_macro_uses_sixteen_fleet_push_floor(self):
+        self.assertEqual(carrier_push_fleet_floor("zerg", "macro"), 16)
+        self.assertEqual(carrier_push_fleet_floor("zerg", "rush"), 5)
+        self.assertEqual(carrier_push_fleet_floor("terran", "macro"), 5)
+
+    def test_global_corruptor_retreat_gate(self):
+        self.assertTrue(
+            tempest_global_aa_retreat_needed(
+                visible_corruptors=4, visible_vipers=0
+            )
+        )
+        self.assertFalse(
+            tempest_global_aa_retreat_needed(
+                visible_corruptors=3, visible_vipers=0
+            )
+        )
+        self.assertTrue(
+            tempest_global_aa_retreat_needed(
+                visible_corruptors=0, visible_vipers=1
+            )
+        )
+
+    def test_strongest_cover_beats_nearest_single_tower(self):
+        covers = [
+            (0.0, 0.0, 1),
+            (1.0, 0.0, 2),
+            (2.0, 0.0, 1),
+            (20.0, 0.0, 1),
+        ]
+        self.assertEqual(strongest_cover_index(covers, (20.0, 0.0)), 2)
+        self.assertIsNone(strongest_cover_index([], (0.0, 0.0)))
 
 
 class TestBaseDefenseAnchor(unittest.TestCase):
@@ -6430,7 +6465,8 @@ class TestO381Plans(unittest.TestCase):
         macro = {
             **base,
             "ai_build": "macro",
-            "now": 600.0,
+            "now": 500.0,
+            "fleet_count": 4,
             "stalkers": 11,
         }
         self.assertTrue(zerg_rush_late_stalker_escort_needed(**macro))
@@ -6441,7 +6477,12 @@ class TestO381Plans(unittest.TestCase):
         )
         self.assertFalse(
             zerg_rush_late_stalker_escort_needed(
-                **{**macro, "now": 599.9}
+                **{**macro, "now": 499.9}
+            )
+        )
+        self.assertFalse(
+            zerg_rush_late_stalker_escort_needed(
+                **{**macro, "fleet_count": 3}
             )
         )
         self.assertTrue(
@@ -6760,17 +6801,23 @@ class TestO381Plans(unittest.TestCase):
             zerg_macro_expansion_cap(
                 opp_race="zerg", ai_build="macro", fleet_onfield=4
             ),
-            4,
+            3,
         )
         self.assertEqual(
             zerg_macro_expansion_cap(
                 opp_race="zerg", ai_build="macro", fleet_onfield=12
             ),
+            4,
+        )
+        self.assertEqual(
+            zerg_macro_expansion_cap(
+                opp_race="zerg", ai_build="macro", fleet_onfield=16
+            ),
             5,
         )
         self.assertIsNone(
             zerg_macro_expansion_cap(
-                opp_race="zerg", ai_build="macro", fleet_onfield=16
+                opp_race="zerg", ai_build="macro", fleet_onfield=20
             )
         )
         self.assertTrue(
@@ -6779,10 +6826,16 @@ class TestO381Plans(unittest.TestCase):
                 current_bases=4, fleet_onfield=11,
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             zerg_macro_expansion_blocked(
                 opp_race="zerg", ai_build="macro",
                 current_bases=4, fleet_onfield=12,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_expansion_blocked(
+                opp_race="zerg", ai_build="macro",
+                current_bases=4, fleet_onfield=16,
             )
         )
         self.assertTrue(

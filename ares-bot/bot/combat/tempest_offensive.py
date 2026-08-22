@@ -11,6 +11,10 @@ from sc2.units import Units
 
 
 from bot.levers import pick_focus_key, prefer_void_rays
+from bot.production_plans import (
+    strongest_cover_index,
+    tempest_global_aa_retreat_needed,
+)
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 
 # O272-①:制空避战触发单位(实证:o270b-g03 暴风 9→2 被 腐化8-13+飞蛇 磨光)。
@@ -111,11 +115,35 @@ class TempestOffensive(BaseUnit):
         # O272-①:撤避掩体点(最近就绪塔/电池,无则主基) —— 腐化/飞蛇成群逼近时
         # 暴风不风筝硬拼(腐化对装甲加成+速度碾压,风筝=慢速送死,实证:o270b-g03
         # 暴风 9→2 全灭),撤回地面火力圈上空,让塔/追猎接手制空。
-        _cover_points = [
-            s.position
+        _cover_structures = [
+            s
             for s in self.ai.structures.ready
             if s.type_id in (UnitID.PHOTONCANNON, UnitID.SHIELDBATTERY)
         ]
+        _cover_data = [
+            (
+                s.position.x,
+                s.position.y,
+                2 if s.type_id == UnitID.SHIELDBATTERY else 1,
+            )
+            for s in _cover_structures
+        ]
+        _visible_corruptors = sum(
+            1 for u in self.ai.enemy_units if u.type_id == UnitID.CORRUPTOR
+        )
+        _visible_vipers = sum(
+            1 for u in self.ai.enemy_units if u.type_id == UnitID.VIPER
+        )
+
+        def _strongest_cover(unit: Unit):
+            index = strongest_cover_index(
+                _cover_data, (unit.position.x, unit.position.y)
+            )
+            return (
+                _cover_structures[index].position
+                if index is not None
+                else self.ai.start_location
+            )
 
         for unit in units:
             offensive_maneuver: CombatManeuver = CombatManeuver()
@@ -135,19 +163,21 @@ class TempestOffensive(BaseUnit):
             if (
                 not commit_push
                 and (
-                    sum(1 for u in _aa_close if u.type_id == UnitID.CORRUPTOR)
-                    >= 3
+                    tempest_global_aa_retreat_needed(
+                        visible_corruptors=_visible_corruptors,
+                        visible_vipers=_visible_vipers,
+                    )
+                    or sum(
+                        1 for u in _aa_close
+                        if u.type_id == UnitID.CORRUPTOR
+                    ) >= 3
                     or any(
                         u.type_id in (UnitID.VIPER, UnitID.INFESTOR)
                         for u in _aa_close
                     )
                 )
             ):
-                _fallback = (
-                    min(_cover_points, key=lambda p: p.distance_to(unit.position))
-                    if _cover_points
-                    else self.ai.start_location
-                )
+                _fallback = _strongest_cover(unit)
                 offensive_maneuver.add(
                     PathUnitToTarget(unit, self.mediator.get_air_grid, _fallback)
                 )
@@ -169,11 +199,9 @@ class TempestOffensive(BaseUnit):
             if (
                 not commit_push
                 and len(_ground_aa) >= 4
-                and _cover_points
+                and _cover_structures
             ):
-                _fallback = min(
-                    _cover_points, key=lambda p: p.distance_to(unit.position)
-                )
+                _fallback = _strongest_cover(unit)
                 if unit.position.distance_to(_fallback) > 6.0:
                     offensive_maneuver.add(
                         PathUnitToTarget(unit, self.mediator.get_air_grid, _fallback)

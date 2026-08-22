@@ -26,6 +26,7 @@ from bot.combat.tempest_offensive import TempestOffensive
 from bot.combat.warp_prism_offensive import WarpPrismOffensive
 from bot.production_plans import (
     carrier_push_safe,
+    carrier_push_fleet_floor,
     fleet_no_recall_threshold,
     carrier_rally_against_aa,
     defense_anchor_index,
@@ -667,7 +668,20 @@ class CombatManager(Manager):
                 and getattr(_pm_o227, "_opp_race", "") == "zerg"
                 and getattr(_pm_o227, "_ai_build", "") == "timing"
             )
-            _push_fleet_need = 6 if _is_zerg_timing else 8
+            _current_opp_race = (
+                getattr(_pm_o227, "_opp_race", "")
+                if _pm_o227 is not None else ""
+            )
+            _current_ai_build = (
+                getattr(_pm_o227, "_ai_build", "")
+                if _pm_o227 is not None else ""
+            )
+            _push_floor = carrier_push_fleet_floor(
+                _current_opp_race, _current_ai_build
+            )
+            _push_fleet_need = (
+                6 if _is_zerg_timing else max(8, _push_floor)
+            )
             # O241(0-30 回归排查):O232 的劣势闸让 bot 全程被动挨打,zerg 自由
             # 运营到 2 倍兵力;回滚到舰队 6+t>540 即强推(两场胜局都是主动
             # 压出去打的)。其他组合保持原判据不变。
@@ -1030,7 +1044,9 @@ class CombatManager(Manager):
                         # O377-①a/④(o376a 尸检):下限 6→5(对齐 o373a
                         # 胜局配方 528.5s fleet=5 首推),口径改在场
                         # (g3 报 6 实 3 的在产虚高剔除)
-                        and push_fleet_floor_ok(_fleet_total)
+                        and push_fleet_floor_ok(
+                            _fleet_total, floor=_push_floor
+                        )
                         and (
                             should_push_advantage(
                                 _own_army,
@@ -1039,7 +1055,8 @@ class CombatManager(Manager):
                                 # 也满人口(98 supply)就是 max-vs-max 必输局;
                                 # 趁我方舰队成型、对面未满(60-75 supply)时打。
                                 # O60:临界线按舰队合计(航母+暴风 ≥8)
-                                # O227:临界线随 _push_fleet_need(Zerg Timing 6,其余 8)
+            # O227/O420:临界线随 _push_fleet_need
+            # (Zerg Timing 6、Zerg Macro 16、其余 8)
                                 margin=(
                                     0.0
                                     if _fleet_count >= _push_fleet_need
