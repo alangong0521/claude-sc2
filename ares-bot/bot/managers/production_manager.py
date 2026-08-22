@@ -234,6 +234,8 @@ from bot.production_plans import (
     terran_timing_cannon_before_second_blocked,
     terran_timing_opening_package_incomplete,
     terran_timing_opening_defense_targets,
+    terran_power_fourth_before_fleet_blocked,
+    terran_power_stargate_capped,
     zerg_rush_late_stalker_escort_needed,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -9642,6 +9644,22 @@ class ProductionManager(Manager):
             self._o383_healthy_expand_from_bases = None
             self._o381_healthy_expand_active = False
             return False
+        if terran_power_fourth_before_fleet_blocked(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            current_bases=self.ai.townhalls.amount,
+            fleet_onfield=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
+        ):
+            self._o383_healthy_expand_from_bases = None
+            self._o381_healthy_expand_active = False
+            return False
         if zerg_rush_late_expand_blocked(
             opp_race=self._opp_race,
             ai_build=self._ai_build,
@@ -10252,6 +10270,30 @@ class ProductionManager(Manager):
         借出即从 _gas_stopped_tags 摘除,防 rush 解除的回气循环把建造工
         从建造点拽走)。失败环节由调用方写事件(下轮尸检直接读)。
         """
+        if sid == UnitID.STARGATE:
+            _power_sg_have = (
+                len(
+                    self.manager_mediator.get_own_structures_dict[
+                        UnitID.STARGATE
+                    ]
+                )
+                + self.manager_mediator.get_building_counter[UnitID.STARGATE]
+            )
+            _power_fleet = (
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            )
+            if terran_power_stargate_capped(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                stargates=_power_sg_have,
+                fleet_onfield=_power_fleet,
+            ):
+                return "power_opening_sg_cap"
         # O382-①:基地基金的统一结构漏口。critical 只代表调用方想抢
         # 普通优先级，不代表可以抢 Nexus；基金期仅保基地本身和生存级
         # 静态防御链，BY/SG/FB/GW/Robo/Twilight/气矿等全部返回让位。
@@ -12073,6 +12115,23 @@ class ProductionManager(Manager):
             desired = min(ep.cap, ep.base + self.ai.townhalls.ready.amount)
         have = len(have_structures) + self.manager_mediator.get_building_counter[sid]
         if (
+            sid == UnitID.STARGATE
+            and terran_power_stargate_capped(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                stargates=have,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+            )
+        ):
+            return
+        if (
             have < desired
             # O176:FB 已派工但买不起时,追加产能会抽干 FB 资金窗,先让位。
             and not getattr(self, "_fb_waiting", False)
@@ -12241,6 +12300,23 @@ class ProductionManager(Manager):
         )
         if sid == UnitID.GATEWAY:  # warpgate 也是产能
             have += len(self.manager_mediator.get_own_structures_dict[UnitID.WARPGATE])
+        if (
+            sid == UnitID.STARGATE
+            and terran_power_stargate_capped(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                stargates=have,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+            )
+        ):
+            return
         if have < desired:
             self.ai.register_behavior(BuildStructure(self.ai.start_location, sid))
 

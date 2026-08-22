@@ -234,6 +234,8 @@ from bot.production_plans import (  # noqa: E402
     terran_timing_cannon_before_second_blocked,
     terran_timing_opening_package_incomplete,
     terran_timing_opening_defense_targets,
+    terran_power_fourth_before_fleet_blocked,
+    terran_power_stargate_capped,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -6470,6 +6472,34 @@ class TestO381Plans(unittest.TestCase):
         self.assertEqual(
             terran_timing_opening_defense_targets(4, 3, 2),
             (2, 1, 1),
+        )
+
+    def test_terran_power_investment_waits_for_four_fleet(self):
+        base = dict(
+            opp_race="terran", ai_build="power", fleet_onfield=3,
+        )
+        self.assertTrue(
+            terran_power_fourth_before_fleet_blocked(
+                **base, current_bases=3
+            )
+        )
+        self.assertTrue(
+            terran_power_stargate_capped(**base, stargates=3)
+        )
+        self.assertFalse(
+            terran_power_fourth_before_fleet_blocked(
+                **{**base, "fleet_onfield": 4}, current_bases=3
+            )
+        )
+        self.assertFalse(
+            terran_power_stargate_capped(
+                **{**base, "fleet_onfield": 4}, stargates=3
+            )
+        )
+        self.assertFalse(
+            terran_power_stargate_capped(
+                **{**base, "ai_build": "timing"}, stargates=6
+            )
         )
 
     def test_terran_rush_immortal_needed(self):

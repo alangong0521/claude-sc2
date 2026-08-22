@@ -498,6 +498,15 @@ class CombatManager(Manager):
             return worker_units.closest_to(focus).position
         if self.ai.enemy_units:
             return self.ai.enemy_units.closest_to(focus).position
+        # O404:已知敌情清零不代表游戏结束，可能还有藏在迷雾中的飞行建筑/
+        # 工人。沿用默认逻辑轮巡所有扩张点，当前点已可见就切下一个，避免
+        # 满编舰队永远停在旧目标坐标。
+        if self.ai.is_visible(self.current_base_target):
+            if not self.expansions_generator:
+                self.expansions_generator = cycle(
+                    list(self.ai.expansion_locations_list)
+                )
+            self.current_base_target = next(self.expansions_generator)
         return self.current_base_target
 
     def _resolve_steer_target(self, key: str) -> Point2 | None:

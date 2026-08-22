@@ -6557,6 +6557,42 @@ def terran_timing_opening_defense_targets(
     )
 
 
+def terran_power_fourth_before_fleet_blocked(
+    *,
+    opp_race: str,
+    ai_build: str,
+    current_bases: int,
+    fleet_onfield: int,
+    max_pre_fleet_bases: int = 3,
+    min_fleet: int = 4,
+) -> bool:
+    """O404:Terran Power真实舰队4艘前最多三矿。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "power"
+        and current_bases >= max_pre_fleet_bases
+        and fleet_onfield < min_fleet
+    )
+
+
+def terran_power_stargate_capped(
+    *,
+    opp_race: str,
+    ai_build: str,
+    stargates: int,
+    fleet_onfield: int,
+    pre_fleet_cap: int = 3,
+    min_fleet: int = 4,
+) -> bool:
+    """O404:Terran Power真实舰队4艘前第4+星门让位首波产出。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "power"
+        and stargates >= pre_fleet_cap
+        and fleet_onfield < min_fleet
+    )
+
+
 def timing_carrier_transition_allowed(
     ai_build: str,
     tempest_count: int,
