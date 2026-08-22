@@ -259,6 +259,7 @@ from bot.production_plans import (
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
     zerg_macro_escort_fleet_suppressed,
+    zerg_macro_worker_cap,
     zerg_macro_corruptor_sticky_window,
     zerg_macro_cannon_capped,
     zerg_rush_late_expand_blocked,
@@ -5199,7 +5200,13 @@ class ProductionManager(Manager):
         if (
             self.ai.time > 200
             and self.ai.supply_workers
-            < min(70, 22 * max(1, self.ai.townhalls.amount))
+            < min(
+                zerg_macro_worker_cap(
+                    opp_race=self._opp_race,
+                    ai_build=self._ai_build,
+                ),
+                22 * max(1, self.ai.townhalls.amount),
+            )
             and self.ai.ready_townhalls
             and not cy_unit_pending(self.ai, UnitID.PROBE)
             and self.ai.time - getattr(self, "_probe_block_logged_at", 0.0) > 30.0
@@ -11864,8 +11871,13 @@ class ProductionManager(Manager):
             return
         # 农民上限随基地数放大：每矿 ~22（16 矿 + 6 气），封顶 70 给军队留供给。
         # 单矿时 22*1=22 与旧行为一致；开二矿后目标自动抬到 44，接着补农民采矿采气。
+        _worker_cap = zerg_macro_worker_cap(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+        )
         if (
-            self.ai.supply_workers < min(70, 22 * self.ai.townhalls.amount)
+            self.ai.supply_workers
+            < min(_worker_cap, 22 * self.ai.townhalls.amount)
             and self.ai.can_afford(UnitID.PROBE)
             and self.ai.supply_left > 0
         ):

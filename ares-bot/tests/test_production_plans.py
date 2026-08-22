@@ -242,6 +242,7 @@ from bot.production_plans import (  # noqa: E402
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
     zerg_macro_escort_fleet_suppressed,
+    zerg_macro_worker_cap,
     zerg_macro_corruptor_sticky_window,
     zerg_macro_cannon_capped,
     zerg_rush_late_expand_blocked,
@@ -6648,14 +6649,32 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(
             zerg_macro_escort_fleet_suppressed(
                 opp_race="zerg", ai_build="macro",
-                now=500.0, fleet_onfield=4, stalkers=5,
+                now=500.0, fleet_onfield=4, stalkers=3,
             )
         )
         self.assertFalse(
             zerg_macro_escort_fleet_suppressed(
                 opp_race="zerg", ai_build="macro",
-                now=500.0, fleet_onfield=4, stalkers=6,
+                now=500.0, fleet_onfield=4, stalkers=4,
             )
+        )
+        self.assertFalse(
+            zerg_macro_escort_fleet_suppressed(
+                opp_race="zerg", ai_build="macro",
+                now=650.1, fleet_onfield=4, stalkers=0,
+            )
+        )
+        self.assertEqual(
+            zerg_macro_worker_cap(
+                opp_race="zerg", ai_build="macro"
+            ),
+            60,
+        )
+        self.assertEqual(
+            zerg_macro_worker_cap(
+                opp_race="terran", ai_build="macro"
+            ),
+            70,
         )
         self.assertEqual(
             zerg_macro_corruptor_sticky_window(
@@ -6740,13 +6759,13 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(
             zerg_macro_cannon_capped(
                 opp_race="zerg", ai_build="macro",
-                fleet_onfield=0, cannons=10,
+                fleet_onfield=0, cannons=8,
             )
         )
         self.assertFalse(
             zerg_macro_cannon_capped(
                 opp_race="zerg", ai_build="macro",
-                fleet_onfield=0, cannons=9,
+                fleet_onfield=0, cannons=7,
             )
         )
         self.assertFalse(

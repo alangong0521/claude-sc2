@@ -6649,17 +6649,31 @@ def zerg_macro_escort_fleet_suppressed(
     fleet_onfield: int,
     stalkers: int,
     min_time: float = 500.0,
+    max_time: float = 650.0,
     min_fleet: int = 4,
-    stalker_floor: int = 6,
+    stalker_floor: int = 4,
 ) -> bool:
-    """O428:首6追猎成型前暂停新舰队订单，把气明确转护航。"""
+    """O428/O429:首4追猎或650s前暂停新舰队订单。"""
     return (
         opp_race == "zerg"
         and ai_build == "macro"
-        and now >= min_time
+        and min_time <= now <= max_time
         and fleet_onfield >= min_fleet
         and stalkers < stalker_floor
     )
+
+
+def zerg_macro_worker_cap(
+    *,
+    opp_race: str,
+    ai_build: str,
+    default_cap: int = 70,
+    macro_cap: int = 60,
+) -> int:
+    """O429:Zerg Macro农民封顶60，把后5-10探机矿让给军队。"""
+    if opp_race == "zerg" and ai_build == "macro":
+        return macro_cap
+    return default_cap
 
 
 def carrier_desperation_push_allowed(
@@ -6747,7 +6761,7 @@ def zerg_macro_cannon_capped(
     min_fleet: int = 12,
     cap: int = 20,
     first_fleet: int = 16,
-    pre_fleet_cap: int = 10,
+    pre_fleet_cap: int = 8,
 ) -> bool:
     """O416/O419:Zerg Macro首批舰队前硬顶10，舰队12后硬顶20。"""
     return (
