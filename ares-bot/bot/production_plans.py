@@ -6387,13 +6387,15 @@ def zerg_rush_late_stalker_escort_needed(
     min_fleet: int = 8,
     stalker_floor: int = 8,
 ) -> bool:
-    """O388-②:Zerg Rush 后期腐化转型前补足8追猎护航。"""
+    """O388/O414:Zerg Rush/Macro 腐化转型前补追猎护航。"""
+    effective_min_time = 700.0 if ai_build == "macro" else min_time
+    effective_floor = 12 if ai_build == "macro" else stalker_floor
     return (
         opp_race == "zerg"
-        and ai_build == "rush"
-        and now >= min_time
+        and ai_build in ("rush", "macro")
+        and now >= effective_min_time
         and fleet_count >= min_fleet
-        and stalkers < stalker_floor
+        and stalkers < effective_floor
     )
 
 
@@ -6724,6 +6726,65 @@ def terran_pressure_rebuild_fund_bypassed(
         and ai_build in ("timing", "power")
         and current_bases >= min_bases
         and fleet_onfield >= min_fleet
+    )
+
+
+def zerg_macro_rebuild_fund_bypassed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    current_bases: int,
+    fleet_onfield: int,
+    min_bases: int = 3,
+    min_fleet: int = 12,
+) -> bool:
+    """O414:Zerg Macro成型后掉矿不以全局停产换基地。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and current_bases >= min_bases
+        and fleet_onfield >= min_fleet
+    )
+
+
+def terran_macro_fourth_blocked(
+    *,
+    opp_race: str,
+    ai_build: str,
+    current_bases: int,
+    fleet_onfield: int,
+    min_local_cannons: int,
+    min_fleet: int = 8,
+) -> bool:
+    """O414:Terran Macro舰队8且既有矿均有塔后才开四矿。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "macro"
+        and current_bases >= 3
+        and (fleet_onfield < min_fleet or min_local_cannons < 1)
+    )
+
+
+def terran_macro_sg_recovery_needed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    fleet_onfield: int,
+    stargates: int,
+    fb_ready: bool,
+    minerals: float,
+    vespene: float,
+    target_sg: int = 4,
+) -> bool:
+    """O414:Terran Macro舰队成型后维持至少4座星门产能。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "macro"
+        and fleet_onfield >= 4
+        and stargates < target_sg
+        and fb_ready
+        and minerals >= 150.0
+        and vespene >= 300.0
     )
 
 

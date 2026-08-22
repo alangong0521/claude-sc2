@@ -15,6 +15,7 @@ from bot.production_plans import (  # noqa: E402
     assimilator_attempt_stuck,
     base_rebuild_active,
     base_defense_anchor,
+    bank_production_target,
     builder_borrow_ok,
     builder_is_waiting,
     builder_release_exempt,
@@ -244,6 +245,9 @@ from bot.production_plans import (  # noqa: E402
     terran_power_fourth_before_fleet_blocked,
     terran_power_stargate_capped,
     terran_pressure_rebuild_fund_bypassed,
+    zerg_macro_rebuild_fund_bypassed,
+    terran_macro_fourth_blocked,
+    terran_macro_sg_recovery_needed,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -6367,6 +6371,18 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             zerg_rush_late_stalker_escort_needed(**{**base, "now": 899.9})
         )
+        macro = {
+            **base,
+            "ai_build": "macro",
+            "now": 700.0,
+            "stalkers": 11,
+        }
+        self.assertTrue(zerg_rush_late_stalker_escort_needed(**macro))
+        self.assertFalse(
+            zerg_rush_late_stalker_escort_needed(
+                **{**macro, "stalkers": 12}
+            )
+        )
 
     def test_zerg_rush_late_expand_blocked(self):
         base = dict(
@@ -6622,6 +6638,55 @@ class TestO381Plans(unittest.TestCase):
             terran_pressure_rebuild_fund_bypassed(
                 **{**base, "current_bases": 1}
             )
+        )
+
+    def test_macro_rebuild_and_investment_guards(self):
+        self.assertTrue(
+            zerg_macro_rebuild_fund_bypassed(
+                opp_race="zerg", ai_build="macro",
+                current_bases=3, fleet_onfield=12,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_rebuild_fund_bypassed(
+                opp_race="zerg", ai_build="macro",
+                current_bases=2, fleet_onfield=20,
+            )
+        )
+        macro = dict(
+            opp_race="terran", ai_build="macro",
+            current_bases=3, fleet_onfield=7, min_local_cannons=1,
+        )
+        self.assertTrue(terran_macro_fourth_blocked(**macro))
+        self.assertTrue(
+            terran_macro_fourth_blocked(
+                **{**macro, "fleet_onfield": 8, "min_local_cannons": 0}
+            )
+        )
+        self.assertFalse(
+            terran_macro_fourth_blocked(
+                **{**macro, "fleet_onfield": 8}
+            )
+        )
+
+    def test_terran_macro_sg_floor_and_bank_cap(self):
+        self.assertTrue(
+            terran_macro_sg_recovery_needed(
+                opp_race="terran", ai_build="macro", fleet_onfield=8,
+                stargates=3, fb_ready=True, minerals=150, vespene=300,
+            )
+        )
+        self.assertFalse(
+            terran_macro_sg_recovery_needed(
+                opp_race="terran", ai_build="macro", fleet_onfield=8,
+                stargates=4, fb_ready=True, minerals=150, vespene=300,
+            )
+        )
+        self.assertEqual(
+            bank_production_target(
+                5000, 5000, base=1, ready_bases=6, cap=8
+            ),
+            8,
         )
 
     def test_terran_rush_immortal_needed(self):

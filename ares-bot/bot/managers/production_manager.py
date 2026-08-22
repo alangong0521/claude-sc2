@@ -242,6 +242,9 @@ from bot.production_plans import (
     terran_power_fourth_before_fleet_blocked,
     terran_power_stargate_capped,
     terran_pressure_rebuild_fund_bypassed,
+    zerg_macro_rebuild_fund_bypassed,
+    terran_macro_fourth_blocked,
+    terran_macro_sg_recovery_needed,
     zerg_rush_late_stalker_escort_needed,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -928,18 +931,33 @@ class ProductionManager(Manager):
         )
         if (
             _o381_reason == "lost_base"
-            and terran_pressure_rebuild_fund_bypassed(
-                opp_race=self._opp_race,
-                ai_build=self._ai_build,
-                current_bases=self.ai.townhalls.amount,
-                fleet_onfield=(
-                    self.manager_mediator.get_own_unit_count(
-                        unit_type_id=UnitID.TEMPEST, include_pending=False
-                    )
-                    + self.manager_mediator.get_own_unit_count(
-                        unit_type_id=UnitID.CARRIER, include_pending=False
-                    )
-                ),
+            and (
+                terran_pressure_rebuild_fund_bypassed(
+                    opp_race=self._opp_race,
+                    ai_build=self._ai_build,
+                    current_bases=self.ai.townhalls.amount,
+                    fleet_onfield=(
+                        self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.TEMPEST, include_pending=False
+                        )
+                        + self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.CARRIER, include_pending=False
+                        )
+                    ),
+                )
+                or zerg_macro_rebuild_fund_bypassed(
+                    opp_race=self._opp_race,
+                    ai_build=self._ai_build,
+                    current_bases=self.ai.townhalls.amount,
+                    fleet_onfield=(
+                        self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.TEMPEST, include_pending=False
+                        )
+                        + self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.CARRIER, include_pending=False
+                        )
+                    ),
+                )
             )
         ):
             _o381_reason = None
@@ -1962,18 +1980,27 @@ class ProductionManager(Manager):
         # O410:O409只关了update头部的lost_base基金，spawn_pause_reason
         # 还会从这条独立_base_rebuild路径返回rebuild_nexus。成型舰队同口径
         # 豁免，彻底保持产兵；扩张意图仍由_want_expand负责恢复基地。
-        if terran_pressure_rebuild_fund_bypassed(
-            opp_race=self._opp_race,
-            ai_build=self._ai_build,
-            current_bases=self.ai.townhalls.amount,
-            fleet_onfield=(
-                self.manager_mediator.get_own_unit_count(
-                    unit_type_id=UnitID.TEMPEST, include_pending=False
-                )
-                + self.manager_mediator.get_own_unit_count(
-                    unit_type_id=UnitID.CARRIER, include_pending=False
-                )
-            ),
+        _rebuild_fleet_onfield = (
+            self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.TEMPEST, include_pending=False
+            )
+            + self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.CARRIER, include_pending=False
+            )
+        )
+        if (
+            terran_pressure_rebuild_fund_bypassed(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_onfield=_rebuild_fleet_onfield,
+            )
+            or zerg_macro_rebuild_fund_bypassed(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_onfield=_rebuild_fleet_onfield,
+            )
         ):
             _base_rebuild = False
         # O97-B(o96 局5 实证):首舰已出+单矿+想开矿且买不起 → SpawnController
@@ -2651,6 +2678,21 @@ class ProductionManager(Manager):
                         unit_type_id=UnitID.CARRIER, include_pending=False
                     )
                 ),
+            ):
+                _expansion_to = min(_expansion_to, 3)
+            if terran_macro_fourth_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+                min_local_cannons=self._min_ready_cannons_per_base(),
             ):
                 _expansion_to = min(_expansion_to, 3)
             if _expansion_to > self.ai.townhalls.amount:
@@ -5426,6 +5468,30 @@ class ProductionManager(Manager):
                             f"气={self.ai.vespene:.0f})"
                         ),
                     })
+        if terran_macro_sg_recovery_needed(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            fleet_onfield=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
+            stargates=_sg_total_o218,
+            fb_ready=self._fb_entities_now > 0,
+            minerals=self.ai.minerals,
+            vespene=self.ai.vespene,
+        ):
+            _rc414 = self._dispatch_structure(
+                UnitID.STARGATE, self.ai.start_location, critical=True
+            )
+            if _rc414 == "dispatched":
+                self.ai._events.append({
+                    "t": round(self.ai.time, 1),
+                    "msg": "O414:Terran Macro恢复四星门地板",
+                })
         # O369-⑥(o368b g2 实证):星门按舰队缺口硬钉 —— O218 等气烂
         # 银行(气 ≥400)触发太晚:g2 追加 794s 才动、到死只有 3 座
         # (胜局 844s 已 7 座);舰队缺口在前、气淤积在后,等气就是
@@ -9757,6 +9823,20 @@ class ProductionManager(Manager):
                 healthy += 1
         return healthy
 
+    def _min_ready_cannons_per_base(self) -> int:
+        """O414:所有就绪基地中最薄的局部就绪炮塔数。"""
+        if not self.ai.ready_townhalls:
+            return 0
+        return min(
+            sum(
+                1
+                for s in self.ai.structures.ready
+                if s.type_id == UnitID.PHOTONCANNON
+                and s.position.distance_to(th.position) < 12.0
+            )
+            for th in self.ai.ready_townhalls
+        )
+
     def _want_dynamic_expand(self) -> bool:
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
@@ -9825,6 +9905,23 @@ class ProductionManager(Manager):
                     unit_type_id=UnitID.CARRIER, include_pending=False
                 )
             ),
+        ):
+            self._o383_healthy_expand_from_bases = None
+            self._o381_healthy_expand_active = False
+            return False
+        if terran_macro_fourth_blocked(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            current_bases=self.ai.townhalls.amount,
+            fleet_onfield=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
+            min_local_cannons=self._min_ready_cannons_per_base(),
         ):
             self._o383_healthy_expand_from_bases = None
             self._o381_healthy_expand_active = False
@@ -12431,6 +12528,20 @@ class ProductionManager(Manager):
                     )
                 ),
             )
+            and not terran_macro_fourth_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+                min_local_cannons=self._min_ready_cannons_per_base(),
+            )
             # O250(o249-lane game_04/05 实证):O247 首舰前不开矿被 _spend_bank
             # 绕开(存款 800 早到 + SG 未就绪 → fb_missing_starved 永假,
             # 二矿 249s 落成即被轮抄);舰队先行门同步接入滚雪球开矿。
@@ -12502,6 +12613,7 @@ class ProductionManager(Manager):
             self.ai.vespene,
             base=ep.base,
             ready_bases=self.ai.townhalls.ready.amount,
+            cap=ep.cap,
         )
         if desired is None:
             return
