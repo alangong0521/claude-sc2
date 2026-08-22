@@ -15,6 +15,7 @@ from bot.production_plans import (
     cover_hold_should_fire,
     strongest_cover_index,
     tempest_global_aa_retreat_needed,
+    tempest_local_spellcaster_retreat_needed,
 )
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 
@@ -178,9 +179,16 @@ class TempestOffensive(BaseUnit):
                         1 for u in _aa_close
                         if u.type_id == UnitID.CORRUPTOR
                     ) >= 3
-                    or any(
-                        u.type_id in (UnitID.VIPER, UnitID.INFESTOR)
-                        for u in _aa_close
+                    or tempest_local_spellcaster_retreat_needed(
+                        nearby_vipers=sum(
+                            1 for u in _aa_close
+                            if u.type_id == UnitID.VIPER
+                        ),
+                        nearby_infestors=sum(
+                            1 for u in _aa_close
+                            if u.type_id == UnitID.INFESTOR
+                        ),
+                        own_tempests=_own_tempests,
                     )
                 )
             ):

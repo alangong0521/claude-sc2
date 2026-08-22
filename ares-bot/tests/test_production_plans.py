@@ -30,6 +30,7 @@ from bot.production_plans import (  # noqa: E402
     rebuild_preposition_allowed,
     cover_hold_should_fire,
     tempest_global_aa_retreat_needed,
+    tempest_local_spellcaster_retreat_needed,
     strongest_cover_index,
     carrier_transition_ready,
     carrier_transition_time_box,
@@ -235,6 +236,7 @@ from bot.production_plans import (  # noqa: E402
     carrier_fleet_keeps_strategic_target,
     zerg_rush_late_stalker_escort_needed,
     zerg_macro_escort_gateway_target,
+    zerg_macro_ground_screen_needed,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
     zerg_macro_corruptor_sticky_window,
@@ -1685,6 +1687,21 @@ class TestCarrierRallyAgainstAA(unittest.TestCase):
             tempest_global_aa_retreat_needed(
                 visible_corruptors=15, visible_vipers=0,
                 own_tempests=8, own_stalkers=11,
+            )
+        )
+        self.assertFalse(
+            tempest_local_spellcaster_retreat_needed(
+                nearby_vipers=0, nearby_infestors=3, own_tempests=8
+            )
+        )
+        self.assertTrue(
+            tempest_local_spellcaster_retreat_needed(
+                nearby_vipers=0, nearby_infestors=3, own_tempests=7
+            )
+        )
+        self.assertTrue(
+            tempest_local_spellcaster_retreat_needed(
+                nearby_vipers=1, nearby_infestors=0, own_tempests=20
             )
         )
 
@@ -6558,14 +6575,26 @@ class TestO381Plans(unittest.TestCase):
                 opp_race="zerg", ai_build="macro", visible_corruptors=0,
                 now=500.0, fleet_onfield=4,
             ),
-            4,
+            2,
         )
         self.assertEqual(
             zerg_macro_escort_gateway_target(
                 opp_race="zerg", ai_build="macro", visible_corruptors=0,
-                now=499.9, fleet_onfield=4,
+                now=580.0, fleet_onfield=8,
             ),
-            2,
+            4,
+        )
+        self.assertTrue(
+            zerg_macro_ground_screen_needed(
+                opp_race="zerg", ai_build="macro",
+                visible_ground_combat=10, corruptor_credit=0, zealots=7,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_ground_screen_needed(
+                opp_race="zerg", ai_build="macro",
+                visible_ground_combat=10, corruptor_credit=4, zealots=7,
+            )
         )
         self.assertTrue(
             zerg_macro_carrier_suppressed(

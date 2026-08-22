@@ -1580,6 +1580,19 @@ def tempest_global_aa_retreat_needed(
     return own_aa_force <= 0 or visible_corruptors * threat_ratio >= own_aa_force
 
 
+def tempest_local_spellcaster_retreat_needed(
+    *,
+    nearby_vipers: int,
+    nearby_infestors: int,
+    own_tempests: int,
+    infestor_safe_fleet: int = 8,
+) -> bool:
+    """O426:飞蛇仍必撤；8+暴风不因感染虫单独放弃地面防守。"""
+    return nearby_vipers > 0 or (
+        nearby_infestors > 0 and own_tempests < infestor_safe_fleet
+    )
+
+
 def strongest_cover_index(
     covers: list[tuple[float, float, int]],
     origin: tuple[float, float],
@@ -6539,8 +6552,8 @@ def zerg_macro_escort_gateway_target(
     fleet_onfield: int = 0,
     base_target: int = 2,
     corruptor_trigger: int = 8,
-    prebuild_at: float = 500.0,
-    prebuild_fleet: int = 4,
+    prebuild_at: float = 580.0,
+    prebuild_fleet: int = 8,
     aa_target: int = 4,
 ) -> int:
     """O421/O423:Macro在腐化海前预建4门追猎产能。"""
@@ -6554,6 +6567,27 @@ def zerg_macro_escort_gateway_target(
     ):
         return aa_target
     return base_target
+
+
+def zerg_macro_ground_screen_needed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    visible_ground_combat: int,
+    corruptor_credit: int,
+    zealots: int,
+    min_ground: int = 10,
+    max_corruptors: int = 3,
+    zealot_floor: int = 8,
+) -> bool:
+    """O426:腐化海前的大地面波用无气狂热者填4门。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and visible_ground_combat >= min_ground
+        and corruptor_credit <= max_corruptors
+        and zealots < zealot_floor
+    )
 
 
 def zerg_macro_carrier_suppressed(

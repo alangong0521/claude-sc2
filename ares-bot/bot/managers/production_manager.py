@@ -255,6 +255,7 @@ from bot.production_plans import (
     terran_macro_sg_recovery_needed,
     zerg_rush_late_stalker_escort_needed,
     zerg_macro_escort_gateway_target,
+    zerg_macro_ground_screen_needed,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
     zerg_macro_corruptor_sticky_window,
@@ -6828,6 +6829,37 @@ class ProductionManager(Manager):
                     self.ai._events.append({
                         "t": round(self.ai.time, 1),
                         "msg": "O417:Zerg Macro直产追猎护航",
+                    })
+                    break
+        _visible_zerg_ground_combat = sum(
+            1 for u in self.ai.enemy_units
+            if not u.is_structure
+            and not u.is_flying
+            and is_combat_type(u.type_id)
+        )
+        if (
+            not self._o381_nexus_fund_active
+            and zerg_macro_ground_screen_needed(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                visible_ground_combat=_visible_zerg_ground_combat,
+                corruptor_credit=self._corruptors_credited(),
+                zealots=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.ZEALOT
+                    )
+                    + cy_unit_pending(self.ai, UnitID.ZEALOT)
+                ),
+            )
+            and not self.ai.can_afford(UnitID.STALKER)
+            and self.ai.can_afford(UnitID.ZEALOT)
+        ):
+            for _gw in structures_dict[UnitID.GATEWAY]:
+                if _gw.is_ready and _gw.is_idle:
+                    _gw.train(UnitID.ZEALOT)
+                    self.ai._events.append({
+                        "t": round(self.ai.time, 1),
+                        "msg": "O426:无气地面波直产狂热屏障",
                     })
                     break
         if not self._o381_nexus_fund_active:
