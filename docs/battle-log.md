@@ -11849,3 +11849,13 @@ Nexus/FB);③ SG ≤300s;④ 停气触发后 30s 内气增长压
 - Terran Timing三矿门从“双不朽真实出场”收紧为“双不朽 + 真实舰队≥4”。
   三处开矿出口（主MacroPlan最终to_count、动态意图层、bank滚雪球）统一传入
   Tempest+Carrier在场数；pending不算，避免订单幻影提前放行。
+
+### O408 已落地：Power复用双不朽站线包
+
+1. Terran Power纳入O387/O394机械台预置：t≥340、至少2基地、舰队<8且FB
+   存在时建Robo，与Timing相同；Rush仍保持原420s/3基地参数。
+2. Power在Robo就绪后无条件预产2只Immortal；第3只仍需可见重甲≥6，避免
+   地面无限膨胀。目标是把517s提前Power波从“2暴风+9塔”升级为
+   “2暴风+双不朽+塔阵”，降低电脑波次时间方差。
+3. 下一双lane：Timing验证舰队4前三矿为0；Power验证340s Robo、首波前双不朽，
+   两条战线都以再胜1局达到动态3/5为目标。

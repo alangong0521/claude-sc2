@@ -6386,6 +6386,16 @@ class TestO381Plans(unittest.TestCase):
                 }
             )
         )
+        self.assertTrue(
+            terran_rush_robo_needed(
+                **{
+                    **base,
+                    "ai_build": "power",
+                    "now": 340.0,
+                    "bases": 2,
+                }
+            )
+        )
 
     def test_terran_timing_third_before_immortals_blocked(self):
         base = dict(
@@ -6519,6 +6529,9 @@ class TestO381Plans(unittest.TestCase):
         )
         self.assertTrue(
             terran_rush_immortal_needed(**{**base, "ai_build": "timing"})
+        )
+        self.assertTrue(
+            terran_rush_immortal_needed(**{**base, "ai_build": "power"})
         )
         self.assertTrue(
             terran_rush_immortal_needed(

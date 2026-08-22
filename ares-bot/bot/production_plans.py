@@ -6440,13 +6440,14 @@ def terran_rush_robo_needed(
     min_bases: int = 3,
     fleet_gate: int = 4,
 ) -> bool:
-    """O387/O394:Terran Rush/Timing 压力波前预置机械台。"""
-    effective_min_time = 340.0 if ai_build == "timing" else min_time
-    effective_min_bases = 2 if ai_build == "timing" else min_bases
-    effective_fleet_gate = 8 if ai_build == "timing" else fleet_gate
+    """O387/O394/O408:Terran Rush/Timing/Power 压力波前预置机械台。"""
+    early_package = ai_build in ("timing", "power")
+    effective_min_time = 340.0 if early_package else min_time
+    effective_min_bases = 2 if early_package else min_bases
+    effective_fleet_gate = 8 if early_package else fleet_gate
     return (
         opp_race == "terran"
-        and ai_build in ("rush", "timing")
+        and ai_build in ("rush", "timing", "power")
         and now >= effective_min_time
         and bases >= effective_min_bases
         and fleet_count < effective_fleet_gate
@@ -6464,10 +6465,10 @@ def terran_rush_immortal_needed(
     trigger: int = 6,
     cap: int = 2,
 ) -> bool:
-    """O387/O394:Terran Rush/Timing 重甲波出现时直产最多2个不朽。"""
-    if opp_race != "terran" or ai_build not in ("rush", "timing"):
+    """O387/O394/O408:Terran三种压力风格直产最多2个不朽。"""
+    if opp_race != "terran" or ai_build not in ("rush", "timing", "power"):
         return False
-    if ai_build == "timing" and immortals < 2:
+    if ai_build in ("timing", "power") and immortals < 2:
         return True
     return visible_armored_ground >= trigger and immortals < cap
 
