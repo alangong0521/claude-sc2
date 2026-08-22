@@ -2562,6 +2562,14 @@ class ProductionManager(Manager):
                 immortals_or_pending=self.manager_mediator.get_own_unit_count(
                     unit_type_id=UnitID.IMMORTAL, include_pending=False
                 ),
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
             ):
                 _expansion_to = min(_expansion_to, 2)
             if terran_power_fourth_before_fleet_blocked(
@@ -9671,6 +9679,14 @@ class ProductionManager(Manager):
                     unit_type_id=UnitID.IMMORTAL, include_pending=False
                 )
             ),
+            fleet_onfield=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
         ):
             self._o383_healthy_expand_from_bases = None
             self._o381_healthy_expand_active = False
@@ -12255,6 +12271,14 @@ class ProductionManager(Manager):
                 ),
                 immortals_or_pending=self.manager_mediator.get_own_unit_count(
                     unit_type_id=UnitID.IMMORTAL, include_pending=False
+                ),
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
                 ),
             )
             and not terran_power_fourth_before_fleet_blocked(

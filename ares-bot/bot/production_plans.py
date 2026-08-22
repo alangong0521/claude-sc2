@@ -6479,19 +6479,22 @@ def terran_timing_third_before_immortals_blocked(
     current_bases: int,
     fleet_beacon_present: bool,
     immortals_or_pending: int,
+    fleet_onfield: int = 4,
+    min_fleet: int = 4,
 ) -> bool:
-    """O396/O397/O400:Terran Timing 两只不朽真实出场前三矿让位。
+    """O396/O397/O400/O407:双不朽+4真实舰队前三矿让位。
 
     O399a/b 都在第二只不朽落地前旁路开三矿；o399b 413s 三矿吃掉400矿，
     首波时仅1不朽、零暴风。FB 参数保留兼容旧调用，但不再作为放行前提：
-    二矿后的400矿必须先完成双不朽站线包。
+    二矿后的400矿必须先完成双不朽站线包。O407追加舰队4门：O406a在
+    2暴风+2不朽、仅2星门时立刻开三矿，第二波前舰队仍卡3。
     """
     _ = fleet_beacon_present
     return (
         opp_race == "terran"
         and ai_build == "timing"
         and current_bases >= 2
-        and immortals_or_pending < 2
+        and (immortals_or_pending < 2 or fleet_onfield < min_fleet)
     )
 
 

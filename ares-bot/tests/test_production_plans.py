@@ -6391,21 +6391,22 @@ class TestO381Plans(unittest.TestCase):
         base = dict(
             opp_race="terran", ai_build="timing", current_bases=2,
             fleet_beacon_present=True, immortals_or_pending=0,
+            fleet_onfield=3,
         )
         self.assertTrue(terran_timing_third_before_immortals_blocked(**base))
         self.assertFalse(
             terran_timing_third_before_immortals_blocked(
-                **{**base, "immortals_or_pending": 2}
-            )
-        )
-        self.assertFalse(
-            terran_timing_third_before_immortals_blocked(
-                **{**base, "immortals_or_pending": 2}
+                **{**base, "immortals_or_pending": 2, "fleet_onfield": 4}
             )
         )
         self.assertTrue(
             terran_timing_third_before_immortals_blocked(
-                **{**base, "fleet_beacon_present": False}
+                **{**base, "immortals_or_pending": 2, "fleet_onfield": 3}
+            )
+        )
+        self.assertTrue(
+            terran_timing_third_before_immortals_blocked(
+                **{**base, "fleet_beacon_present": False, "fleet_onfield": 4}
             )
         )
 
