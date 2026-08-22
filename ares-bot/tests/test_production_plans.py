@@ -294,6 +294,8 @@ from bot.production_plans import (  # noqa: E402
     natural_predefense_allowed,
     nexus_rebuild_active,
     nexus_rebuild_viable,
+    q5_last_stand_deadline,
+    q5_last_stand_active,
     oracle_before_fleet_allowed,
     pick_slot_anchor,
     pick_walk_patch,
@@ -981,6 +983,28 @@ class TestNexusRebuild(unittest.TestCase):
         # E4 实证:0 基地 = 零收入(采了交不了),存款 <400 是死局 → 不豁免 Q5
         self.assertFalse(nexus_rebuild_viable(10, 1500, 45))
         self.assertTrue(nexus_rebuild_viable(10, 1500, 400))
+
+    def test_large_fleet_gets_timed_last_stand(self):
+        deadline = q5_last_stand_deadline(now=1000.0, fleet_count=12)
+        self.assertEqual(deadline, 1120.0)
+        self.assertTrue(
+            q5_last_stand_active(
+                now=1050.0, fleet_count=12, deadline=deadline
+            )
+        )
+        self.assertFalse(
+            q5_last_stand_active(
+                now=1050.0, fleet_count=11, deadline=deadline
+            )
+        )
+        self.assertFalse(
+            q5_last_stand_active(
+                now=1120.0, fleet_count=12, deadline=deadline
+            )
+        )
+        self.assertIsNone(
+            q5_last_stand_deadline(now=1000.0, fleet_count=11)
+        )
 
 
 class TestBaseRebuild(unittest.TestCase):

@@ -491,6 +491,32 @@ def nexus_rebuild_viable(
     return workers > 0 and minerals_left > 0 and bank >= nexus_cost
 
 
+def q5_last_stand_deadline(
+    *,
+    now: float,
+    fleet_count: int,
+    min_fleet: int = 12,
+    window: float = 120.0,
+) -> float | None:
+    """O431:0基地仍有12+舰队时给120s换家/终结机会。"""
+    return now + window if fleet_count >= min_fleet else None
+
+
+def q5_last_stand_active(
+    *,
+    now: float,
+    fleet_count: int,
+    deadline: float | None,
+    min_fleet: int = 12,
+) -> bool:
+    """O431:最后攻坚到期或舰队跌破12即结束。"""
+    return (
+        deadline is not None
+        and now < deadline
+        and fleet_count >= min_fleet
+    )
+
+
 def expansion_reserve_active(want_expand: bool, can_afford_nexus: bool) -> bool:
     """E3k：动态开矿已触发但暂时买不起 Nexus → 攒钱预留（出兵/造农民让位）。
     纯逻辑，可单测。

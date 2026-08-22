@@ -71,6 +71,7 @@ from bot.production_plans import (
     terminal_cleanup_profile,
     terminal_cleanup_target_class,
     terminal_cleanup_patrol_order,
+    q5_last_stand_active,
     terran_timing_force_push_allowed,
 )
 
@@ -595,6 +596,23 @@ class CombatManager(Manager):
             return self._defend_anchor()  # O37:主基塔够 → 蹲最暴露的分矿
         if stance == "retreat":
             return self.ai.start_location
+        _q5_last_stand = q5_last_stand_active(
+            now=getattr(self.ai, "time", 0.0),
+            fleet_count=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
+            deadline=getattr(
+                self.ai, "_q5_last_stand_deadline", None
+            ),
+        )
+        if _q5_last_stand:
+            self._push_committed = True
+            return self._terminal_cleanup_target()
         _cleanup_check = getattr(self, "_terminal_cleanup_active", None)
         if _cleanup_check is not None and _cleanup_check():
             self._push_committed = True

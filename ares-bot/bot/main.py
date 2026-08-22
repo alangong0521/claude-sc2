@@ -14,6 +14,8 @@ from bot.production_plans import (
     idle_builder_alarm,
     is_combat_type,
     nexus_rebuild_viable,
+    q5_last_stand_deadline,
+    q5_last_stand_active,
     pick_evacuation_base,
     pick_walk_patch,
     resource_contested,
@@ -892,6 +894,8 @@ class MyBot(AresBot):
         # Q5/O192-③ 判负离场(bench 省垃圾时间/防 SC2 残局卡死):基地全没且
         # 无法重建 → 投降离场。早期(前10分钟)交给 O15 重建;10 分钟后放宽条件,
         # 工人过少(≤2)或存款不足即判负,避免 1 农 100 矿空转 10 分钟+。
+        if self.townhalls.amount > 0:
+            self._q5_last_stand_deadline = None
         if self.townhalls.amount == 0:
             minerals_left = (
                 sum(mf.mineral_contents for mf in self.mineral_field)
@@ -904,7 +908,32 @@ class MyBot(AresBot):
             # O192-③: 10 分钟后放宽,避免残局拖时间/SC2 卡死不结束。
             if self.time >= 600.0:
                 viable = viable and self.workers.amount >= 3 and self.minerals >= 250
-            if not viable:
+            fleet_count = (
+                self.units(UnitID.TEMPEST).amount
+                + self.units(UnitID.CARRIER).amount
+            )
+            last_stand_until = getattr(
+                self, "_q5_last_stand_deadline", None
+            )
+            if not viable and last_stand_until is None:
+                last_stand_until = q5_last_stand_deadline(
+                    now=self.time, fleet_count=fleet_count
+                )
+                self._q5_last_stand_deadline = last_stand_until
+                if last_stand_until is not None:
+                    self._events.append({
+                        "t": round(self.time, 1),
+                        "msg": (
+                            "O431:0基地大舰队最后攻坚窗"
+                            f"(fleet={fleet_count},120s)"
+                        ),
+                    })
+            last_stand = q5_last_stand_active(
+                now=self.time,
+                fleet_count=fleet_count,
+                deadline=last_stand_until,
+            )
+            if not viable and not last_stand:
                 phase = "前10分钟" if self.time < 600.0 else "中残局"
                 self._events.append(
                     {"t": round(self.time, 1), "msg": f"{phase}基地全失,判负离场(Q5)"}
