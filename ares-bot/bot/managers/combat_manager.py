@@ -27,6 +27,7 @@ from bot.combat.warp_prism_offensive import WarpPrismOffensive
 from bot.production_plans import (
     carrier_push_safe,
     carrier_push_fleet_floor,
+    carrier_desperation_push_allowed,
     fleet_no_recall_threshold,
     carrier_rally_against_aa,
     defense_anchor_index,
@@ -695,6 +696,10 @@ class CombatManager(Manager):
             _now = getattr(self.ai, "time", 0.0)
             if (
                 not getattr(self, "_o380_desperation_used", False)
+                and carrier_desperation_push_allowed(
+                    opp_race=_current_opp_race,
+                    ai_build=_current_ai_build,
+                )
                 and _now >= 900.0
                 and desperation_push_window(
                     _now,

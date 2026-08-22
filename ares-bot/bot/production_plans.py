@@ -6492,15 +6492,22 @@ def zerg_macro_escort_gateway_target(
     opp_race: str,
     ai_build: str,
     visible_corruptors: int,
+    now: float = 0.0,
+    fleet_onfield: int = 0,
     base_target: int = 2,
     corruptor_trigger: int = 8,
+    prebuild_at: float = 500.0,
+    prebuild_fleet: int = 4,
     aa_target: int = 4,
 ) -> int:
-    """O421:Zerg Macro腐化海出现后把追猎产能从2门扩到4门。"""
+    """O421/O423:Macro在腐化海前预建4门追猎产能。"""
     if (
         opp_race == "zerg"
         and ai_build == "macro"
-        and visible_corruptors >= corruptor_trigger
+        and (
+            visible_corruptors >= corruptor_trigger
+            or (now >= prebuild_at and fleet_onfield >= prebuild_fleet)
+        )
     ):
         return aa_target
     return base_target
@@ -6511,13 +6518,18 @@ def zerg_macro_carrier_suppressed(
     opp_race: str,
     ai_build: str,
     visible_corruptors: int,
+    tempests: int = 99,
     corruptor_gate: int = 4,
+    tempest_release: int = 16,
 ) -> bool:
-    """O421:可见腐化成群时不再把250气投入航母。"""
+    """O421/O423:Macro先攒16暴风，腐化海窗口继续禁航母。"""
     return (
         opp_race == "zerg"
         and ai_build == "macro"
-        and visible_corruptors >= corruptor_gate
+        and (
+            tempests < tempest_release
+            or visible_corruptors >= corruptor_gate
+        )
     )
 
 
@@ -6529,12 +6541,20 @@ def zerg_macro_gas_stop_blocked(
     corruptor_gate: int = 4,
 ) -> bool:
     """O421:腐化海窗口保持采气，保证追猎/暴风持续补员。"""
-    return zerg_macro_carrier_suppressed(
-        opp_race=opp_race,
-        ai_build=ai_build,
-        visible_corruptors=visible_corruptors,
-        corruptor_gate=corruptor_gate,
+    return (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and visible_corruptors >= corruptor_gate
     )
+
+
+def carrier_desperation_push_allowed(
+    *,
+    opp_race: str,
+    ai_build: str,
+) -> bool:
+    """O423:Zerg Macro不得用2-4舰队O380豁命窗绕过16舰队门。"""
+    return not (opp_race == "zerg" and ai_build == "macro")
 
 
 def zerg_macro_corruptor_sticky_window(

@@ -25,6 +25,7 @@ from bot.production_plans import (  # noqa: E402
     carrier_quota_spawn,
     carrier_rally_against_aa,
     carrier_push_fleet_floor,
+    carrier_desperation_push_allowed,
     cover_hold_should_fire,
     tempest_global_aa_retreat_needed,
     strongest_cover_index,
@@ -6507,6 +6508,20 @@ class TestO381Plans(unittest.TestCase):
             ),
             2,
         )
+        self.assertEqual(
+            zerg_macro_escort_gateway_target(
+                opp_race="zerg", ai_build="macro", visible_corruptors=0,
+                now=500.0, fleet_onfield=4,
+            ),
+            4,
+        )
+        self.assertEqual(
+            zerg_macro_escort_gateway_target(
+                opp_race="zerg", ai_build="macro", visible_corruptors=0,
+                now=499.9, fleet_onfield=4,
+            ),
+            2,
+        )
         self.assertTrue(
             zerg_macro_carrier_suppressed(
                 opp_race="zerg", ai_build="macro", visible_corruptors=4
@@ -6515,6 +6530,18 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             zerg_macro_carrier_suppressed(
                 opp_race="zerg", ai_build="macro", visible_corruptors=3
+            )
+        )
+        self.assertTrue(
+            zerg_macro_carrier_suppressed(
+                opp_race="zerg", ai_build="macro", visible_corruptors=0,
+                tempests=15,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_carrier_suppressed(
+                opp_race="zerg", ai_build="macro", visible_corruptors=0,
+                tempests=16,
             )
         )
         self.assertTrue(
@@ -6533,6 +6560,16 @@ class TestO381Plans(unittest.TestCase):
                 opp_race="zerg", ai_build="rush"
             ),
             60.0,
+        )
+        self.assertFalse(
+            carrier_desperation_push_allowed(
+                opp_race="zerg", ai_build="macro"
+            )
+        )
+        self.assertTrue(
+            carrier_desperation_push_allowed(
+                opp_race="zerg", ai_build="rush"
+            )
         )
         self.assertTrue(
             zerg_macro_cannon_capped(

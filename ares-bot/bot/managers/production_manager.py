@@ -9334,6 +9334,9 @@ class ProductionManager(Manager):
             opp_race=self._opp_race,
             ai_build=self._ai_build,
             visible_corruptors=_visible_corruptors_for_spawn,
+            tempests=self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.TEMPEST, include_pending=False
+            ),
         ):
             spawn.pop(UnitID.CARRIER, None)
             force_gap = self._flow.save_up
@@ -12464,6 +12467,15 @@ class ProductionManager(Manager):
             opp_race=self._opp_race,
             ai_build=self._ai_build,
             visible_corruptors=self._corruptors_credited(),
+            now=self.ai.time,
+            fleet_onfield=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
         )
         if (
             _floor_gateways_now < _escort_gateway_target
