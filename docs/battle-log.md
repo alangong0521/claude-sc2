@@ -11877,3 +11877,10 @@ Nexus/FB);③ SG ≤300s;④ 停气触发后 30s 内气增长压
 2. 该窄豁免只取消“所有作战生产暂停”；正常动态扩张/健康矿区仍会重建基地，
    当前基地跌到1或舰队<4时恢复原O381生存优先语义。
 3. 目标：掉三/四矿后舰队继续从6增长，不再出现数千矿+多星门但舰队恒定。
+
+### O410 已落地：同步关闭独立base_rebuild停产口
+
+- O409实机仍出现`O126:产兵暂停=rebuild_nexus`：update头部的lost_base基金
+  已豁免，但后段`base_rebuild_active`独立进入spawn pause。O410在同一
+  “Terran Timing/Power + 当前≥2基地 + 舰队≥4”口径下把`_base_rebuild`
+  置False；正常`_want_expand`不变，故只是产兵与重建并行，不是放弃补矿。

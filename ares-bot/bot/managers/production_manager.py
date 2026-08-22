@@ -1954,6 +1954,23 @@ class ProductionManager(Manager):
             self.ai.can_afford(UnitID.NEXUS),
             False,  # O381:分矿损失不再被慢性 rush latch 否决
         )
+        # O410:O409只关了update头部的lost_base基金，spawn_pause_reason
+        # 还会从这条独立_base_rebuild路径返回rebuild_nexus。成型舰队同口径
+        # 豁免，彻底保持产兵；扩张意图仍由_want_expand负责恢复基地。
+        if terran_pressure_rebuild_fund_bypassed(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            current_bases=self.ai.townhalls.amount,
+            fleet_onfield=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
+        ):
+            _base_rebuild = False
         # O97-B(o96 局5 实证):首舰已出+单矿+想开矿且买不起 → SpawnController
         # 暂停攒钱(局5:矿恒 50-250 被舰队/塔吃光,Nexus 400 攒不出,单矿
         # 20 农民打到死)。买得起/威胁/rush 自解除;农民照造(=收入来源)。
