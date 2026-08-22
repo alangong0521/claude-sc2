@@ -233,6 +233,8 @@ from bot.production_plans import (
     terran_rush_immortal_needed,
     terran_early_air_local_defense_targets,
     timing_carrier_transition_allowed,
+    terminal_cleanup_active,
+    terminal_cleanup_profile,
     terran_timing_third_before_immortals_blocked,
     terran_timing_fourth_before_fleet_blocked,
     terran_timing_gateway_capped,
@@ -246,6 +248,7 @@ from bot.production_plans import (
     terran_macro_fourth_blocked,
     terran_macro_sg_recovery_needed,
     zerg_rush_late_stalker_escort_needed,
+    zerg_macro_cannon_capped,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
@@ -4298,6 +4301,21 @@ class ProductionManager(Manager):
                 threat_active=(self._threat_active or self._rush_active)
                 and not _o377_hard_capped,
             )
+            if zerg_macro_cannon_capped(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+                cannons=_o377_cn_total,
+            ):
+                cannons = 0
+                _cannons_expansion = 0
             # O384-①(o383 Terran g2):手动派工口的 precontact_cap
             # 确实返回 capped，但 ProtossStaticDefence 目标层绕过，
             # 293s 还2塔、394s已5塔。上限前移到最终目标：
@@ -9840,10 +9858,49 @@ class ProductionManager(Manager):
             for th in self.ai.ready_townhalls
         )
 
+    def _terminal_cleanup_production_active(self) -> bool:
+        """O416:终结阶段生产层停止扩张/扩产，把注意力留给现有舰队。"""
+        workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
+        min_time, structure_cap, worker_cap, combat_cap = terminal_cleanup_profile(
+            self._opp_race, self._ai_build
+        )
+        return terminal_cleanup_active(
+            now=self.ai.time,
+            fleet_count=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
+            enemy_structures=sum(
+                1
+                for s in self.ai.enemy_structures
+                if self.ai.is_visible(s.position)
+            ),
+            enemy_workers=sum(
+                1 for u in self.ai.enemy_units if u.type_id in workers
+            ),
+            enemy_combat=sum(
+                1
+                for u in self.ai.enemy_units
+                if not u.is_structure
+                and u.type_id not in workers
+                and is_combat_type(u.type_id)
+            ),
+            min_time=min_time,
+            max_structures=structure_cap,
+            max_workers=worker_cap,
+            max_combat=combat_cap,
+        )
+
     def _want_dynamic_expand(self) -> bool:
         """动态开矿是否已触发(配了 max_bases 的流派,rush 内建门)。
         E3k:update 头部算一次,ExpansionController 注册与攒钱预留共用。"""
         self._zt_pocket_expand_debug()  # O283d:激活判据节流记账(排查期)
+        if self._terminal_cleanup_production_active():
+            return False
         if terran_rush_fourth_before_contact_blocked(
             opp_race=self._opp_race,
             ai_build=self._ai_build,
@@ -10589,6 +10646,31 @@ class ProductionManager(Manager):
             ) + self._in_flight_near(UnitID.PYLON, base_location, radius=15.0)
             if local_defense_pylon_capped(_local_pylons):
                 return "pylon_local_cap"
+        if sid == UnitID.PHOTONCANNON:
+            _macro_cannons_now = (
+                len(
+                    self.manager_mediator.get_own_structures_dict[
+                        UnitID.PHOTONCANNON
+                    ]
+                )
+                + self.manager_mediator.get_building_counter[
+                    UnitID.PHOTONCANNON
+                ]
+            )
+            if zerg_macro_cannon_capped(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+                cannons=_macro_cannons_now,
+            ):
+                return "zerg_macro_capped"
         # O383-③(o382d g1):Nexus 成交后的120s先重建核心产能。
         # 新矿零塔的 survival_exempt 首塔保留，第2+塔/电池与研究
         # 让位 BY→SG→FB，防止 47 农+1000气却 0 SG/0 舰队。
@@ -12235,6 +12317,8 @@ class ProductionManager(Manager):
         ep = self._flow.extra_production
         if ep is None:
             return
+        if self._terminal_cleanup_production_active():
+            return
         if terran_post_rebuild_recovery_active(
             self._opp_race,
             self.ai.time,
@@ -12455,6 +12539,8 @@ class ProductionManager(Manager):
         bank_production_target —— 矿>400 且气>400 才追加(旧版只看矿≥800),封顶 12。
         ⚠️ 未验证:阈值改动未跑局(bank 局追加更早,且多一道气>400 闸门)。"""
         if self.ai.time > 1200:
+            return
+        if self._terminal_cleanup_production_active():
             return
         # 开矿分支维持原阈值(矿≥800 才触发,Q3 已验证行为不变)
         # O93-B2/O96:转舰队后首舰(已出/在产)前不开矿 —— 局2 的 FB 资金窗被

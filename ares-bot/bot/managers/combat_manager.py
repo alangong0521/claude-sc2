@@ -127,6 +127,7 @@ class CombatManager(Manager):
         # O217:基地残敌清剿事件去抖(激活边沿记一条,清除后复位)
         self._intruder_cleanup_active: bool = False
         self._o403_cleanup_logged: bool = False
+        self._o403_cleanup_log_ts: float = -9999.0
         # O372-⑤(o371a g2 尸检):推进 commit 期 AA 重评簿记 —— 30s
         # 重评时刻与撤蹲旗标(旗标在重评间隔内粘滞,可见性抖动不
         # 反复收放);__init__ 初始化。
@@ -494,8 +495,9 @@ class CombatManager(Manager):
             max_combat=_cleanup_combat_cap,
             min_time=_cleanup_min_time,
         )
-        if active and not self._o403_cleanup_logged:
+        if active and self.ai.time - self._o403_cleanup_log_ts >= 30.0:
             self._o403_cleanup_logged = True
+            self._o403_cleanup_log_ts = self.ai.time
             events = getattr(self.ai, "_events", None)
             if events is not None:
                 events.append({
@@ -505,8 +507,6 @@ class CombatManager(Manager):
                         f"可见结构={_visible_enemy_structures})"
                     ),
                 })
-        elif not active:
-            self._o403_cleanup_logged = False
         return active
 
     def _terminal_cleanup_target(self) -> Point2:

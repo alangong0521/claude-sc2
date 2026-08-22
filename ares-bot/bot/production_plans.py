@@ -2699,7 +2699,7 @@ def terminal_cleanup_profile(
     if opp_race == "terran" and ai_build == "macro":
         return 900.0, 20, 30, 20
     if opp_race == "zerg" and ai_build == "macro":
-        return 900.0, 10, 20, 12
+        return 800.0, 10, 20, 12
     structure_cap, worker_cap = terminal_cleanup_limits(opp_race)
     return 1200.0, structure_cap, worker_cap, 12
 
@@ -6402,7 +6402,7 @@ def zerg_rush_late_stalker_escort_needed(
     stalker_floor: int = 8,
 ) -> bool:
     """O388/O414:Zerg Rush/Macro 腐化转型前补追猎护航。"""
-    effective_min_time = 650.0 if ai_build == "macro" else min_time
+    effective_min_time = 600.0 if ai_build == "macro" else min_time
     effective_floor = 12 if ai_build == "macro" else stalker_floor
     return (
         opp_race == "zerg"
@@ -6410,6 +6410,24 @@ def zerg_rush_late_stalker_escort_needed(
         and now >= effective_min_time
         and fleet_count >= min_fleet
         and stalkers < effective_floor
+    )
+
+
+def zerg_macro_cannon_capped(
+    *,
+    opp_race: str,
+    ai_build: str,
+    fleet_onfield: int,
+    cannons: int,
+    min_fleet: int = 12,
+    cap: int = 20,
+) -> bool:
+    """O416:Zerg Macro舰队12后全局炮塔硬顶20。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and fleet_onfield >= min_fleet
+        and cannons >= cap
     )
 
 

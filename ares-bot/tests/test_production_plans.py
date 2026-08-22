@@ -225,6 +225,7 @@ from bot.production_plans import (  # noqa: E402
     economic_strike_fleet_keeps_strategic_target,
     carrier_fleet_keeps_strategic_target,
     zerg_rush_late_stalker_escort_needed,
+    zerg_macro_cannon_capped,
     zerg_rush_late_expand_blocked,
     terran_precontact_cannon_capped,
     terran_precontact_ground_pause,
@@ -1796,7 +1797,7 @@ class TestTerminalCleanup(unittest.TestCase):
         )
         self.assertEqual(
             terminal_cleanup_profile("zerg", "macro"),
-            (900.0, 10, 20, 12),
+            (800.0, 10, 20, 12),
         )
 
 
@@ -6390,7 +6391,7 @@ class TestO381Plans(unittest.TestCase):
         macro = {
             **base,
             "ai_build": "macro",
-            "now": 650.0,
+            "now": 600.0,
             "stalkers": 11,
         }
         self.assertTrue(zerg_rush_late_stalker_escort_needed(**macro))
@@ -6401,7 +6402,19 @@ class TestO381Plans(unittest.TestCase):
         )
         self.assertFalse(
             zerg_rush_late_stalker_escort_needed(
-                **{**macro, "now": 649.9}
+                **{**macro, "now": 599.9}
+            )
+        )
+        self.assertTrue(
+            zerg_macro_cannon_capped(
+                opp_race="zerg", ai_build="macro",
+                fleet_onfield=12, cannons=20,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_cannon_capped(
+                opp_race="zerg", ai_build="macro",
+                fleet_onfield=11, cannons=25,
             )
         )
 
