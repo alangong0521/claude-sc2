@@ -231,6 +231,7 @@ from bot.production_plans import (
     terran_rush_fourth_before_contact_blocked,
     terran_rush_robo_needed,
     terran_rush_immortal_needed,
+    terran_early_air_local_defense_targets,
     timing_carrier_transition_allowed,
     terran_timing_third_before_immortals_blocked,
     terran_timing_fourth_before_fleet_blocked,
@@ -4319,6 +4320,26 @@ class ProductionManager(Manager):
                     )
                 )
                 _batt_psd = 0 if self._flow.transition is not None else batt
+            # O413:o412a 一架Banshee显形时全局已有8塔，但二矿局部0塔，
+            # 409s直接被拆。早期空军目标放在O400省矿钳之后抬回，确保
+            # 主基和每个分矿都有可对空/反隐的局部火力。
+            cannons, _cannons_expansion, batt = (
+                terran_early_air_local_defense_targets(
+                    opp_race=self._opp_race,
+                    ai_build=self._ai_build,
+                    visible_air_combat=sum(
+                        1
+                        for u in self.ai.enemy_units
+                        if not u.is_structure
+                        and u.is_flying
+                        and is_combat_type(u.type_id)
+                    ),
+                    main_cannons=cannons,
+                    expansion_cannons=_cannons_expansion,
+                    batteries=batt,
+                )
+            )
+            _batt_psd = 0 if self._flow.transition is not None else batt
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
             # O207:非紧急状态下把 mor 压到 1，避免 PSD 一次派多个工人等钱
@@ -6606,11 +6627,17 @@ class ProductionManager(Manager):
                 UnitID.THOR,
             }
         )
+        _visible_terran_air_combat = sum(
+            1
+            for u in self.ai.enemy_units
+            if not u.is_structure and u.is_flying and is_combat_type(u.type_id)
+        )
         _terran_rush_immortal = terran_rush_immortal_needed(
             opp_race=self._opp_race,
             ai_build=self._ai_build,
             visible_armored_ground=_visible_terran_armored_ground,
             immortals=_immortals_now,
+            visible_air_combat=_visible_terran_air_combat,
         )
         _zerg_timing_immortal = (
             self._opp_race == "zerg"
@@ -8720,6 +8747,7 @@ class ProductionManager(Manager):
                         unit_type_id=UnitID.CARRIER, include_pending=False
                     )
                 ),
+                fleet_tech_ready=self._fb_entities_now > 0,
             )
             and not _gas_pull_cooling
         ):

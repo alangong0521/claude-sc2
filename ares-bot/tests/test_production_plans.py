@@ -231,6 +231,7 @@ from bot.production_plans import (  # noqa: E402
     terran_rush_fourth_before_contact_blocked,
     terran_rush_robo_needed,
     terran_rush_immortal_needed,
+    terran_early_air_local_defense_targets,
     timing_carrier_transition_allowed,
     terminal_cleanup_active,
     terminal_cleanup_limits,
@@ -2722,6 +2723,11 @@ class TestO358GasToMinerals(unittest.TestCase):
         self.assertTrue(terran_timing_gas_stop_blocked("terran", "timing", 7))
         self.assertFalse(terran_timing_gas_stop_blocked("terran", "timing", 8))
         self.assertFalse(terran_timing_gas_stop_blocked("terran", "power", 3))
+        self.assertFalse(
+            terran_timing_gas_stop_blocked(
+                "terran", "timing", 0, fleet_tech_ready=False
+            )
+        )
 
 
 class TestO411TimingCadence(unittest.TestCase):
@@ -6637,6 +6643,48 @@ class TestO381Plans(unittest.TestCase):
         )
         self.assertTrue(
             terran_rush_immortal_needed(**{**base, "ai_build": "power"})
+        )
+        self.assertFalse(
+            terran_rush_immortal_needed(
+                **{
+                    **base,
+                    "ai_build": "timing",
+                    "visible_armored_ground": 0,
+                    "visible_air_combat": 1,
+                }
+            )
+        )
+        self.assertTrue(
+            terran_rush_immortal_needed(
+                **{
+                    **base,
+                    "ai_build": "timing",
+                    "visible_armored_ground": 6,
+                    "visible_air_combat": 1,
+                }
+            )
+        )
+
+    def test_terran_early_air_defends_each_base(self):
+        self.assertEqual(
+            terran_early_air_local_defense_targets(
+                opp_race="terran", ai_build="timing",
+                visible_air_combat=1, main_cannons=8,
+                expansion_cannons=0, batteries=0,
+            ),
+            (8, 2, 1),
+        )
+        self.assertEqual(
+            terran_early_air_local_defense_targets(
+                opp_race="terran", ai_build="timing",
+                visible_air_combat=0, main_cannons=3,
+                expansion_cannons=1, batteries=1,
+            ),
+            (3, 1, 1),
+        )
+        base = dict(
+            opp_race="terran", ai_build="rush",
+            visible_armored_ground=11, immortals=0,
         )
         self.assertTrue(
             terran_rush_immortal_needed(

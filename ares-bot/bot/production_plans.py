@@ -806,12 +806,14 @@ def terran_timing_gas_stop_blocked(
     opp_race: str,
     ai_build: str,
     fleet_onfield: int,
+    fleet_tech_ready: bool = True,
     min_fleet: int = 8,
 ) -> bool:
-    """O411:Terran Timing舰队8前不把气农全拉回矿线。"""
+    """O411/O413:舰队科技已建立且舰队8前不把气农全拉回矿线。"""
     return (
         opp_race == "terran"
         and ai_build == "timing"
+        and fleet_tech_ready
         and fleet_onfield < min_fleet
     )
 
@@ -6524,15 +6526,45 @@ def terran_rush_immortal_needed(
     ai_build: str,
     visible_armored_ground: int,
     immortals: int,
+    visible_air_combat: int = 0,
     trigger: int = 6,
     cap: int = 2,
 ) -> bool:
     """O387/O394/O408:Terran三种压力风格直产最多2个不朽。"""
     if opp_race != "terran" or ai_build not in ("rush", "timing", "power"):
         return False
-    if ai_build in ("timing", "power") and immortals < 2:
+    if (
+        ai_build in ("timing", "power")
+        and immortals < 2
+        and visible_air_combat == 0
+    ):
         return True
     return visible_armored_ground >= trigger and immortals < cap
+
+
+def terran_early_air_local_defense_targets(
+    *,
+    opp_race: str,
+    ai_build: str,
+    visible_air_combat: int,
+    main_cannons: int,
+    expansion_cannons: int,
+    batteries: int,
+    cannon_floor: int = 2,
+    battery_floor: int = 1,
+) -> tuple[int, int, int]:
+    """O413:Terran早期空军显形时主基/每分矿至少2塔+1电池。"""
+    if (
+        opp_race == "terran"
+        and ai_build in ("timing", "power")
+        and visible_air_combat > 0
+    ):
+        return (
+            max(main_cannons, cannon_floor),
+            max(expansion_cannons, cannon_floor),
+            max(batteries, battery_floor),
+        )
+    return main_cannons, expansion_cannons, batteries
 
 
 def terran_timing_third_before_immortals_blocked(
