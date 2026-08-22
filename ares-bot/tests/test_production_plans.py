@@ -251,6 +251,8 @@ from bot.production_plans import (  # noqa: E402
     terminal_cleanup_active,
     terminal_cleanup_limits,
     terminal_cleanup_profile,
+    terminal_cleanup_target_class,
+    terminal_cleanup_patrol_order,
     terran_timing_third_before_immortals_blocked,
     terran_timing_fourth_before_fleet_blocked,
     terran_timing_gateway_capped,
@@ -1863,6 +1865,35 @@ class TestTerminalCleanup(unittest.TestCase):
         self.assertEqual(
             terminal_cleanup_profile("zerg", "macro"),
             (800.0, 10, 20, 12),
+        )
+
+    def test_cleanup_prioritizes_economy_before_residual_combat(self):
+        base = dict(
+            known_townhalls=0,
+            visible_structures=0,
+            visible_workers=0,
+            patrol_points=6,
+            visible_combat=1,
+        )
+        self.assertEqual(terminal_cleanup_target_class(**base), "patrol")
+        self.assertEqual(
+            terminal_cleanup_target_class(
+                **{**base, "known_townhalls": 1}
+            ),
+            "townhall",
+        )
+        self.assertEqual(
+            terminal_cleanup_target_class(
+                **{**base, "patrol_points": 0}
+            ),
+            "combat",
+        )
+
+    def test_cleanup_patrols_enemy_side_first(self):
+        points = [(100.0, 100.0), (10.0, 10.0), (80.0, 80.0), (70.0, 70.0)]
+        self.assertEqual(
+            terminal_cleanup_patrol_order(points, (100.0, 100.0), limit=3),
+            [(100.0, 100.0), (80.0, 80.0), (70.0, 70.0)],
         )
 
 

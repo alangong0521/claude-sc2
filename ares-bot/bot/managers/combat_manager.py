@@ -67,6 +67,8 @@ from bot.production_plans import (
     terminal_cleanup_active,
     terminal_cleanup_limits,
     terminal_cleanup_profile,
+    terminal_cleanup_target_class,
+    terminal_cleanup_patrol_order,
     terran_timing_force_push_allowed,
 )
 
@@ -513,26 +515,45 @@ class CombatManager(Manager):
         return active
 
     def _terminal_cleanup_target(self) -> Point2:
-        """O403:残敌结构优先；无结构时直接猎杀可见农民/残兵。"""
+        """O403/O425:先断重建经济，再清结构/农民/残兵。"""
         focus = self.ai.focused_enemy_start()
-        if self.ai.enemy_structures:
-            return self.ai.enemy_structures.closest_to(focus).position
+        known_townhalls = self._known_enemy_townhalls()
+        visible_structures = self.ai.enemy_structures.filter(
+            lambda s: self.ai.is_visible(s.position)
+        )
         workers = {UnitID.SCV, UnitID.PROBE, UnitID.DRONE, UnitID.MULE}
         worker_units = self.ai.enemy_units.filter(lambda u: u.type_id in workers)
-        if worker_units:
+        combat_units = self.ai.enemy_units.filter(
+            lambda u: u.type_id not in workers and is_combat_type(u.type_id)
+        )
+        patrol_xy = terminal_cleanup_patrol_order(
+            [(p.x, p.y) for p in self.ai.expansion_locations_list],
+            (focus.x, focus.y),
+        )
+        target_class = terminal_cleanup_target_class(
+            known_townhalls=known_townhalls.amount,
+            visible_structures=visible_structures.amount,
+            visible_workers=worker_units.amount,
+            patrol_points=len(patrol_xy),
+            visible_combat=combat_units.amount,
+        )
+        if target_class == "townhall":
+            return known_townhalls[-1].position
+        if target_class == "structure":
+            return visible_structures.closest_to(focus).position
+        if target_class == "worker":
             return worker_units.closest_to(focus).position
-        if self.ai.enemy_units:
-            return self.ai.enemy_units.closest_to(focus).position
-        # O404:已知敌情清零不代表游戏结束，可能还有藏在迷雾中的飞行建筑/
-        # 工人。沿用默认逻辑轮巡所有扩张点，当前点已可见就切下一个，避免
-        # 满编舰队永远停在旧目标坐标。
-        if self.ai.is_visible(self.current_base_target):
-            if not self.expansions_generator:
-                self.expansions_generator = cycle(
-                    list(self.ai.expansion_locations_list)
-                )
-            self.current_base_target = next(self.expansions_generator)
-        return self.current_base_target
+        if target_class == "patrol":
+            patrol_points = [Point2(p) for p in patrol_xy]
+            if not hasattr(self, "_o425_cleanup_patrol"):
+                self._o425_cleanup_patrol = cycle(patrol_points)
+                self._o425_cleanup_target = next(self._o425_cleanup_patrol)
+            if self.ai.is_visible(self._o425_cleanup_target):
+                self._o425_cleanup_target = next(self._o425_cleanup_patrol)
+            return self._o425_cleanup_target
+        if target_class == "combat":
+            return combat_units.closest_to(focus).position
+        return focus
 
     def _resolve_steer_target(self, key: str) -> Point2 | None:
         """参谋长的语义目标 → Point2（不让司令点坐标）。认不出则 None。

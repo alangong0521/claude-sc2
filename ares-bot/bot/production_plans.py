@@ -2784,6 +2784,41 @@ def terminal_cleanup_profile(
     return 1200.0, structure_cap, worker_cap, 12
 
 
+def terminal_cleanup_target_class(
+    *,
+    known_townhalls: int,
+    visible_structures: int,
+    visible_workers: int,
+    patrol_points: int,
+    visible_combat: int,
+) -> str:
+    """O425:终结目标优先经济与敌侧巡逻，残兵最后处理。"""
+    if known_townhalls > 0:
+        return "townhall"
+    if visible_structures > 0:
+        return "structure"
+    if visible_workers > 0:
+        return "worker"
+    if patrol_points > 0:
+        return "patrol"
+    if visible_combat > 0:
+        return "combat"
+    return "none"
+
+
+def terminal_cleanup_patrol_order(
+    points: list[tuple[float, float]],
+    enemy_start: tuple[float, float],
+    limit: int = 6,
+) -> list[tuple[float, float]]:
+    """O425:只轮巡敌方最近的高概率六个扩张点，缩短防重建周期。"""
+    ex, ey = enemy_start
+    return sorted(
+        points,
+        key=lambda p: (p[0] - ex) ** 2 + (p[1] - ey) ** 2,
+    )[:limit]
+
+
 def tech_yields_to_threat(threat_active: bool, rush_active: bool) -> bool:
     """O67(VeryHard Terran Rush game_01 实证):E9 威胁激活时,追加产能/舰队航标
     让位塔链。纯逻辑,可单测。
