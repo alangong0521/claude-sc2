@@ -6505,11 +6505,13 @@ def terran_timing_opening_package_incomplete(
     ai_build: str,
     tempests_or_pending: int,
     immortals_ready: int,
+    threat_active: bool = False,
 ) -> bool:
-    """O400:首暴风+双就绪不朽形成前，静态防御保持窄配额。"""
+    """O400/O401:首暴风+双不朽前窄配额；真实威胁到脸立即解除。"""
     return (
         opp_race == "terran"
         and ai_build == "timing"
+        and not threat_active
         and (tempests_or_pending < 1 or immortals_ready < 2)
     )
 

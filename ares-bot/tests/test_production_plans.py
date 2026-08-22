@@ -6438,6 +6438,11 @@ class TestO381Plans(unittest.TestCase):
                 **{**base, "ai_build": "rush"}
             )
         )
+        self.assertFalse(
+            terran_timing_opening_package_incomplete(
+                **{**base, "threat_active": True}
+            )
+        )
         self.assertEqual(
             terran_timing_opening_defense_targets(4, 3, 2),
             (2, 1, 1),

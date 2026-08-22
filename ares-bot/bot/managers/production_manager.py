@@ -909,6 +909,14 @@ class ProductionManager(Manager):
             self.ai.townhalls.amount,
             self._peak_townhalls,
             _target_bases,
+            # O401:o400b 开局Runner在183s先下炮塔，220s基金截断太晚，
+            # 二矿被拖到297s。Terran Timing提前到160s，在首炮塔步前
+            # 截断Runner；其他组合保持O381的220s口径。
+            first_expand_arm_at=(
+                160.0
+                if self._opp_race == "terran" and self._ai_build == "timing"
+                else 220.0
+            ),
         )
         self._o381_nexus_fund_active = _o381_reason is not None
         if _o381_reason != self._o381_nexus_fund_reason:
@@ -4196,6 +4204,7 @@ class ProductionManager(Manager):
                 ai_build=self._ai_build,
                 tempests_or_pending=_o400_tempests,
                 immortals_ready=_o400_immortals_ready,
+                threat_active=(self._threat_active or self._rush_active),
             ):
                 cannons, _cannons_expansion, batt = (
                     terran_timing_opening_defense_targets(
@@ -10351,6 +10360,7 @@ class ProductionManager(Manager):
                     immortals_ready=self.manager_mediator.get_own_unit_count(
                         unit_type_id=UnitID.IMMORTAL, include_pending=False
                     ),
+                    threat_active=(self._threat_active or self._rush_active),
                 )
             ):
                 return "timing_opening_package_cap"
