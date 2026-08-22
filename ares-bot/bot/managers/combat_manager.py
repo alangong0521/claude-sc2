@@ -28,6 +28,7 @@ from bot.production_plans import (
     carrier_push_safe,
     carrier_push_fleet_floor,
     carrier_desperation_push_allowed,
+    zerg_macro_golden_window_push,
     fleet_no_recall_threshold,
     carrier_rally_against_aa,
     defense_anchor_index,
@@ -677,6 +678,10 @@ class CombatManager(Manager):
                 getattr(_pm_o227, "_ai_build", "")
                 if _pm_o227 is not None else ""
             )
+            _is_zerg_macro = (
+                _current_opp_race == "zerg"
+                and _current_ai_build == "macro"
+            )
             _push_floor = carrier_push_fleet_floor(
                 _current_opp_race, _current_ai_build
             )
@@ -741,6 +746,24 @@ class CombatManager(Manager):
                     spire_seen=any(
                         s.type_id in (UnitID.SPIRE, UnitID.GREATERSPIRE)
                         for s in self.ai.enemy_structures
+                    ),
+                )
+            )
+            _golden_push = _golden_push or (
+                _is_zerg_macro
+                and zerg_macro_golden_window_push(
+                    now=getattr(self.ai, "time", 0.0),
+                    fleet_count=_fleet_count,
+                    stalkers=self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.STALKER,
+                        include_pending=False,
+                    ),
+                    corruptor_credit=max(
+                        sum(
+                            1 for u in self.ai.enemy_units
+                            if u.type_id == UnitID.CORRUPTOR
+                        ),
+                        self._o374_aa_peak,
                     ),
                 )
             )

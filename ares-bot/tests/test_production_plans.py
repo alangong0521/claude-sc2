@@ -26,6 +26,8 @@ from bot.production_plans import (  # noqa: E402
     carrier_rally_against_aa,
     carrier_push_fleet_floor,
     carrier_desperation_push_allowed,
+    zerg_macro_golden_window_push,
+    rebuild_preposition_allowed,
     cover_hold_should_fire,
     tempest_global_aa_retreat_needed,
     strongest_cover_index,
@@ -1669,6 +1671,18 @@ class TestCarrierRallyAgainstAA(unittest.TestCase):
         self.assertTrue(
             tempest_global_aa_retreat_needed(
                 visible_corruptors=0, visible_vipers=1
+            )
+        )
+        self.assertFalse(
+            tempest_global_aa_retreat_needed(
+                visible_corruptors=5, visible_vipers=0,
+                own_tempests=15, own_stalkers=10,
+            )
+        )
+        self.assertTrue(
+            tempest_global_aa_retreat_needed(
+                visible_corruptors=15, visible_vipers=0,
+                own_tempests=8, own_stalkers=11,
             )
         )
 
@@ -6569,6 +6583,35 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(
             carrier_desperation_push_allowed(
                 opp_race="zerg", ai_build="rush"
+            )
+        )
+        macro_push = dict(
+            now=700.0, fleet_count=8, stalkers=10, corruptor_credit=0,
+        )
+        self.assertTrue(zerg_macro_golden_window_push(**macro_push))
+        self.assertFalse(
+            zerg_macro_golden_window_push(
+                **{**macro_push, "corruptor_credit": 4}
+            )
+        )
+        self.assertFalse(
+            zerg_macro_golden_window_push(
+                **{**macro_push, "now": 780.1}
+            )
+        )
+        self.assertFalse(
+            rebuild_preposition_allowed(
+                reason="lost_base", current_bases=1, minerals=399.9
+            )
+        )
+        self.assertTrue(
+            rebuild_preposition_allowed(
+                reason="lost_base", current_bases=1, minerals=400.0
+            )
+        )
+        self.assertTrue(
+            rebuild_preposition_allowed(
+                reason="lost_base", current_bases=2, minerals=100.0
             )
         )
         self.assertTrue(

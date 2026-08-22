@@ -65,6 +65,7 @@ from bot.production_plans import (
     defense_syncs_with_nexus,
     defensive_rally_point,
     dispatch_viable,
+    rebuild_preposition_allowed,
     early_scout_verdict,
     escort_worker_count,
     escort_stance,
@@ -2749,7 +2750,14 @@ class ProductionManager(Manager):
                         # 矿窗一帧后永不派工(o340a game_01/05 在途0 实证)
                         prioritize=_preposition
                         or self._o189_forced_expand
-                        or self._o381_nexus_fund_active
+                        or (
+                            self._o381_nexus_fund_active
+                            and rebuild_preposition_allowed(
+                                reason=self._o381_nexus_fund_reason,
+                                current_bases=self.ai.townhalls.amount,
+                                minerals=self.ai.minerals,
+                            )
+                        )
                         or (
                             getattr(self, "_o329_latched", False)
                             and self._opp_race == "zerg"

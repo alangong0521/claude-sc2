@@ -135,6 +135,10 @@ class TempestOffensive(BaseUnit):
         _visible_vipers = sum(
             1 for u in self.ai.enemy_units if u.type_id == UnitID.VIPER
         )
+        _own_tempests = len(units)
+        _own_stalkers = self.mediator.get_own_unit_count(
+            unit_type_id=UnitID.STALKER, include_pending=False
+        )
 
         def _strongest_cover(unit: Unit):
             index = strongest_cover_index(
@@ -167,6 +171,8 @@ class TempestOffensive(BaseUnit):
                     tempest_global_aa_retreat_needed(
                         visible_corruptors=_visible_corruptors,
                         visible_vipers=_visible_vipers,
+                        own_tempests=_own_tempests,
+                        own_stalkers=_own_stalkers,
                     )
                     or sum(
                         1 for u in _aa_close

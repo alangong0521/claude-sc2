@@ -1566,10 +1566,18 @@ def tempest_global_aa_retreat_needed(
     *,
     visible_corruptors: int,
     visible_vipers: int,
+    own_tempests: int = 0,
+    own_stalkers: int = 0,
     corruptor_gate: int = 4,
+    threat_ratio: float = 2.0,
 ) -> bool:
-    """O420:腐化海尚未进入暴风15格圈前就提前撤入掩体。"""
-    return visible_corruptors >= corruptor_gate or visible_vipers > 0
+    """O420/O424:腐化相对兵力够厚或有飞蛇时才全局提前撤。"""
+    if visible_vipers > 0:
+        return True
+    if visible_corruptors < corruptor_gate:
+        return False
+    own_aa_force = own_tempests + own_stalkers
+    return own_aa_force <= 0 or visible_corruptors * threat_ratio >= own_aa_force
 
 
 def strongest_cover_index(
@@ -6555,6 +6563,42 @@ def carrier_desperation_push_allowed(
 ) -> bool:
     """O423:Zerg Macro不得用2-4舰队O380豁命窗绕过16舰队门。"""
     return not (opp_race == "zerg" and ai_build == "macro")
+
+
+def zerg_macro_golden_window_push(
+    *,
+    now: float,
+    fleet_count: int,
+    stalkers: int,
+    corruptor_credit: int,
+    min_time: float = 650.0,
+    max_time: float = 780.0,
+    min_fleet: int = 8,
+    min_stalkers: int = 10,
+    max_corruptors: int = 3,
+) -> bool:
+    """O424:4门纯暴风追猎成型后，在腐化海前主动反打。"""
+    return (
+        min_time <= now <= max_time
+        and fleet_count >= min_fleet
+        and stalkers >= min_stalkers
+        and corruptor_credit <= max_corruptors
+    )
+
+
+def rebuild_preposition_allowed(
+    *,
+    reason: str | None,
+    current_bases: int,
+    minerals: float,
+    nexus_cost: float = 400.0,
+) -> bool:
+    """O424:单基地掉矿重建未攒满400前不让工人离矿线钉点。"""
+    return not (
+        reason == "lost_base"
+        and current_bases <= 1
+        and minerals < nexus_cost
+    )
 
 
 def zerg_macro_corruptor_sticky_window(
