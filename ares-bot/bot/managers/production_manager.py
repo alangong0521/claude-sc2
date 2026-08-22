@@ -231,6 +231,7 @@ from bot.production_plans import (
     timing_carrier_transition_allowed,
     terran_timing_third_before_immortals_blocked,
     terran_timing_gateway_capped,
+    terran_timing_cannon_before_second_blocked,
     zerg_rush_late_stalker_escort_needed,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -4155,6 +4156,27 @@ class ProductionManager(Manager):
                     )
                 )
                 _batt_psd = 0 if self._flow.transition is not None else batt
+            # O399:Timing 胜负与 240s 资金倒挂完全相关。二矿实体/在途前
+            # 将最终 PSD 目标压到 0，封住 presumed/timing_sprint/
+            # defenseless_base 等所有抬目标入口；真实威胁到脸仍可造保命塔。
+            _o399_second_base_pinned = (
+                any(
+                    t.position.distance_to(self.ai.start_location) > 5.0
+                    for t in self.ai.townhalls
+                )
+                or self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
+                or self.manager_mediator.get_building_counter[UnitID.NEXUS] > 0
+            )
+            if terran_timing_cannon_before_second_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                second_base_pinned=_o399_second_base_pinned,
+                threat_active=(self._threat_active or self._rush_active),
+            ):
+                cannons = 0
+                _cannons_expansion = 0
+                batt = 0
+                _batt_psd = 0
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
             # O207:非紧急状态下把 mor 压到 1，避免 PSD 一次派多个工人等钱
@@ -10275,6 +10297,21 @@ class ProductionManager(Manager):
                     UnitID.PHOTONCANNON
                 ]
             )
+            _o399_second_base_pinned = (
+                any(
+                    t.position.distance_to(self.ai.start_location) > 5.0
+                    for t in self.ai.townhalls
+                )
+                or self.ai.not_started_but_in_building_tracker(UnitID.NEXUS) > 0
+                or self.manager_mediator.get_building_counter[UnitID.NEXUS] > 0
+            )
+            if terran_timing_cannon_before_second_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                second_base_pinned=_o399_second_base_pinned,
+                threat_active=(self._threat_active or self._rush_active),
+            ):
+                return "timing_second_base_fund"
             if terran_precontact_cannon_capped(
                 opp_race=self._opp_race,
                 ai_build=self._ai_build,

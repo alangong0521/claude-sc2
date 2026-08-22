@@ -6471,6 +6471,27 @@ def terran_timing_gateway_capped(
     return opp_race == "terran" and ai_build == "timing" and gateways >= cap
 
 
+def terran_timing_cannon_before_second_blocked(
+    *,
+    opp_race: str,
+    ai_build: str,
+    second_base_pinned: bool,
+    threat_active: bool,
+) -> bool:
+    """O399:Terran Timing 二矿开工前禁止常态炮塔抢走 Nexus 资金。
+
+    O396a/O397a 两个胜局在 240s 都已二矿、0 炮塔；O396b/O397b/
+    O397c/O398b 四个败局在同一时点仍单矿、已有 2-3 炮塔。真实威胁
+    到脸时保留生存例外，二矿实体或在途一出现就立即解除。
+    """
+    return (
+        opp_race == "terran"
+        and ai_build == "timing"
+        and not second_base_pinned
+        and not threat_active
+    )
+
+
 def timing_carrier_transition_allowed(
     ai_build: str,
     tempest_count: int,

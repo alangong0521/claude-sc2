@@ -230,6 +230,7 @@ from bot.production_plans import (  # noqa: E402
     timing_carrier_transition_allowed,
     terran_timing_third_before_immortals_blocked,
     terran_timing_gateway_capped,
+    terran_timing_cannon_before_second_blocked,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -6378,6 +6379,28 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             terran_timing_gateway_capped(
                 opp_race="terran", ai_build="rush", gateways=3
+            )
+        )
+
+    def test_terran_timing_cannons_wait_for_second(self):
+        base = dict(
+            opp_race="terran", ai_build="timing",
+            second_base_pinned=False, threat_active=False,
+        )
+        self.assertTrue(terran_timing_cannon_before_second_blocked(**base))
+        self.assertFalse(
+            terran_timing_cannon_before_second_blocked(
+                **{**base, "second_base_pinned": True}
+            )
+        )
+        self.assertFalse(
+            terran_timing_cannon_before_second_blocked(
+                **{**base, "threat_active": True}
+            )
+        )
+        self.assertFalse(
+            terran_timing_cannon_before_second_blocked(
+                **{**base, "ai_build": "rush"}
             )
         )
 
