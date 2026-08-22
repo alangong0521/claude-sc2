@@ -9126,7 +9126,10 @@ class ProductionManager(Manager):
             # O388-②:两座Gateway从900s起补到8追猎后自灭；同优先级
             # 放在舰队配方前，确保腐化19条显形前已有地面对空护航。
             spawn = {
-                UnitID.STALKER: {"proportion": 0.2, "priority": 0},
+                UnitID.STALKER: {
+                    "proportion": 0.3 if self._ai_build == "macro" else 0.2,
+                    "priority": 0,
+                },
                 **spawn,
             }
         # 反空军 pivot:敌可见空军主力 ≥ trigger → 混入对空兵种

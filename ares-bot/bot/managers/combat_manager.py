@@ -63,6 +63,7 @@ from bot.production_plans import (
     zt_golden_window_push,
     terminal_cleanup_active,
     terminal_cleanup_limits,
+    terminal_cleanup_profile,
     terran_timing_force_push_allowed,
 )
 
@@ -462,13 +463,24 @@ class CombatManager(Manager):
             + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
         )
         _pm = getattr(self.ai, "production_manager", None)
-        _cleanup_structure_cap, _cleanup_worker_cap = terminal_cleanup_limits(
-            getattr(_pm, "_opp_race", "") if _pm is not None else ""
+        (
+            _cleanup_min_time,
+            _cleanup_structure_cap,
+            _cleanup_worker_cap,
+            _cleanup_combat_cap,
+        ) = terminal_cleanup_profile(
+            getattr(_pm, "_opp_race", "") if _pm is not None else "",
+            getattr(_pm, "_ai_build", "") if _pm is not None else "",
+        )
+        _visible_enemy_structures = sum(
+            1
+            for s in self.ai.enemy_structures
+            if self.ai.is_visible(s.position)
         )
         active = terminal_cleanup_active(
             now=getattr(self.ai, "time", 0.0),
             fleet_count=fleet,
-            enemy_structures=self.ai.enemy_structures.amount,
+            enemy_structures=_visible_enemy_structures,
             enemy_workers=sum(1 for u in self.ai.enemy_units if u.type_id in workers),
             enemy_combat=sum(
                 1
@@ -479,6 +491,8 @@ class CombatManager(Manager):
             ),
             max_structures=_cleanup_structure_cap,
             max_workers=_cleanup_worker_cap,
+            max_combat=_cleanup_combat_cap,
+            min_time=_cleanup_min_time,
         )
         if active and not self._o403_cleanup_logged:
             self._o403_cleanup_logged = True
@@ -488,7 +502,7 @@ class CombatManager(Manager):
                     "t": round(self.ai.time, 1),
                     "msg": (
                         f"O403:残敌终结模式(fleet={fleet},"
-                        f"结构={self.ai.enemy_structures.amount})"
+                        f"可见结构={_visible_enemy_structures})"
                     ),
                 })
         elif not active:
@@ -781,14 +795,17 @@ class CombatManager(Manager):
                 for u in self.ai.enemy_units
                 if u.is_flying and is_combat_type(u.type_id)
             )
-            _opp_is_zerg_rush = (
+            _zerg_econ_build = (
+                getattr(_pm_o227, "_ai_build", "")
+                if _pm_o227 is not None else ""
+            )
+            _opp_is_zerg_econ = (
                 _opp_is_zerg
-                and _pm_o227 is not None
-                and getattr(_pm_o227, "_ai_build", "") == "rush"
+                and _zerg_econ_build in ("rush", "macro")
             )
             _known_economic_bases = ()
             if (
-                (_opp_is_terran or _opp_is_zerg_rush)
+                (_opp_is_terran or _opp_is_zerg_econ)
                 and self.ai.time >= 720.0
                 and _fleet_count >= 8
                 and _visible_enemy_air_combat == 0
@@ -808,8 +825,8 @@ class CombatManager(Manager):
                 _economic_strike_race = "terran"
                 _economic_strike_target = _known_economic_bases[-1].position
             elif zerg_rush_economic_strike_window(
-                opp_race="zerg" if _opp_is_zerg_rush else "",
-                ai_build="rush" if _opp_is_zerg_rush else "",
+                opp_race="zerg" if _opp_is_zerg_econ else "",
+                ai_build=_zerg_econ_build if _opp_is_zerg_econ else "",
                 now=self.ai.time,
                 fleet_count=_fleet_count,
                 visible_enemy_air_combat=_visible_enemy_air_combat,

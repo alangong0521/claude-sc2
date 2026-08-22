@@ -2691,6 +2691,19 @@ def terminal_cleanup_limits(opp_race: str) -> tuple[int, int]:
     return (15, 20) if opp_race == "terran" else (10, 12)
 
 
+def terminal_cleanup_profile(
+    opp_race: str,
+    ai_build: str,
+) -> tuple[float, int, int, int]:
+    """O415:按对手/风格返回终结时间与可见残余阈值。"""
+    if opp_race == "terran" and ai_build == "macro":
+        return 900.0, 20, 30, 20
+    if opp_race == "zerg" and ai_build == "macro":
+        return 900.0, 10, 20, 12
+    structure_cap, worker_cap = terminal_cleanup_limits(opp_race)
+    return 1200.0, structure_cap, worker_cap, 12
+
+
 def tech_yields_to_threat(threat_active: bool, rush_active: bool) -> bool:
     """O67(VeryHard Terran Rush game_01 实证):E9 威胁激活时,追加产能/舰队航标
     让位塔链。纯逻辑,可单测。
@@ -6286,11 +6299,12 @@ def zerg_rush_economic_strike_window(
     min_time: float = 720.0,
     min_fleet: int = 8,
 ) -> bool:
-    """O390-①:Zerg Rush 清空腐化的波间隙主动斩最外围经济。"""
+    """O390/O415:Zerg Rush/Macro 波间隙主动斩最外围经济。"""
+    effective_min_time = 650.0 if ai_build == "macro" else min_time
     return (
         opp_race == "zerg"
-        and ai_build == "rush"
-        and now >= min_time
+        and ai_build in ("rush", "macro")
+        and now >= effective_min_time
         and fleet_count >= min_fleet
         and visible_enemy_air_combat == 0
         and visible_hard_aa == 0
@@ -6388,7 +6402,7 @@ def zerg_rush_late_stalker_escort_needed(
     stalker_floor: int = 8,
 ) -> bool:
     """O388/O414:Zerg Rush/Macro 腐化转型前补追猎护航。"""
-    effective_min_time = 700.0 if ai_build == "macro" else min_time
+    effective_min_time = 650.0 if ai_build == "macro" else min_time
     effective_floor = 12 if ai_build == "macro" else stalker_floor
     return (
         opp_race == "zerg"

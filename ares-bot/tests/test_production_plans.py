@@ -236,6 +236,7 @@ from bot.production_plans import (  # noqa: E402
     timing_carrier_transition_allowed,
     terminal_cleanup_active,
     terminal_cleanup_limits,
+    terminal_cleanup_profile,
     terran_timing_third_before_immortals_blocked,
     terran_timing_fourth_before_fleet_blocked,
     terran_timing_gateway_capped,
@@ -1789,6 +1790,14 @@ class TestTerminalCleanup(unittest.TestCase):
     def test_terran_uses_earlier_cleanup_limits(self):
         self.assertEqual(terminal_cleanup_limits("terran"), (15, 20))
         self.assertEqual(terminal_cleanup_limits("zerg"), (10, 12))
+        self.assertEqual(
+            terminal_cleanup_profile("terran", "macro"),
+            (900.0, 20, 30, 20),
+        )
+        self.assertEqual(
+            terminal_cleanup_profile("zerg", "macro"),
+            (900.0, 10, 20, 12),
+        )
 
 
 class TestTechYieldsToThreat(unittest.TestCase):
@@ -6274,6 +6283,13 @@ class TestO381Plans(unittest.TestCase):
                 **{**base, "known_enemy_bases": 1}
             )
         )
+        macro = {**base, "ai_build": "macro", "now": 650.0}
+        self.assertTrue(zerg_rush_economic_strike_window(**macro))
+        self.assertFalse(
+            zerg_rush_economic_strike_window(
+                **{**macro, "now": 649.9}
+            )
+        )
 
     def test_economic_strike_ground_holds_home(self):
         self.assertTrue(
@@ -6374,13 +6390,18 @@ class TestO381Plans(unittest.TestCase):
         macro = {
             **base,
             "ai_build": "macro",
-            "now": 700.0,
+            "now": 650.0,
             "stalkers": 11,
         }
         self.assertTrue(zerg_rush_late_stalker_escort_needed(**macro))
         self.assertFalse(
             zerg_rush_late_stalker_escort_needed(
                 **{**macro, "stalkers": 12}
+            )
+        )
+        self.assertFalse(
+            zerg_rush_late_stalker_escort_needed(
+                **{**macro, "now": 649.9}
             )
         )
 
