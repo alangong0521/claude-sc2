@@ -256,6 +256,7 @@ from bot.production_plans import (
     zerg_rush_late_stalker_escort_needed,
     zerg_macro_escort_gateway_target,
     zerg_macro_ground_screen_needed,
+    zerg_macro_voidray_needed,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
     zerg_macro_emergency_gas_pull,
@@ -9332,6 +9333,21 @@ class ProductionManager(Manager):
                     spawn[uid] = {
                         "proportion": pv.anti_air_proportion, "priority": 0,
                     }
+        if zerg_macro_voidray_needed(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            corruptor_credit=self._corruptors_credited(),
+            voidrays=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.VOIDRAY
+                )
+                + cy_unit_pending(self.ai, UnitID.VOIDRAY)
+            ),
+        ):
+            spawn = {
+                UnitID.VOIDRAY: {"proportion": 0.4, "priority": 0},
+                **spawn,
+            }
         # O245(Zerg Timing 攻坚):敌地面重型(roach/hydra 波)时 pivot 不触发、
         # 追猎/叉子被滚平——混编不朽者(蟑螂重甲被不朽加成攻击克制,刚毅护盾
         # 站线)。机械台就绪 + 敌可见地面 ≥6 + 不朽 <4 → **dict 首位**混入

@@ -6559,7 +6559,7 @@ def zerg_rush_late_stalker_escort_needed(
     """O388/O414:Zerg Rush/Macro 腐化转型前补追猎护航。"""
     effective_min_time = 500.0 if ai_build == "macro" else min_time
     effective_min_fleet = 4 if ai_build == "macro" else min_fleet
-    effective_floor = 12 if ai_build == "macro" else stalker_floor
+    effective_floor = 16 if ai_build == "macro" else stalker_floor
     return (
         opp_race == "zerg"
         and ai_build in ("rush", "macro")
@@ -6580,19 +6580,35 @@ def zerg_macro_escort_gateway_target(
     corruptor_trigger: int = 8,
     prebuild_at: float = 580.0,
     prebuild_fleet: int = 0,
-    aa_target: int = 4,
+    prebuild_target: int = 4,
+    aa_target: int = 6,
 ) -> int:
     """O421/O423:Macro在腐化海前预建4门追猎产能。"""
-    if (
+    if opp_race != "zerg" or ai_build != "macro":
+        return base_target
+    if visible_corruptors >= corruptor_trigger:
+        return aa_target
+    if now >= prebuild_at and fleet_onfield >= prebuild_fleet:
+        return prebuild_target
+    return base_target
+
+
+def zerg_macro_voidray_needed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    corruptor_credit: int,
+    voidrays: int,
+    corruptor_trigger: int = 8,
+    voidray_cap: int = 4,
+) -> bool:
+    """O432:腐化海出现后混最多4虚空舰专打重甲。"""
+    return (
         opp_race == "zerg"
         and ai_build == "macro"
-        and (
-            visible_corruptors >= corruptor_trigger
-            or (now >= prebuild_at and fleet_onfield >= prebuild_fleet)
-        )
-    ):
-        return aa_target
-    return base_target
+        and corruptor_credit >= corruptor_trigger
+        and voidrays < voidray_cap
+    )
 
 
 def zerg_macro_ground_screen_needed(

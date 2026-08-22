@@ -239,6 +239,7 @@ from bot.production_plans import (  # noqa: E402
     zerg_rush_late_stalker_escort_needed,
     zerg_macro_escort_gateway_target,
     zerg_macro_ground_screen_needed,
+    zerg_macro_voidray_needed,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
     zerg_macro_emergency_gas_pull,
@@ -6574,7 +6575,12 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(zerg_rush_late_stalker_escort_needed(**macro))
         self.assertFalse(
             zerg_rush_late_stalker_escort_needed(
-                **{**macro, "stalkers": 12}
+                **{**macro, "stalkers": 16}
+            )
+        )
+        self.assertTrue(
+            zerg_rush_late_stalker_escort_needed(
+                **{**macro, "stalkers": 15}
             )
         )
         self.assertFalse(
@@ -6591,7 +6597,7 @@ class TestO381Plans(unittest.TestCase):
             zerg_macro_escort_gateway_target(
                 opp_race="zerg", ai_build="macro", visible_corruptors=8
             ),
-            4,
+            6,
         )
         self.assertEqual(
             zerg_macro_escort_gateway_target(
@@ -6630,6 +6636,18 @@ class TestO381Plans(unittest.TestCase):
             zerg_macro_ground_screen_needed(
                 opp_race="zerg", ai_build="macro",
                 visible_ground_combat=10, corruptor_credit=4, zealots=7,
+            )
+        )
+        self.assertTrue(
+            zerg_macro_voidray_needed(
+                opp_race="zerg", ai_build="macro",
+                corruptor_credit=8, voidrays=3,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_voidray_needed(
+                opp_race="zerg", ai_build="macro",
+                corruptor_credit=8, voidrays=4,
             )
         )
         self.assertTrue(
