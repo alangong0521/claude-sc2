@@ -232,6 +232,8 @@ from bot.production_plans import (
     terran_timing_third_before_immortals_blocked,
     terran_timing_gateway_capped,
     terran_timing_cannon_before_second_blocked,
+    terran_timing_opening_package_incomplete,
+    terran_timing_opening_defense_targets,
     zerg_rush_late_stalker_escort_needed,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -4177,6 +4179,30 @@ class ProductionManager(Manager):
                 _cannons_expansion = 0
                 batt = 0
                 _batt_psd = 0
+            # O400:o399b 394s 已5塔却零舰队；o399a 731s 仍只有4舰队、
+            # 气1248烂银行。首暴风+双就绪不朽前把PSD压到主2/分1/电1，
+            # 让后续矿优先转成首波包；包完成即恢复原动态目标。
+            _o400_tempests = (
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST
+                )
+                + cy_unit_pending(self.ai, UnitID.TEMPEST)
+            )
+            _o400_immortals_ready = self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.IMMORTAL, include_pending=False
+            )
+            if terran_timing_opening_package_incomplete(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                tempests_or_pending=_o400_tempests,
+                immortals_ready=_o400_immortals_ready,
+            ):
+                cannons, _cannons_expansion, batt = (
+                    terran_timing_opening_defense_targets(
+                        cannons, _cannons_expansion, batt
+                    )
+                )
+                _batt_psd = 0 if self._flow.transition is not None else batt
             # O79b:持有期建造槽翻倍 —— max_on_route 是全图共享计数,主分矿
             # 并发抢 2 槽时主基(先注册/离工人近)恒赢;4 槽让分矿也起得了塔。
             # O207:非紧急状态下把 mor 压到 1，避免 PSD 一次派多个工人等钱
@@ -9600,9 +9626,8 @@ class ProductionManager(Manager):
             ),
             immortals_or_pending=(
                 self.manager_mediator.get_own_unit_count(
-                    unit_type_id=UnitID.IMMORTAL
+                    unit_type_id=UnitID.IMMORTAL, include_pending=False
                 )
-                + cy_unit_pending(self.ai, UnitID.IMMORTAL)
             ),
         ):
             self._o383_healthy_expand_from_bases = None
@@ -10312,6 +10337,23 @@ class ProductionManager(Manager):
                 threat_active=(self._threat_active or self._rush_active),
             ):
                 return "timing_second_base_fund"
+            if (
+                _cannons_now >= 3
+                and terran_timing_opening_package_incomplete(
+                    opp_race=self._opp_race,
+                    ai_build=self._ai_build,
+                    tempests_or_pending=(
+                        self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.TEMPEST
+                        )
+                        + cy_unit_pending(self.ai, UnitID.TEMPEST)
+                    ),
+                    immortals_ready=self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.IMMORTAL, include_pending=False
+                    ),
+                )
+            ):
+                return "timing_opening_package_cap"
             if terran_precontact_cannon_capped(
                 opp_race=self._opp_race,
                 ai_build=self._ai_build,

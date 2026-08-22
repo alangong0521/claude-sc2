@@ -2125,18 +2125,20 @@ def pivot_primary_id(verdict: str | None, carrier_id, tempest_id):
 
 
 def tempest_primary_spawn(spawn: dict, carrier_id, tempest_id) -> dict:
-    """把 spawn 配方的主次 C 对调：航母 p0/风暴 p1 → 风暴 p0/航母 p1。纯逻辑。
+    """把风暴显式放到主 C 优先级，且对已是风暴主 C 的配方幂等。纯逻辑。
 
-    只换 priority（主 C 位），proportion 保留；save_up 机制不动——风暴 p0
-    便宜（150/100）几乎不触发截断，航母 p1 在转型前自然被憋住（省钱给风暴海）。
-    缺任一兵种 → 原样返回。
+    O400: flows.yml 在 O62 后已改成 TEMPEST p0/CARRIER p1，旧版“互换”
+    会把这份新配方反转回航母主 C；o399b 因银行足够，394s 直接下航母、
+    整局零暴风。改为取两者 priority 的 min/max 显式赋值，兼容旧配方，
+    对新配方幂等。proportion/save_up 不动；缺任一兵种原样返回。
     """
     out = dict(spawn)
     if carrier_id not in out or tempest_id not in out:
         return out
-    carrier_pri = out[carrier_id]["priority"]
-    out[carrier_id] = {**out[carrier_id], "priority": out[tempest_id]["priority"]}
-    out[tempest_id] = {**out[tempest_id], "priority": carrier_pri}
+    primary = min(out[carrier_id]["priority"], out[tempest_id]["priority"])
+    secondary = max(out[carrier_id]["priority"], out[tempest_id]["priority"])
+    out[carrier_id] = {**out[carrier_id], "priority": secondary}
+    out[tempest_id] = {**out[tempest_id], "priority": primary}
     return out
 
 
@@ -6450,12 +6452,17 @@ def terran_timing_third_before_immortals_blocked(
     fleet_beacon_present: bool,
     immortals_or_pending: int,
 ) -> bool:
-    """O396/O397:Terran Timing 两只不朽下单前，400矿三矿让位。"""
+    """O396/O397/O400:Terran Timing 两只不朽真实出场前三矿让位。
+
+    O399a/b 都在第二只不朽落地前旁路开三矿；o399b 413s 三矿吃掉400矿，
+    首波时仅1不朽、零暴风。FB 参数保留兼容旧调用，但不再作为放行前提：
+    二矿后的400矿必须先完成双不朽站线包。
+    """
+    _ = fleet_beacon_present
     return (
         opp_race == "terran"
         and ai_build == "timing"
         and current_bases >= 2
-        and fleet_beacon_present
         and immortals_or_pending < 2
     )
 
@@ -6489,6 +6496,34 @@ def terran_timing_cannon_before_second_blocked(
         and ai_build == "timing"
         and not second_base_pinned
         and not threat_active
+    )
+
+
+def terran_timing_opening_package_incomplete(
+    *,
+    opp_race: str,
+    ai_build: str,
+    tempests_or_pending: int,
+    immortals_ready: int,
+) -> bool:
+    """O400:首暴风+双就绪不朽形成前，静态防御保持窄配额。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "timing"
+        and (tempests_or_pending < 1 or immortals_ready < 2)
+    )
+
+
+def terran_timing_opening_defense_targets(
+    main_cannons: int,
+    expansion_cannons: int,
+    batteries: int,
+) -> tuple[int, int, int]:
+    """O400:首波包完成前只留主基2塔、每分矿1塔、每基地1电池。"""
+    return (
+        min(main_cannons, 2),
+        min(expansion_cannons, 1),
+        min(batteries, 1),
     )
 
 

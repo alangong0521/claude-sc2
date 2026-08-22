@@ -231,6 +231,8 @@ from bot.production_plans import (  # noqa: E402
     terran_timing_third_before_immortals_blocked,
     terran_timing_gateway_capped,
     terran_timing_cannon_before_second_blocked,
+    terran_timing_opening_package_incomplete,
+    terran_timing_opening_defense_targets,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -1265,6 +1267,17 @@ class TestStrategyPivot(unittest.TestCase):
         self.assertEqual(out[UnitID.CARRIER], {"proportion": 0.7, "priority": 1})
         # 原 dict 不被改(纯函数)
         self.assertEqual(spawn[UnitID.CARRIER]["priority"], 0)
+
+    def test_tempest_primary_spawn_is_idempotent_for_new_flow_order(self):
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+        spawn = {
+            UnitID.TEMPEST: {"proportion": 0.85, "priority": 0},
+            UnitID.CARRIER: {"proportion": 0.15, "priority": 1},
+        }
+        self.assertEqual(
+            tempest_primary_spawn(spawn, UnitID.CARRIER, UnitID.TEMPEST),
+            spawn,
+        )
 
     def test_tempest_primary_spawn_missing_unit_is_noop(self):
         from sc2.ids.unit_typeid import UnitTypeId as UnitID
@@ -6361,6 +6374,11 @@ class TestO381Plans(unittest.TestCase):
         )
         self.assertFalse(
             terran_timing_third_before_immortals_blocked(
+                **{**base, "immortals_or_pending": 2}
+            )
+        )
+        self.assertTrue(
+            terran_timing_third_before_immortals_blocked(
                 **{**base, "fleet_beacon_present": False}
             )
         )
@@ -6402,6 +6420,27 @@ class TestO381Plans(unittest.TestCase):
             terran_timing_cannon_before_second_blocked(
                 **{**base, "ai_build": "rush"}
             )
+        )
+
+    def test_terran_timing_opening_package_defense_cap(self):
+        base = dict(
+            opp_race="terran", ai_build="timing",
+            tempests_or_pending=0, immortals_ready=1,
+        )
+        self.assertTrue(terran_timing_opening_package_incomplete(**base))
+        self.assertFalse(
+            terran_timing_opening_package_incomplete(
+                **{**base, "tempests_or_pending": 1, "immortals_ready": 2}
+            )
+        )
+        self.assertFalse(
+            terran_timing_opening_package_incomplete(
+                **{**base, "ai_build": "rush"}
+            )
+        )
+        self.assertEqual(
+            terran_timing_opening_defense_targets(4, 3, 2),
+            (2, 1, 1),
         )
 
     def test_terran_rush_immortal_needed(self):
