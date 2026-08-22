@@ -241,6 +241,7 @@ from bot.production_plans import (  # noqa: E402
     zerg_macro_ground_screen_needed,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
+    zerg_macro_emergency_gas_pull,
     zerg_macro_escort_fleet_suppressed,
     zerg_macro_worker_cap,
     zerg_macro_corruptor_sticky_window,
@@ -1885,7 +1886,7 @@ class TestTerminalCleanup(unittest.TestCase):
         )
         self.assertEqual(
             terminal_cleanup_profile("zerg", "macro"),
-            (800.0, 10, 20, 12),
+            (1100.0, 10, 20, 12),
         )
 
     def test_cleanup_prioritizes_economy_before_residual_combat(self):
@@ -6644,6 +6645,18 @@ class TestO381Plans(unittest.TestCase):
             zerg_macro_gas_stop_blocked(
                 opp_race="zerg", ai_build="macro", visible_corruptors=20,
                 now=900.0, fleet_onfield=12, stalkers=2, vespene=600.0,
+            )
+        )
+        self.assertTrue(
+            zerg_macro_emergency_gas_pull(
+                opp_race="zerg", ai_build="macro",
+                vespene=800.0, minerals=199.9,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_emergency_gas_pull(
+                opp_race="zerg", ai_build="macro",
+                vespene=799.9, minerals=100.0,
             )
         )
         self.assertTrue(

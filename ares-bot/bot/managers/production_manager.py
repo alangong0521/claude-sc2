@@ -258,6 +258,7 @@ from bot.production_plans import (
     zerg_macro_ground_screen_needed,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
+    zerg_macro_emergency_gas_pull,
     zerg_macro_escort_fleet_suppressed,
     zerg_macro_worker_cap,
     zerg_macro_corruptor_sticky_window,
@@ -8954,6 +8955,12 @@ class ProductionManager(Manager):
             ),
             vespene=self.ai.vespene,
         )
+        _zerg_macro_emergency_pull = zerg_macro_emergency_gas_pull(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            vespene=self.ai.vespene,
+            minerals=self.ai.minerals,
+        )
         if (
             gas_to_minerals_needed(
                 self.ai.vespene, self.ai.minerals,
@@ -8973,7 +8980,7 @@ class ProductionManager(Manager):
                 fleet_tech_ready=self._fb_entities_now > 0,
             )
             and not _zerg_macro_keep_gas
-            and not _gas_pull_cooling
+            and (not _gas_pull_cooling or _zerg_macro_emergency_pull)
         ):
             if not self._o358_gas_pull and event_throttle_ok(
                 self.ai.time, self._o359_gas_log_ts
@@ -10877,7 +10884,7 @@ class ProductionManager(Manager):
                     )
                 ),
                 cannons=_macro_cannons_now,
-            ) and not survival_exempt:
+            ):
                 return "zerg_macro_capped"
         # O383-③(o382d g1):Nexus 成交后的120s先重建核心产能。
         # 新矿零塔的 survival_exempt 首塔保留，第2+塔/电池与研究

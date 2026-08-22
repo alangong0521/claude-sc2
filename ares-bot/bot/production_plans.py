@@ -2792,7 +2792,7 @@ def terminal_cleanup_profile(
     if opp_race == "terran" and ai_build == "macro":
         return 900.0, 20, 30, 20
     if opp_race == "zerg" and ai_build == "macro":
-        return 800.0, 10, 20, 12
+        return 1100.0, 10, 20, 12
     structure_cap, worker_cap = terminal_cleanup_limits(opp_race)
     return 1200.0, structure_cap, worker_cap, 12
 
@@ -6638,6 +6638,24 @@ def zerg_macro_gas_stop_blocked(
                 and stalkers < stalker_floor
             )
         )
+    )
+
+
+def zerg_macro_emergency_gas_pull(
+    *,
+    opp_race: str,
+    ai_build: str,
+    vespene: float,
+    minerals: float,
+    gas_floor: float = 800.0,
+    mineral_ceiling: float = 200.0,
+) -> bool:
+    """O430:Macro高气低矿危机绕过O359的30s冷却。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and vespene >= gas_floor
+        and minerals < mineral_ceiling
     )
 
 
