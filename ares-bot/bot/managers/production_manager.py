@@ -230,6 +230,7 @@ from bot.production_plans import (
     terran_rush_immortal_needed,
     timing_carrier_transition_allowed,
     terran_timing_third_before_immortals_blocked,
+    terran_timing_gateway_capped,
     zerg_rush_late_stalker_escort_needed,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -7971,7 +7972,7 @@ class ProductionManager(Manager):
         _timing_gateway_cap = tr.gateway_cap
         if (
             self._transition_active
-            and self._opp_race == "zerg"
+            and self._opp_race in ("zerg", "terran")
             and self._ai_build == "timing"
         ):
             _timing_gateway_cap = 2
@@ -8053,6 +8054,12 @@ class ProductionManager(Manager):
             and not self._fb_ready_to_build()
         )
         if _rush_gw_needed:
+            if terran_timing_gateway_capped(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                gateways=have,
+            ):
+                return
             # O107(o106 局1 实证):E3d 老路在过渡期也走塔先闸 —— 局1 GW1
             # 就绪瞬间此路不过闸抢建 GW2(150),首叉 156→182;③b 直补块
             # 有闸、此路没有,补同一只(transition_gateway_allowed 对
@@ -11837,14 +11844,22 @@ class ProductionManager(Manager):
         # 525 波到脸仅 1 叉。pre_fleet 流派(现仅 carrier)非过渡期保底 2 GW;
         # 过渡激活后由过渡 gateway_cap 接管(不双管)。矿够就拍,不等矿门槛
         # O144-③:floor 未激活(纯运营局)→ 不保底 GW2(矿全进舰队科技)
+        _floor_gateways_now = (
+            len(structures_dict[UnitID.GATEWAY])
+            + self.manager_mediator.get_building_counter[UnitID.GATEWAY]
+            + len(structures_dict.get(UnitID.WARPGATE, []))
+        )
         if (
             self._floor_active
             and ground_floor_gateways(
                 self._flow.pre_fleet is not None,
                 self._transition_active,
-                len(structures_dict[UnitID.GATEWAY])
-                + self.manager_mediator.get_building_counter[UnitID.GATEWAY]
-                + len(structures_dict.get(UnitID.WARPGATE, [])),
+                _floor_gateways_now,
+            )
+            and not terran_timing_gateway_capped(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                gateways=_floor_gateways_now,
             )
             and self.ai.can_afford(UnitID.GATEWAY)
         ):

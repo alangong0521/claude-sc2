@@ -229,6 +229,7 @@ from bot.production_plans import (  # noqa: E402
     terran_rush_immortal_needed,
     timing_carrier_transition_allowed,
     terran_timing_third_before_immortals_blocked,
+    terran_timing_gateway_capped,
     pick_safest_rebuild_expansion,
     terran_post_rebuild_recovery_active,
     fleet_onfield_started,
@@ -6360,6 +6361,23 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             terran_timing_third_before_immortals_blocked(
                 **{**base, "fleet_beacon_present": False}
+            )
+        )
+
+    def test_terran_timing_gateway_capped(self):
+        self.assertFalse(
+            terran_timing_gateway_capped(
+                opp_race="terran", ai_build="timing", gateways=1
+            )
+        )
+        self.assertTrue(
+            terran_timing_gateway_capped(
+                opp_race="terran", ai_build="timing", gateways=2
+            )
+        )
+        self.assertFalse(
+            terran_timing_gateway_capped(
+                opp_race="terran", ai_build="rush", gateways=3
             )
         )
 

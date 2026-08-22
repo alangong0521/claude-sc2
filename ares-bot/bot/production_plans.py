@@ -6460,6 +6460,17 @@ def terran_timing_third_before_immortals_blocked(
     )
 
 
+def terran_timing_gateway_capped(
+    *,
+    opp_race: str,
+    ai_build: str,
+    gateways: int,
+    cap: int = 2,
+) -> bool:
+    """O398:Terran Timing首波/舰队期Gateway总量最多2。"""
+    return opp_race == "terran" and ai_build == "timing" and gateways >= cap
+
+
 def timing_carrier_transition_allowed(
     ai_build: str,
     tempest_count: int,

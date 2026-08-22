@@ -11632,3 +11632,17 @@ Nexus/FB);③ SG ≤300s;④ 停气触发后 30s 内气增长压
 - lane1：VeryHard Terran Timing ×1；若胜则最近5局3/5正式打穿。
 - lane2：已通过组合回归，不计入Timing窗口；避免同轮第二个Timing结果把决定性
   第5样本再次变成6局噪声。
+
+## O397c 决定性样本（Defeat 921.3s）
+
+- 首次尝试败势末端SC2异常退出，属无效样本；自动重试为正式结果。
+- 重试二矿305.4s，341s已3 Gateway；695s仅2暴风、3矿54农，763s舰队3，
+  第二波后舰队归零并在921s败。对照o397a胜局全程2 Gateway、675s舰队8。
+- 当前最近5个有效Timing样本为o396a胜、o396b负、o397a胜、o397b负、
+  o397c负，即2/5，尚未打穿。
+
+### O398 已落地
+
+1. Terran Timing transition Gateway cap固定2。
+2. 旧rush_needs_gateway入口在已有2座时硬停。
+3. floor额外产能入口同样读取2座上限，三条通道共同堵第3座Gateway。
