@@ -2684,6 +2684,11 @@ def terminal_cleanup_active(
     )
 
 
+def terminal_cleanup_limits(opp_race: str) -> tuple[int, int]:
+    """O412:Terran残敌重建快，结构/工人阈值放宽以更早进入终结。"""
+    return (15, 20) if opp_race == "terran" else (10, 12)
+
+
 def tech_yields_to_threat(threat_active: bool, rush_active: bool) -> bool:
     """O67(VeryHard Terran Rush game_01 实证):E9 威胁激活时,追加产能/舰队航标
     让位塔链。纯逻辑,可单测。
@@ -5904,6 +5909,19 @@ def terran_timing_supply_sticky_window(
     return default_window
 
 
+def terran_timing_force_push_allowed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    own_army_supply: float,
+    credited_enemy_supply: float,
+) -> bool:
+    """O412:Terran Timing强推也必须尊重240s敌军信用。"""
+    if opp_race == "terran" and ai_build == "timing":
+        return own_army_supply >= credited_enemy_supply
+    return True
+
+
 def wave_cannon_floor_trigger(
     credited_supply: float,
     opp_race: str,
@@ -6540,6 +6558,24 @@ def terran_timing_third_before_immortals_blocked(
         and ai_build == "timing"
         and current_bases >= 2
         and (immortals_or_pending < 2 or fleet_onfield < min_fleet)
+    )
+
+
+def terran_timing_fourth_before_fleet_blocked(
+    *,
+    opp_race: str,
+    ai_build: str,
+    current_bases: int,
+    fleet_onfield: int,
+    max_pre_fleet_bases: int = 3,
+    min_fleet: int = 12,
+) -> bool:
+    """O412:Terran Timing真实舰队12前最多三矿。"""
+    return (
+        opp_race == "terran"
+        and ai_build == "timing"
+        and current_bases >= max_pre_fleet_bases
+        and fleet_onfield < min_fleet
     )
 
 

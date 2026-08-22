@@ -62,6 +62,8 @@ from bot.production_plans import (
     main_defense_first,
     zt_golden_window_push,
     terminal_cleanup_active,
+    terminal_cleanup_limits,
+    terran_timing_force_push_allowed,
 )
 
 if TYPE_CHECKING:
@@ -459,6 +461,10 @@ class CombatManager(Manager):
             self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.TEMPEST)
             + self.manager_mediator.get_own_unit_count(unit_type_id=UnitID.CARRIER)
         )
+        _pm = getattr(self.ai, "production_manager", None)
+        _cleanup_structure_cap, _cleanup_worker_cap = terminal_cleanup_limits(
+            getattr(_pm, "_opp_race", "") if _pm is not None else ""
+        )
         active = terminal_cleanup_active(
             now=getattr(self.ai, "time", 0.0),
             fleet_count=fleet,
@@ -471,6 +477,8 @@ class CombatManager(Manager):
                 and u.type_id not in workers
                 and is_combat_type(u.type_id)
             ),
+            max_structures=_cleanup_structure_cap,
+            max_workers=_cleanup_worker_cap,
         )
         if active and not self._o403_cleanup_logged:
             self._o403_cleanup_logged = True
@@ -755,6 +763,19 @@ class CombatManager(Manager):
                 _pm_o227 is not None
                 and getattr(_pm_o227, "_opp_race", "") == "terran"
             )
+            if _force_push and not terran_timing_force_push_allowed(
+                opp_race=(
+                    getattr(_pm_o227, "_opp_race", "")
+                    if _pm_o227 is not None else ""
+                ),
+                ai_build=(
+                    getattr(_pm_o227, "_ai_build", "")
+                    if _pm_o227 is not None else ""
+                ),
+                own_army_supply=_own_army,
+                credited_enemy_supply=_enemy_vis,
+            ):
+                _force_push = False
             _visible_enemy_air_combat = sum(
                 1
                 for u in self.ai.enemy_units

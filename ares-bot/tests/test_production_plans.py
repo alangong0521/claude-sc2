@@ -183,6 +183,7 @@ from bot.production_plans import (  # noqa: E402
     wave_cannon_floor_trigger,
     enemy_supply_credited,
     terran_timing_supply_sticky_window,
+    terran_timing_force_push_allowed,
     terran_timing_multi_expand_cap,
     fb_latch_pin_afford_ok,
     sg2_pre_fb_pin_needed,
@@ -232,7 +233,9 @@ from bot.production_plans import (  # noqa: E402
     terran_rush_immortal_needed,
     timing_carrier_transition_allowed,
     terminal_cleanup_active,
+    terminal_cleanup_limits,
     terran_timing_third_before_immortals_blocked,
+    terran_timing_fourth_before_fleet_blocked,
     terran_timing_gateway_capped,
     terran_timing_cannon_before_second_blocked,
     terran_timing_opening_package_incomplete,
@@ -1778,6 +1781,10 @@ class TestTerminalCleanup(unittest.TestCase):
             terminal_cleanup_active(**{**base, "fleet_count": 10})
         )
 
+    def test_terran_uses_earlier_cleanup_limits(self):
+        self.assertEqual(terminal_cleanup_limits("terran"), (15, 20))
+        self.assertEqual(terminal_cleanup_limits("zerg"), (10, 12))
+
 
 class TestTechYieldsToThreat(unittest.TestCase):
     """O67:E9 威胁期追加产能/舰队航标让位塔链;rush 期不重复(走 rush 分支)。"""
@@ -2744,6 +2751,26 @@ class TestO411TimingCadence(unittest.TestCase):
         )
         self.assertEqual(
             terran_timing_supply_sticky_window("terran", "power"), 120.0
+        )
+
+    def test_force_push_respects_credited_supply(self):
+        self.assertFalse(
+            terran_timing_force_push_allowed(
+                opp_race="terran", ai_build="timing",
+                own_army_supply=102.0, credited_enemy_supply=109.0,
+            )
+        )
+        self.assertTrue(
+            terran_timing_force_push_allowed(
+                opp_race="terran", ai_build="timing",
+                own_army_supply=110.0, credited_enemy_supply=109.0,
+            )
+        )
+        self.assertTrue(
+            terran_timing_force_push_allowed(
+                opp_race="terran", ai_build="power",
+                own_army_supply=20.0, credited_enemy_supply=100.0,
+            )
         )
 
 
@@ -6456,6 +6483,23 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(
             terran_timing_third_before_immortals_blocked(
                 **{**base, "fleet_beacon_present": False, "fleet_onfield": 4}
+            )
+        )
+
+    def test_terran_timing_fourth_waits_for_twelve_fleet(self):
+        base = dict(
+            opp_race="terran", ai_build="timing",
+            current_bases=3, fleet_onfield=11,
+        )
+        self.assertTrue(terran_timing_fourth_before_fleet_blocked(**base))
+        self.assertFalse(
+            terran_timing_fourth_before_fleet_blocked(
+                **{**base, "fleet_onfield": 12}
+            )
+        )
+        self.assertFalse(
+            terran_timing_fourth_before_fleet_blocked(
+                **{**base, "ai_build": "power"}
             )
         )
 

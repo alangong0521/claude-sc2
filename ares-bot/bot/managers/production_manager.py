@@ -233,6 +233,7 @@ from bot.production_plans import (
     terran_rush_immortal_needed,
     timing_carrier_transition_allowed,
     terran_timing_third_before_immortals_blocked,
+    terran_timing_fourth_before_fleet_blocked,
     terran_timing_gateway_capped,
     terran_timing_cannon_before_second_blocked,
     terran_timing_opening_package_incomplete,
@@ -2623,6 +2624,20 @@ class ProductionManager(Manager):
                 ),
             ):
                 _expansion_to = min(_expansion_to, 2)
+            if terran_timing_fourth_before_fleet_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+            ):
+                _expansion_to = min(_expansion_to, 3)
             if terran_power_fourth_before_fleet_blocked(
                 opp_race=self._opp_race,
                 ai_build=self._ai_build,
@@ -9754,6 +9769,22 @@ class ProductionManager(Manager):
             self._o383_healthy_expand_from_bases = None
             self._o381_healthy_expand_active = False
             return False
+        if terran_timing_fourth_before_fleet_blocked(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            current_bases=self.ai.townhalls.amount,
+            fleet_onfield=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
+        ):
+            self._o383_healthy_expand_from_bases = None
+            self._o381_healthy_expand_active = False
+            return False
         if terran_power_fourth_before_fleet_blocked(
             opp_race=self._opp_race,
             ai_build=self._ai_build,
@@ -12337,6 +12368,19 @@ class ProductionManager(Manager):
                 immortals_or_pending=self.manager_mediator.get_own_unit_count(
                     unit_type_id=UnitID.IMMORTAL, include_pending=False
                 ),
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+            )
+            and not terran_timing_fourth_before_fleet_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
                 fleet_onfield=(
                     self.manager_mediator.get_own_unit_count(
                         unit_type_id=UnitID.TEMPEST, include_pending=False
