@@ -12,6 +12,7 @@ from sc2.units import Units
 
 from bot.levers import pick_focus_key, prefer_void_rays
 from bot.production_plans import (
+    cover_hold_should_fire,
     strongest_cover_index,
     tempest_global_aa_retreat_needed,
 )
@@ -178,9 +179,18 @@ class TempestOffensive(BaseUnit):
                 )
             ):
                 _fallback = _strongest_cover(unit)
-                offensive_maneuver.add(
-                    PathUnitToTarget(unit, self.mediator.get_air_grid, _fallback)
-                )
+                _attackable = cy_in_attack_range(unit, enemy_near_tempest)
+                if cover_hold_should_fire(
+                    unit.position.distance_to(_fallback), len(_attackable)
+                ):
+                    _target = _pick_focus(_attackable, focus, origin=unit)
+                    offensive_maneuver.add(AMove(unit, _target.position))
+                else:
+                    offensive_maneuver.add(
+                        PathUnitToTarget(
+                            unit, self.mediator.get_air_grid, _fallback
+                        )
+                    )
                 self.ai.register_behavior(offensive_maneuver)
                 continue
 

@@ -253,6 +253,9 @@ from bot.production_plans import (
     terran_macro_fourth_blocked,
     terran_macro_sg_recovery_needed,
     zerg_rush_late_stalker_escort_needed,
+    zerg_macro_escort_gateway_target,
+    zerg_macro_carrier_suppressed,
+    zerg_macro_gas_stop_blocked,
     zerg_macro_cannon_capped,
     zerg_rush_late_expand_blocked,
     pick_safest_rebuild_expansion,
@@ -8900,6 +8903,14 @@ class ProductionManager(Manager):
                 ),
                 fleet_tech_ready=self._fb_entities_now > 0,
             )
+            and not zerg_macro_gas_stop_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                visible_corruptors=sum(
+                    1 for u in self.ai.enemy_units
+                    if u.type_id == UnitID.CORRUPTOR
+                ),
+            )
             and not _gas_pull_cooling
         ):
             if not self._o358_gas_pull and event_throttle_ok(
@@ -9316,6 +9327,17 @@ class ProductionManager(Manager):
         ):
             spawn = carrier_quota_spawn(spawn, UnitID.CARRIER, UnitID.TEMPEST)
             force_gap = max(force_gap, 250)
+        _visible_corruptors_for_spawn = sum(
+            1 for u in self.ai.enemy_units
+            if u.type_id == UnitID.CORRUPTOR
+        )
+        if zerg_macro_carrier_suppressed(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            visible_corruptors=_visible_corruptors_for_spawn,
+        ):
+            spawn.pop(UnitID.CARRIER, None)
+            force_gap = self._flow.save_up
         # O356-②b(o355b g1 实证):母舰资金窗内星门舰队新单让位 ——
         # 窗 48s 内舰队 8→13(5 艘×300 矿≈1500 矿)把母舰 400 矿资金
         # 窗吃光。窗内且舰队(TEMPEST+CARRIER+在产)≥6 → 从配方摘除
@@ -12418,6 +12440,23 @@ class ProductionManager(Manager):
             + self.manager_mediator.get_building_counter[UnitID.GATEWAY]
             + len(structures_dict.get(UnitID.WARPGATE, []))
         )
+        _escort_gateway_target = zerg_macro_escort_gateway_target(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            visible_corruptors=sum(
+                1 for u in self.ai.enemy_units
+                if u.type_id == UnitID.CORRUPTOR
+            ),
+        )
+        if (
+            _floor_gateways_now < _escort_gateway_target
+            and not self._o381_nexus_fund_active
+            and self.ai.can_afford(UnitID.GATEWAY)
+        ):
+            self.ai.register_behavior(
+                BuildStructure(self.ai.start_location, UnitID.GATEWAY)
+            )
+            return
         if (
             self._floor_active
             and ground_floor_gateways(

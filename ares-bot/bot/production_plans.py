@@ -1595,6 +1595,15 @@ def strongest_cover_index(
     return max(range(len(covers)), key=key)
 
 
+def cover_hold_should_fire(
+    distance_to_cover: float,
+    attackable_enemies: int,
+    hold_radius: float = 6.0,
+) -> bool:
+    """O421:暴风抵达强掩体后应站定还火，而非继续空走。"""
+    return distance_to_cover <= hold_radius and attackable_enemies > 0
+
+
 def dispatch_viable(
     minerals: float,
     income_per_sec: float,
@@ -6475,6 +6484,56 @@ def zerg_rush_late_stalker_escort_needed(
         and now >= effective_min_time
         and fleet_count >= effective_min_fleet
         and stalkers < effective_floor
+    )
+
+
+def zerg_macro_escort_gateway_target(
+    *,
+    opp_race: str,
+    ai_build: str,
+    visible_corruptors: int,
+    base_target: int = 2,
+    corruptor_trigger: int = 8,
+    aa_target: int = 4,
+) -> int:
+    """O421:Zerg Macro腐化海出现后把追猎产能从2门扩到4门。"""
+    if (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and visible_corruptors >= corruptor_trigger
+    ):
+        return aa_target
+    return base_target
+
+
+def zerg_macro_carrier_suppressed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    visible_corruptors: int,
+    corruptor_gate: int = 4,
+) -> bool:
+    """O421:可见腐化成群时不再把250气投入航母。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and visible_corruptors >= corruptor_gate
+    )
+
+
+def zerg_macro_gas_stop_blocked(
+    *,
+    opp_race: str,
+    ai_build: str,
+    visible_corruptors: int,
+    corruptor_gate: int = 4,
+) -> bool:
+    """O421:腐化海窗口保持采气，保证追猎/暴风持续补员。"""
+    return zerg_macro_carrier_suppressed(
+        opp_race=opp_race,
+        ai_build=ai_build,
+        visible_corruptors=visible_corruptors,
+        corruptor_gate=corruptor_gate,
     )
 
 

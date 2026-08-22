@@ -25,6 +25,7 @@ from bot.production_plans import (  # noqa: E402
     carrier_quota_spawn,
     carrier_rally_against_aa,
     carrier_push_fleet_floor,
+    cover_hold_should_fire,
     tempest_global_aa_retreat_needed,
     strongest_cover_index,
     carrier_transition_ready,
@@ -230,6 +231,9 @@ from bot.production_plans import (  # noqa: E402
     economic_strike_fleet_keeps_strategic_target,
     carrier_fleet_keeps_strategic_target,
     zerg_rush_late_stalker_escort_needed,
+    zerg_macro_escort_gateway_target,
+    zerg_macro_carrier_suppressed,
+    zerg_macro_gas_stop_blocked,
     zerg_macro_cannon_capped,
     zerg_rush_late_expand_blocked,
     terran_precontact_cannon_capped,
@@ -1675,6 +1679,11 @@ class TestCarrierRallyAgainstAA(unittest.TestCase):
         ]
         self.assertEqual(strongest_cover_index(covers, (20.0, 0.0)), 2)
         self.assertIsNone(strongest_cover_index([], (0.0, 0.0)))
+
+    def test_cover_hold_fires_after_arrival(self):
+        self.assertTrue(cover_hold_should_fire(6.0, 1))
+        self.assertFalse(cover_hold_should_fire(6.1, 1))
+        self.assertFalse(cover_hold_should_fire(2.0, 0))
 
 
 class TestBaseDefenseAnchor(unittest.TestCase):
@@ -6483,6 +6492,33 @@ class TestO381Plans(unittest.TestCase):
         self.assertFalse(
             zerg_rush_late_stalker_escort_needed(
                 **{**macro, "fleet_count": 3}
+            )
+        )
+        self.assertEqual(
+            zerg_macro_escort_gateway_target(
+                opp_race="zerg", ai_build="macro", visible_corruptors=8
+            ),
+            4,
+        )
+        self.assertEqual(
+            zerg_macro_escort_gateway_target(
+                opp_race="zerg", ai_build="macro", visible_corruptors=7
+            ),
+            2,
+        )
+        self.assertTrue(
+            zerg_macro_carrier_suppressed(
+                opp_race="zerg", ai_build="macro", visible_corruptors=4
+            )
+        )
+        self.assertFalse(
+            zerg_macro_carrier_suppressed(
+                opp_race="zerg", ai_build="macro", visible_corruptors=3
+            )
+        )
+        self.assertTrue(
+            zerg_macro_gas_stop_blocked(
+                opp_race="zerg", ai_build="macro", visible_corruptors=4
             )
         )
         self.assertTrue(
