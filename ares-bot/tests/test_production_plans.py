@@ -241,6 +241,7 @@ from bot.production_plans import (  # noqa: E402
     zerg_macro_ground_screen_needed,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
+    zerg_macro_escort_fleet_suppressed,
     zerg_macro_corruptor_sticky_window,
     zerg_macro_cannon_capped,
     zerg_rush_late_expand_blocked,
@@ -6586,6 +6587,13 @@ class TestO381Plans(unittest.TestCase):
             ),
             4,
         )
+        self.assertEqual(
+            zerg_macro_escort_gateway_target(
+                opp_race="zerg", ai_build="macro", visible_corruptors=0,
+                now=580.0, fleet_onfield=0,
+            ),
+            4,
+        )
         self.assertTrue(
             zerg_macro_ground_screen_needed(
                 opp_race="zerg", ai_build="macro",
@@ -6623,6 +6631,30 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(
             zerg_macro_gas_stop_blocked(
                 opp_race="zerg", ai_build="macro", visible_corruptors=4
+            )
+        )
+        self.assertTrue(
+            zerg_macro_gas_stop_blocked(
+                opp_race="zerg", ai_build="macro", visible_corruptors=0,
+                now=500.0, fleet_onfield=4, stalkers=5, vespene=500.0,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_gas_stop_blocked(
+                opp_race="zerg", ai_build="macro", visible_corruptors=20,
+                now=900.0, fleet_onfield=12, stalkers=2, vespene=600.0,
+            )
+        )
+        self.assertTrue(
+            zerg_macro_escort_fleet_suppressed(
+                opp_race="zerg", ai_build="macro",
+                now=500.0, fleet_onfield=4, stalkers=5,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_escort_fleet_suppressed(
+                opp_race="zerg", ai_build="macro",
+                now=500.0, fleet_onfield=4, stalkers=6,
             )
         )
         self.assertEqual(

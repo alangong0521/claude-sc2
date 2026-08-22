@@ -258,6 +258,7 @@ from bot.production_plans import (
     zerg_macro_ground_screen_needed,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
+    zerg_macro_escort_fleet_suppressed,
     zerg_macro_corruptor_sticky_window,
     zerg_macro_cannon_capped,
     zerg_rush_late_expand_blocked,
@@ -8932,6 +8933,19 @@ class ProductionManager(Manager):
             opp_race=self._opp_race,
             ai_build=self._ai_build,
             visible_corruptors=self._corruptors_credited(),
+            now=self.ai.time,
+            fleet_onfield=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
+            stalkers=self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.STALKER, include_pending=False
+            ),
+            vespene=self.ai.vespene,
         )
         if (
             gas_to_minerals_needed(
@@ -9378,6 +9392,25 @@ class ProductionManager(Manager):
                 unit_type_id=UnitID.TEMPEST, include_pending=False
             ),
         ):
+            spawn.pop(UnitID.CARRIER, None)
+            force_gap = self._flow.save_up
+        if zerg_macro_escort_fleet_suppressed(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            now=self.ai.time,
+            fleet_onfield=(
+                self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.TEMPEST, include_pending=False
+                )
+                + self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.CARRIER, include_pending=False
+                )
+            ),
+            stalkers=self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.STALKER, include_pending=False
+            ),
+        ):
+            spawn.pop(UnitID.TEMPEST, None)
             spawn.pop(UnitID.CARRIER, None)
             force_gap = self._flow.save_up
         # O356-②b(o355b g1 实证):母舰资金窗内星门舰队新单让位 ——

@@ -6553,7 +6553,7 @@ def zerg_macro_escort_gateway_target(
     base_target: int = 2,
     corruptor_trigger: int = 8,
     prebuild_at: float = 580.0,
-    prebuild_fleet: int = 8,
+    prebuild_fleet: int = 0,
     aa_target: int = 4,
 ) -> int:
     """O421/O423:Macro在腐化海前预建4门追猎产能。"""
@@ -6615,13 +6615,50 @@ def zerg_macro_gas_stop_blocked(
     opp_race: str,
     ai_build: str,
     visible_corruptors: int,
+    now: float = 0.0,
+    fleet_onfield: int = 0,
+    stalkers: int = 99,
+    vespene: float = 0.0,
     corruptor_gate: int = 4,
+    escort_at: float = 500.0,
+    escort_fleet: int = 4,
+    stalker_floor: int = 12,
+    gas_ceiling: float = 600.0,
 ) -> bool:
-    """O421:腐化海窗口保持采气，保证追猎/暴风持续补员。"""
+    """O421/O428:护航未齐或腐化在场时保气，但600+允许转矿。"""
     return (
         opp_race == "zerg"
         and ai_build == "macro"
-        and visible_corruptors >= corruptor_gate
+        and vespene < gas_ceiling
+        and (
+            visible_corruptors >= corruptor_gate
+            or (
+                now >= escort_at
+                and fleet_onfield >= escort_fleet
+                and stalkers < stalker_floor
+            )
+        )
+    )
+
+
+def zerg_macro_escort_fleet_suppressed(
+    *,
+    opp_race: str,
+    ai_build: str,
+    now: float,
+    fleet_onfield: int,
+    stalkers: int,
+    min_time: float = 500.0,
+    min_fleet: int = 4,
+    stalker_floor: int = 6,
+) -> bool:
+    """O428:首6追猎成型前暂停新舰队订单，把气明确转护航。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and now >= min_time
+        and fleet_onfield >= min_fleet
+        and stalkers < stalker_floor
     )
 
 
