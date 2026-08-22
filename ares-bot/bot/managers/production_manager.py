@@ -2548,24 +2548,55 @@ class ProductionManager(Manager):
                 )
             if _exp_loc is not None:
                 _pending = 1
-            macro_plan.add(
-                ExpansionController(
-                    to_count=self.ai.townhalls.amount + _pending,
-                    max_pending=_pending,
-                    # O341-①:latch 期强制 prioritize(欠费先派走位,
-                    # 到位等钱)—— EC 非 prioritize 要全值 400,
-                    # 矿窗一帧后永不派工(o340a game_01/05 在途0 实证)
-                    prioritize=_preposition
-                    or self._o189_forced_expand
-                    or self._o381_nexus_fund_active
-                    or (
-                        getattr(self, "_o329_latched", False)
-                        and self._opp_race == "zerg"
-                        and self._ai_build == "timing"
-                    ),
-                    location=_exp_loc,
+            _expansion_to = self.ai.townhalls.amount + _pending
+            # O405:最终注册层硬钳，堵住上游 _want_dynamic_expand 判False
+            # 后仍被健康扩张/latch/恢复路径带入的旁路。Timing双不朽真实
+            # 出场前最多2基地；Power真实舰队4前最多3基地。
+            if terran_timing_third_before_immortals_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_beacon_present=self._structure_present_or_pending(
+                    UnitID.FLEETBEACON
+                ),
+                immortals_or_pending=self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.IMMORTAL, include_pending=False
+                ),
+            ):
+                _expansion_to = min(_expansion_to, 2)
+            if terran_power_fourth_before_fleet_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+            ):
+                _expansion_to = min(_expansion_to, 3)
+            if _expansion_to > self.ai.townhalls.amount:
+                macro_plan.add(
+                    ExpansionController(
+                        to_count=_expansion_to,
+                        max_pending=_pending,
+                        # O341-①:latch 期强制 prioritize(欠费先派走位,
+                        # 到位等钱)—— EC 非 prioritize 要全值 400,
+                        # 矿窗一帧后永不派工(o340a game_01/05 在途0 实证)
+                        prioritize=_preposition
+                        or self._o189_forced_expand
+                        or self._o381_nexus_fund_active
+                        or (
+                            getattr(self, "_o329_latched", False)
+                            and self._opp_race == "zerg"
+                            and self._ai_build == "timing"
+                        ),
+                        location=_exp_loc,
+                    )
                 )
-            )
         # 升级(O1/O8/O10):研究交 UpgradeController 并进 MacroPlan 且 prioritize=True ——
         # 研究就绪但买不起时返回 True 截断 plan,SpawnController 暂停花钱 → 资源攒给
         # 研究(O8 长研究预留,Forge/科技建筑一好就点);建筑缺失/前置未就绪时返回 False
