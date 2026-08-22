@@ -78,6 +78,7 @@ from bot.production_plans import (
     expansion_cannon_min_dynamic,
     expansion_max_pending,
     terran_timing_multi_expand_cap,
+    zerg_macro_multi_expand_cap,
     expansion_blocked,
     f2_dispatch_guard_bypassed,
     extra_production_mineral_gate,
@@ -243,9 +244,11 @@ from bot.production_plans import (
     terran_timing_opening_defense_targets,
     terran_power_fourth_before_fleet_blocked,
     terran_power_stargate_capped,
+    zerg_macro_stargate_capped,
     terran_pressure_rebuild_fund_bypassed,
     zerg_macro_rebuild_fund_bypassed,
-    zerg_macro_fourth_blocked,
+    zerg_macro_expansion_cap,
+    zerg_macro_expansion_blocked,
     terran_macro_fourth_blocked,
     terran_macro_sg_recovery_needed,
     zerg_rush_late_stalker_escort_needed,
@@ -2590,6 +2593,19 @@ class ProductionManager(Manager):
                     )
                 ),
             )
+            _pending = zerg_macro_multi_expand_cap(
+                _pending,
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+            )
             _preposition = dispatch_viable(
                 self.ai.minerals,
                 self._mineral_income_per_sec(),
@@ -2699,10 +2715,9 @@ class ProductionManager(Manager):
                 min_local_cannons=self._min_ready_cannons_per_base(),
             ):
                 _expansion_to = min(_expansion_to, 3)
-            if zerg_macro_fourth_blocked(
+            _zerg_macro_expansion_cap = zerg_macro_expansion_cap(
                 opp_race=self._opp_race,
                 ai_build=self._ai_build,
-                current_bases=self.ai.townhalls.amount,
                 fleet_onfield=(
                     self.manager_mediator.get_own_unit_count(
                         unit_type_id=UnitID.TEMPEST, include_pending=False
@@ -2711,8 +2726,11 @@ class ProductionManager(Manager):
                         unit_type_id=UnitID.CARRIER, include_pending=False
                     )
                 ),
-            ):
-                _expansion_to = min(_expansion_to, 3)
+            )
+            if _zerg_macro_expansion_cap is not None:
+                _expansion_to = min(
+                    _expansion_to, _zerg_macro_expansion_cap
+                )
             if _expansion_to > self.ai.townhalls.amount:
                 macro_plan.add(
                     ExpansionController(
@@ -10033,7 +10051,7 @@ class ProductionManager(Manager):
             self._o383_healthy_expand_from_bases = None
             self._o381_healthy_expand_active = False
             return False
-        if zerg_macro_fourth_blocked(
+        if zerg_macro_expansion_blocked(
             opp_race=self._opp_race,
             ai_build=self._ai_build,
             current_bases=self.ai.townhalls.amount,
@@ -12534,18 +12552,33 @@ class ProductionManager(Manager):
         have = len(have_structures) + self.manager_mediator.get_building_counter[sid]
         if (
             sid == UnitID.STARGATE
-            and terran_power_stargate_capped(
-                opp_race=self._opp_race,
-                ai_build=self._ai_build,
-                stargates=have,
-                fleet_onfield=(
-                    self.manager_mediator.get_own_unit_count(
-                        unit_type_id=UnitID.TEMPEST, include_pending=False
-                    )
-                    + self.manager_mediator.get_own_unit_count(
-                        unit_type_id=UnitID.CARRIER, include_pending=False
-                    )
-                ),
+            and (
+                terran_power_stargate_capped(
+                    opp_race=self._opp_race,
+                    ai_build=self._ai_build,
+                    stargates=have,
+                    fleet_onfield=(
+                        self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.TEMPEST, include_pending=False
+                        )
+                        + self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.CARRIER, include_pending=False
+                        )
+                    ),
+                )
+                or zerg_macro_stargate_capped(
+                    opp_race=self._opp_race,
+                    ai_build=self._ai_build,
+                    stargates=have,
+                    fleet_onfield=(
+                        self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.TEMPEST, include_pending=False
+                        )
+                        + self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.CARRIER, include_pending=False
+                        )
+                    ),
+                )
             )
         ):
             return
@@ -12694,7 +12727,7 @@ class ProductionManager(Manager):
                 ),
                 min_local_cannons=self._min_ready_cannons_per_base(),
             )
-            and not zerg_macro_fourth_blocked(
+            and not zerg_macro_expansion_blocked(
                 opp_race=self._opp_race,
                 ai_build=self._ai_build,
                 current_bases=self.ai.townhalls.amount,
@@ -12798,18 +12831,33 @@ class ProductionManager(Manager):
             have += len(self.manager_mediator.get_own_structures_dict[UnitID.WARPGATE])
         if (
             sid == UnitID.STARGATE
-            and terran_power_stargate_capped(
-                opp_race=self._opp_race,
-                ai_build=self._ai_build,
-                stargates=have,
-                fleet_onfield=(
-                    self.manager_mediator.get_own_unit_count(
-                        unit_type_id=UnitID.TEMPEST, include_pending=False
-                    )
-                    + self.manager_mediator.get_own_unit_count(
-                        unit_type_id=UnitID.CARRIER, include_pending=False
-                    )
-                ),
+            and (
+                terran_power_stargate_capped(
+                    opp_race=self._opp_race,
+                    ai_build=self._ai_build,
+                    stargates=have,
+                    fleet_onfield=(
+                        self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.TEMPEST, include_pending=False
+                        )
+                        + self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.CARRIER, include_pending=False
+                        )
+                    ),
+                )
+                or zerg_macro_stargate_capped(
+                    opp_race=self._opp_race,
+                    ai_build=self._ai_build,
+                    stargates=have,
+                    fleet_onfield=(
+                        self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.TEMPEST, include_pending=False
+                        )
+                        + self.manager_mediator.get_own_unit_count(
+                            unit_type_id=UnitID.CARRIER, include_pending=False
+                        )
+                    ),
+                )
             )
         ):
             return

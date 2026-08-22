@@ -186,6 +186,7 @@ from bot.production_plans import (  # noqa: E402
     terran_timing_supply_sticky_window,
     terran_timing_force_push_allowed,
     terran_timing_multi_expand_cap,
+    zerg_macro_multi_expand_cap,
     fb_latch_pin_afford_ok,
     sg2_pre_fb_pin_needed,
     sg_prefb_voidray_fill,
@@ -246,9 +247,11 @@ from bot.production_plans import (  # noqa: E402
     terran_timing_opening_defense_targets,
     terran_power_fourth_before_fleet_blocked,
     terran_power_stargate_capped,
+    zerg_macro_stargate_capped,
     terran_pressure_rebuild_fund_bypassed,
     zerg_macro_rebuild_fund_bypassed,
-    zerg_macro_fourth_blocked,
+    zerg_macro_expansion_cap,
+    zerg_macro_expansion_blocked,
     terran_macro_fourth_blocked,
     terran_macro_sg_recovery_needed,
     pick_safest_rebuild_expansion,
@@ -2764,6 +2767,18 @@ class TestO411TimingCadence(unittest.TestCase):
                 2, opp_race="zerg", ai_build="timing", fleet_onfield=3
             ),
             2,
+        )
+        self.assertEqual(
+            zerg_macro_multi_expand_cap(
+                3, opp_race="zerg", ai_build="macro", fleet_onfield=15
+            ),
+            1,
+        )
+        self.assertEqual(
+            zerg_macro_multi_expand_cap(
+                3, opp_race="zerg", ai_build="macro", fleet_onfield=16
+            ),
+            3,
         )
 
     def test_terran_timing_supply_memory_is_240s(self):
@@ -6286,10 +6301,15 @@ class TestO381Plans(unittest.TestCase):
             )
         )
         macro = {**base, "ai_build": "macro", "now": 650.0}
-        self.assertTrue(zerg_rush_economic_strike_window(**macro))
+        self.assertFalse(zerg_rush_economic_strike_window(**macro))
+        self.assertTrue(
+            zerg_rush_economic_strike_window(
+                **{**macro, "fleet_count": 16}
+            )
+        )
         self.assertFalse(
             zerg_rush_economic_strike_window(
-                **{**macro, "now": 649.9}
+                **{**macro, "now": 649.9, "fleet_count": 16}
             )
         )
 
@@ -6691,19 +6711,60 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(
             zerg_macro_rebuild_fund_bypassed(
                 opp_race="zerg", ai_build="macro",
-                current_bases=2, fleet_onfield=8,
-            )
-        )
-        self.assertTrue(
-            zerg_macro_fourth_blocked(
-                opp_race="zerg", ai_build="macro",
-                current_bases=3, fleet_onfield=3,
+                current_bases=2, fleet_onfield=6,
             )
         )
         self.assertFalse(
-            zerg_macro_fourth_blocked(
+            zerg_macro_rebuild_fund_bypassed(
                 opp_race="zerg", ai_build="macro",
-                current_bases=3, fleet_onfield=4,
+                current_bases=2, fleet_onfield=5,
+            )
+        )
+        self.assertEqual(
+            zerg_macro_expansion_cap(
+                opp_race="zerg", ai_build="macro", fleet_onfield=3
+            ),
+            3,
+        )
+        self.assertEqual(
+            zerg_macro_expansion_cap(
+                opp_race="zerg", ai_build="macro", fleet_onfield=4
+            ),
+            4,
+        )
+        self.assertEqual(
+            zerg_macro_expansion_cap(
+                opp_race="zerg", ai_build="macro", fleet_onfield=12
+            ),
+            5,
+        )
+        self.assertIsNone(
+            zerg_macro_expansion_cap(
+                opp_race="zerg", ai_build="macro", fleet_onfield=16
+            )
+        )
+        self.assertTrue(
+            zerg_macro_expansion_blocked(
+                opp_race="zerg", ai_build="macro",
+                current_bases=4, fleet_onfield=11,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_expansion_blocked(
+                opp_race="zerg", ai_build="macro",
+                current_bases=4, fleet_onfield=12,
+            )
+        )
+        self.assertTrue(
+            zerg_macro_stargate_capped(
+                opp_race="zerg", ai_build="macro",
+                stargates=3, fleet_onfield=3,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_stargate_capped(
+                opp_race="zerg", ai_build="macro",
+                stargates=3, fleet_onfield=4,
             )
         )
         macro = dict(

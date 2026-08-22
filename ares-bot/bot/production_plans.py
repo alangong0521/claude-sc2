@@ -1439,6 +1439,24 @@ def terran_timing_multi_expand_cap(
     return pending
 
 
+def zerg_macro_multi_expand_cap(
+    pending: int,
+    *,
+    opp_race: str,
+    ai_build: str,
+    fleet_onfield: int,
+    min_fleet: int = 16,
+) -> int:
+    """O418:Zerg Macro真实舰队16前扩张严格逐矿串行。"""
+    if (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and fleet_onfield < min_fleet
+    ):
+        return min(pending, 1)
+    return pending
+
+
 def builder_is_waiting(in_tracker: bool, is_idle: bool, exempt_role: bool) -> bool:
     """O19：有建造指派的农民此刻是否处于「干等建造」状态。纯逻辑，可单测。
 
@@ -6301,11 +6319,12 @@ def zerg_rush_economic_strike_window(
 ) -> bool:
     """O390/O415:Zerg Rush/Macro 波间隙主动斩最外围经济。"""
     effective_min_time = 650.0 if ai_build == "macro" else min_time
+    effective_min_fleet = 16 if ai_build == "macro" else min_fleet
     return (
         opp_race == "zerg"
         and ai_build in ("rush", "macro")
         and now >= effective_min_time
-        and fleet_count >= min_fleet
+        and fleet_count >= effective_min_fleet
         and visible_enemy_air_combat == 0
         and visible_hard_aa == 0
         and known_enemy_bases >= 2
@@ -6743,6 +6762,24 @@ def terran_power_stargate_capped(
     )
 
 
+def zerg_macro_stargate_capped(
+    *,
+    opp_race: str,
+    ai_build: str,
+    stargates: int,
+    fleet_onfield: int,
+    pre_fleet_cap: int = 3,
+    min_fleet: int = 4,
+) -> bool:
+    """O418:Zerg Macro真实舰队4前第4+星门让位舰队产出。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and stargates >= pre_fleet_cap
+        and fleet_onfield < min_fleet
+    )
+
+
 def terran_pressure_rebuild_fund_bypassed(
     *,
     opp_race: str,
@@ -6768,7 +6805,7 @@ def zerg_macro_rebuild_fund_bypassed(
     current_bases: int,
     fleet_onfield: int,
     min_bases: int = 2,
-    min_fleet: int = 8,
+    min_fleet: int = 6,
 ) -> bool:
     """O414:Zerg Macro成型后掉矿不以全局停产换基地。"""
     return (
@@ -6779,21 +6816,41 @@ def zerg_macro_rebuild_fund_bypassed(
     )
 
 
-def zerg_macro_fourth_blocked(
+def zerg_macro_expansion_cap(
+    *,
+    opp_race: str,
+    ai_build: str,
+    fleet_onfield: int,
+    fourth_fleet: int = 4,
+    fifth_fleet: int = 12,
+    sixth_fleet: int = 16,
+) -> int | None:
+    """O417/O418:Zerg Macro按真实舰队规模分阶段放行总基地数。"""
+    if opp_race != "zerg" or ai_build != "macro":
+        return None
+    if fleet_onfield < fourth_fleet:
+        return 3
+    if fleet_onfield < fifth_fleet:
+        return 4
+    if fleet_onfield < sixth_fleet:
+        return 5
+    return None
+
+
+def zerg_macro_expansion_blocked(
     *,
     opp_race: str,
     ai_build: str,
     current_bases: int,
     fleet_onfield: int,
-    min_fleet: int = 4,
 ) -> bool:
-    """O417:Zerg Macro真实舰队4前最多三矿。"""
-    return (
-        opp_race == "zerg"
-        and ai_build == "macro"
-        and current_bases >= 3
-        and fleet_onfield < min_fleet
+    """O418:当前基地已达到Zerg Macro分阶段上限时禁止继续扩张。"""
+    cap = zerg_macro_expansion_cap(
+        opp_race=opp_race,
+        ai_build=ai_build,
+        fleet_onfield=fleet_onfield,
     )
+    return cap is not None and current_bases >= cap
 
 
 def terran_macro_fourth_blocked(
