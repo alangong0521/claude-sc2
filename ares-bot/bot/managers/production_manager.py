@@ -12243,6 +12243,33 @@ class ProductionManager(Manager):
             and self.ai.townhalls.amount < 4
             and self.ai.can_afford(UnitID.NEXUS)
             and not _fb_missing_starved
+            # O406:_spend_bank 是主 MacroPlan 之外的第二个开矿出口；
+            # O405a 在双不朽未齐时仍由此用800矿直接拍三矿。与最终
+            # ExpansionController 硬钳同口径，Timing/Power 开局都读。
+            and not terran_timing_third_before_immortals_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_beacon_present=self._structure_present_or_pending(
+                    UnitID.FLEETBEACON
+                ),
+                immortals_or_pending=self.manager_mediator.get_own_unit_count(
+                    unit_type_id=UnitID.IMMORTAL, include_pending=False
+                ),
+            )
+            and not terran_power_fourth_before_fleet_blocked(
+                opp_race=self._opp_race,
+                ai_build=self._ai_build,
+                current_bases=self.ai.townhalls.amount,
+                fleet_onfield=(
+                    self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.TEMPEST, include_pending=False
+                    )
+                    + self.manager_mediator.get_own_unit_count(
+                        unit_type_id=UnitID.CARRIER, include_pending=False
+                    )
+                ),
+            )
             # O250(o249-lane game_04/05 实证):O247 首舰前不开矿被 _spend_bank
             # 绕开(存款 800 早到 + SG 未就绪 → fb_missing_starved 永假,
             # 二矿 249s 落成即被轮抄);舰队先行门同步接入滚雪球开矿。
