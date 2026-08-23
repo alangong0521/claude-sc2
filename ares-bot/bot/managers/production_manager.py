@@ -257,6 +257,7 @@ from bot.production_plans import (
     zerg_macro_escort_gateway_target,
     zerg_macro_ground_screen_needed,
     zerg_macro_voidray_needed,
+    zerg_macro_voidray_conversion_active,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
     zerg_macro_emergency_gas_pull,
@@ -9422,6 +9423,21 @@ class ProductionManager(Manager):
                 unit_type_id=UnitID.TEMPEST, include_pending=False
             ),
         ):
+            spawn.pop(UnitID.CARRIER, None)
+            force_gap = self._flow.save_up
+        _voidrays_for_conversion = (
+            self.manager_mediator.get_own_unit_count(
+                unit_type_id=UnitID.VOIDRAY
+            )
+            + cy_unit_pending(self.ai, UnitID.VOIDRAY)
+        )
+        if zerg_macro_voidray_conversion_active(
+            opp_race=self._opp_race,
+            ai_build=self._ai_build,
+            corruptor_credit=_visible_corruptors_for_spawn,
+            voidrays=_voidrays_for_conversion,
+        ):
+            spawn.pop(UnitID.TEMPEST, None)
             spawn.pop(UnitID.CARRIER, None)
             force_gap = self._flow.save_up
         if zerg_macro_escort_fleet_suppressed(

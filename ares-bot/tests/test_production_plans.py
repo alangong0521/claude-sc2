@@ -240,6 +240,7 @@ from bot.production_plans import (  # noqa: E402
     zerg_macro_escort_gateway_target,
     zerg_macro_ground_screen_needed,
     zerg_macro_voidray_needed,
+    zerg_macro_voidray_conversion_active,
     zerg_macro_carrier_suppressed,
     zerg_macro_gas_stop_blocked,
     zerg_macro_emergency_gas_pull,
@@ -6601,7 +6602,19 @@ class TestO381Plans(unittest.TestCase):
         )
         self.assertEqual(
             zerg_macro_escort_gateway_target(
+                opp_race="zerg", ai_build="macro", visible_corruptors=4
+            ),
+            6,
+        )
+        self.assertEqual(
+            zerg_macro_escort_gateway_target(
                 opp_race="zerg", ai_build="macro", visible_corruptors=7
+            ),
+            6,
+        )
+        self.assertEqual(
+            zerg_macro_escort_gateway_target(
+                opp_race="zerg", ai_build="macro", visible_corruptors=3
             ),
             2,
         )
@@ -6641,13 +6654,25 @@ class TestO381Plans(unittest.TestCase):
         self.assertTrue(
             zerg_macro_voidray_needed(
                 opp_race="zerg", ai_build="macro",
-                corruptor_credit=8, voidrays=3,
+                corruptor_credit=4, voidrays=3,
             )
         )
         self.assertFalse(
             zerg_macro_voidray_needed(
                 opp_race="zerg", ai_build="macro",
                 corruptor_credit=8, voidrays=4,
+            )
+        )
+        self.assertTrue(
+            zerg_macro_voidray_conversion_active(
+                opp_race="zerg", ai_build="macro",
+                corruptor_credit=4, voidrays=0,
+            )
+        )
+        self.assertFalse(
+            zerg_macro_voidray_conversion_active(
+                opp_race="zerg", ai_build="macro",
+                corruptor_credit=4, voidrays=4,
             )
         )
         self.assertTrue(

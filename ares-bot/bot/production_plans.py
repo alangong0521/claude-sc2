@@ -6577,7 +6577,7 @@ def zerg_macro_escort_gateway_target(
     now: float = 0.0,
     fleet_onfield: int = 0,
     base_target: int = 2,
-    corruptor_trigger: int = 8,
+    corruptor_trigger: int = 4,
     prebuild_at: float = 580.0,
     prebuild_fleet: int = 0,
     prebuild_target: int = 4,
@@ -6599,7 +6599,7 @@ def zerg_macro_voidray_needed(
     ai_build: str,
     corruptor_credit: int,
     voidrays: int,
-    corruptor_trigger: int = 8,
+    corruptor_trigger: int = 4,
     voidray_cap: int = 4,
 ) -> bool:
     """O432:腐化海出现后混最多4虚空舰专打重甲。"""
@@ -6608,6 +6608,24 @@ def zerg_macro_voidray_needed(
         and ai_build == "macro"
         and corruptor_credit >= corruptor_trigger
         and voidrays < voidray_cap
+    )
+
+
+def zerg_macro_voidray_conversion_active(
+    *,
+    opp_race: str,
+    ai_build: str,
+    corruptor_credit: int,
+    voidrays: int,
+    corruptor_trigger: int = 4,
+    voidray_target: int = 4,
+) -> bool:
+    """O433:4虚空成型前暂停新暴风/航母，5星门并行反腐化。"""
+    return (
+        opp_race == "zerg"
+        and ai_build == "macro"
+        and corruptor_credit >= corruptor_trigger
+        and voidrays < voidray_target
     )
 
 
